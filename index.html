@@ -308,6 +308,12 @@
             color: rgba(255, 255, 255, 0.7);
             font-size: 0.9rem;
             margin-bottom: 1rem;
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .project-url:hover {
+            color: #00d4ff;
         }
 
         .project-description {
@@ -357,6 +363,52 @@
 
         .contact-email:hover {
             border-bottom-color: #00d4ff;
+        }
+        .contact form {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 500px;
+            margin: 2rem auto 0;
+        }
+
+        .contact label {
+            text-align: left;
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        .contact input, .contact textarea {
+            width: 100%;
+            padding: 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #ffffff;
+            font-size: 1rem;
+        }
+
+        .contact input:focus, .contact textarea:focus {
+            outline: none;
+            border-color: #00d4ff;
+            box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+        }
+
+        .contact button {
+            padding: 1rem 2rem;
+            background: linear-gradient(45deg, #00d4ff, #4ecdc4);
+            color: #000000;
+            border: none;
+            border-radius: 50px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            align-self: center;
+        }
+
+        .contact button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.3);
         }
 
         /* Footer */
@@ -479,7 +531,7 @@
                     <div class="project-status">In Development</div>
                     <div class="project-header">
                         <h3 class="project-title">GeoFleetic</h3>
-                        <p class="project-url">geofleetic.com</p>
+                        <a class="project-url" href="https://geofleetic.com" target="_blank">geofleetic.com</a>
                         <p class="project-description">
                             Advanced geolocation and fleet management solution that combines real-time tracking, 
                             AI-powered route optimization, and predictive analytics to revolutionize how businesses 
@@ -492,7 +544,7 @@
                     <div class="project-status">In Development</div>
                     <div class="project-header">
                         <h3 class="project-title">TickTickClock</h3>
-                        <p class="project-url">ticktickclock.com</p>
+                        <a class="project-url" href="https://ticktickclock.com" target="_blank">ticktickclock.com</a>
                         <p class="project-description">
                             Next-generation time management and productivity platform featuring AI-driven scheduling, 
                             smart task prioritization, and advanced analytics to help individuals and teams maximize 
@@ -511,7 +563,17 @@
             <div class="contact-content">
                 <p>Ready to transform your design concepts into market-leading products? Let's discuss how TRAAVIIS can accelerate your journey from idea to success.</p>
                 
-                <a href="mailto:hello@traaviis.com" class="contact-email">hello@traaviis.com</a>
+                <form action="https://formspree.io/f/mnnbrara" method="POST">
+                  <label>
+                    Your email:
+                    <input type="email" name="email" required>
+                  </label>
+                  <label>
+                    Your message:
+                    <textarea name="message" rows="5" required></textarea>
+                  </label>
+                  <button type="submit">Send</button>
+                </form>
             </div>
         </div>
     </section>
@@ -564,6 +626,9 @@
         }, observerOptions);
 
         // Observe all sections for animations
+        // Update copyright year
+        const currentYear = new Date().getFullYear();
+        document.querySelector('footer p').innerHTML = `&copy; ${currentYear} TRAAVIIS. All rights reserved. | Transforming designs into market leaders.`;
         document.querySelectorAll('section').forEach(section => {
             section.style.opacity = '0';
             section.style.transform = 'translateY(20px)';
