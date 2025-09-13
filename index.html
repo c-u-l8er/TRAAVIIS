@@ -411,6 +411,42 @@
             box-shadow: 0 10px 30px rgba(0, 212, 255, 0.3);
         }
 
+        /* Powered by section */
+        .powered-by {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50px;
+            backdrop-filter: blur(10px);
+            margin-bottom: 2rem;
+            font-size: 0.9rem;
+            opacity: 0;
+            animation: fadeInUp 1s ease-out 0.2s forwards;
+        }
+
+        .powered-by a {
+            color: #00d4ff;
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.3s ease;
+        }
+
+        .powered-by a:hover {
+            color: #ffffff;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
         /* Footer */
         footer {
             background: rgba(0, 0, 0, 0.5);
@@ -470,6 +506,9 @@
     <!-- Hero Section -->
     <section id="home" class="hero">
         <div class="hero-content">
+            <div class="powered-by">
+                Intelligence by <a href="https://c-u-l8er.link" target="_blank">C U L8er</a>
+            </div>
             <h1>TRAAVIIS</h1>
             <p class="subtitle">AI-Powered Design to Production & Beyond</p>
             <p class="description">
@@ -546,9 +585,22 @@
                         <h3 class="project-title">TickTickClock</h3>
                         <a class="project-url" href="https://ticktickclock.com" target="_blank">ticktickclock.com</a>
                         <p class="project-description">
-                            Next-generation time management and productivity platform featuring AI-driven scheduling, 
-                            smart task prioritization, and advanced analytics to help individuals and teams maximize 
+                            Next-generation time management and productivity platform featuring AI-driven scheduling,
+                            smart task prioritization, and advanced analytics to help individuals and teams maximize
                             their efficiency and achieve their goals.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="project-card">
+                    <div class="project-status">In Development</div>
+                    <div class="project-header">
+                        <h3 class="project-title">OpenSentience</h3>
+                        <a class="project-url" href="https://opensentience.org" target="_blank">opensentience.org</a>
+                        <p class="project-description">
+                            Revolutionary AI architecture introducing GEO-GOTO LLM with spatial-pointer technology.
+                            Enables 70B+ parameter models to run efficiently on single GPUs, delivering 1000x speedup
+                            for long contexts while using 4x less memory. Making advanced AI accessible to everyone.
                         </p>
                     </div>
                 </div>
