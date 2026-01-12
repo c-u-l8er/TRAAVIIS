@@ -229,6 +229,11 @@
             gap: 2rem;
         }
 
+        .company-card-link {
+            text-decoration: none;
+            display: block;
+        }
+
         .company-card {
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -237,7 +242,6 @@
             transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
             overflow: hidden;
-            cursor: pointer;
         }
 
         .company-card::before {
@@ -616,121 +620,135 @@
 
         <div class="companies-grid">
             <!-- TickTickClock - Featured -->
-            <div class="company-card featured fade-in fade-in-delay-1">
-                <span class="featured-badge">Crown Jewel</span>
-                <div class="company-icon">⏱️</div>
-                <h3 class="company-name">TickTickClock</h3>
-                <p class="company-tagline">Real-Time Synchronization Platform</p>
-                <p class="company-description">
-                    Purpose-built digital twin synchronization infrastructure solving the #1 challenge 
-                    in the $328B digital twin market. Sub-10ms timestamp precision for manufacturing, 
-                    healthcare, and aerospace applications.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">47.9% CAGR</span>
-                    <span class="meta-tag">$328B Market</span>
-                    <span class="meta-tag">Digital Twins</span>
-                    <span class="meta-tag">$200K-$400K Value</span>
+            <a href="https://ticktickclock.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card featured fade-in fade-in-delay-1">
+                    <span class="featured-badge">Crown Jewel</span>
+                    <div class="company-icon">⏱️</div>
+                    <h3 class="company-name">TickTickClock</h3>
+                    <p class="company-tagline">Real-Time Synchronization Platform</p>
+                    <p class="company-description">
+                        Purpose-built digital twin synchronization infrastructure solving the #1 challenge
+                        in the $328B digital twin market. Sub-10ms timestamp precision for manufacturing,
+                        healthcare, and aerospace applications.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">47.9% CAGR</span>
+                        <span class="meta-tag">$328B Market</span>
+                        <span class="meta-tag">Digital Twins</span>
+                        <span class="meta-tag">$200K-$400K Value</span>
+                    </div>
                 </div>
-            </div>
+            </a>
 
             <!-- FleetPrompt -->
-            <div class="company-card featured fade-in fade-in-delay-2">
-                <span class="featured-badge">Crown Jewel</span>
-                <div class="company-icon">🤖</div>
-                <h3 class="company-name">FleetPrompt</h3>
-                <p class="company-tagline">AI Agent Marketplace</p>
-                <p class="company-description">
-                    Production marketplace for AI prompt templates and agent workflows. 
-                    Positioned in the explosive AI agents market growing at 49.6% CAGR.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">49.6% CAGR</span>
-                    <span class="meta-tag">$183B Market</span>
-                    <span class="meta-tag">Agentic AI</span>
-                    <span class="meta-tag">$100K-$300K Value</span>
+            <a href="https://fleetprompt.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card featured fade-in fade-in-delay-2">
+                    <span class="featured-badge">Crown Jewel</span>
+                    <div class="company-icon">🤖</div>
+                    <h3 class="company-name">FleetPrompt</h3>
+                    <p class="company-tagline">AI Agent Marketplace</p>
+                    <p class="company-description">
+                        Production marketplace for AI prompt templates and agent workflows.
+                        Positioned in the explosive AI agents market growing at 49.6% CAGR.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">49.6% CAGR</span>
+                        <span class="meta-tag">$183B Market</span>
+                        <span class="meta-tag">Agentic AI</span>
+                        <span class="meta-tag">$100K-$300K Value</span>
+                    </div>
                 </div>
-            </div>
+            </a>
 
             <!-- WebHost.Systems -->
-            <div class="company-card fade-in fade-in-delay-3">
-                <div class="company-icon">🔧</div>
-                <h3 class="company-name">WebHost.Systems</h3>
-                <p class="company-tagline">Multi-Tenant Infrastructure Platform</p>
-                <p class="company-description">
-                    Enterprise-grade Elixir/Phoenix infrastructure powering schema-per-tenant architecture. 
-                    The backbone enabling 80% code reuse across all portfolio companies.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">14.7% CAGR</span>
-                    <span class="meta-tag">SaaS Platform</span>
-                    <span class="meta-tag">$13.4B Market</span>
+            <a href="https://webhost.systems" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card fade-in fade-in-delay-3">
+                    <div class="company-icon">🔧</div>
+                    <h3 class="company-name">WebHost.Systems</h3>
+                    <p class="company-tagline">Multi-Tenant Infrastructure Platform</p>
+                    <p class="company-description">
+                        Enterprise-grade Elixir/Phoenix infrastructure powering schema-per-tenant architecture.
+                        The backbone enabling 80% code reuse across all portfolio companies.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">14.7% CAGR</span>
+                        <span class="meta-tag">SaaS Platform</span>
+                        <span class="meta-tag">$13.4B Market</span>
+                    </div>
                 </div>
-            </div>
+            </a>
 
             <!-- GeoFleetic -->
-            <div class="company-card fade-in fade-in-delay-5">
-                <div class="company-icon">🧠</div>
-                <h3 class="company-name">GeoFleetic</h3>
-                <p class="company-tagline">Knowledge Graph Intelligence Layer</p>
-                <p class="company-description">
-                    Graph-RAG-powered intelligence infrastructure enabling multi-agent coordination 
-                    through shared knowledge graphs. Built on Arcana for Phoenix/Ash, GeoFleetic 
-                    serves as the cognitive backbone for all portfolio companies, providing explainable 
-                    AI reasoning and agent collaboration at scale.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">GraphRAG Native</span>
-                    <span class="meta-tag">Multi-Agent Brain</span>
-                    <span class="meta-tag">Explainable AI</span>
+            <a href="https://geofleetic.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card fade-in fade-in-delay-5">
+                    <div class="company-icon">🧠</div>
+                    <h3 class="company-name">GeoFleetic</h3>
+                    <p class="company-tagline">Knowledge Graph Intelligence Layer</p>
+                    <p class="company-description">
+                        Graph-RAG-powered intelligence infrastructure enabling multi-agent coordination
+                        through shared knowledge graphs. Built on Arcana for Phoenix/Ash, GeoFleetic
+                        serves as the cognitive backbone for all portfolio companies, providing explainable
+                        AI reasoning and agent collaboration at scale.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">GraphRAG Native</span>
+                        <span class="meta-tag">Multi-Agent Brain</span>
+                        <span class="meta-tag">Explainable AI</span>
+                    </div>
                 </div>
-            </div>
+            </a>
 
             <!-- GPSCoord -->
-            <div class="company-card fade-in fade-in-delay-6">
-                <div class="company-icon">📍</div>
-                <h3 class="company-name">GPSCoord</h3>
-                <p class="company-tagline">Location Intelligence Suite</p>
-                <p class="company-description">
-                    Precision GPS coordinate management and tracking infrastructure for 
-                    logistics optimization and asset monitoring applications.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">Location Data</span>
-                    <span class="meta-tag">Logistics</span>
+            <a href="https://gpscoord.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card fade-in fade-in-delay-6">
+                    <div class="company-icon">📍</div>
+                    <h3 class="company-name">GPSCoord</h3>
+                    <p class="company-tagline">Location Intelligence Suite</p>
+                    <p class="company-description">
+                        Precision GPS coordinate management and tracking infrastructure for
+                        logistics optimization and asset monitoring applications.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">Location Data</span>
+                        <span class="meta-tag">Logistics</span>
+                    </div>
                 </div>
-            </div>
+            </a>
 
             <!-- A2ATraffic -->
-            <div class="company-card fade-in fade-in-delay-6">
-                <div class="company-icon">🔄</div>
-                <h3 class="company-name">A2ATraffic</h3>
-                <p class="company-tagline">Agent Communication Protocol</p>
-                <p class="company-description">
-                    Next-generation agent-to-agent communication infrastructure enabling 
-                    seamless coordination across distributed AI systems.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">Protocol Layer</span>
-                    <span class="meta-tag">AI Coordination</span>
+            <a href="https://a2atraffic.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card fade-in fade-in-delay-6">
+                    <div class="company-icon">🔄</div>
+                    <h3 class="company-name">A2ATraffic</h3>
+                    <p class="company-tagline">Agent Communication Protocol</p>
+                    <p class="company-description">
+                        Next-generation agent-to-agent communication infrastructure enabling
+                        seamless coordination across distributed AI systems.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">Protocol Layer</span>
+                        <span class="meta-tag">AI Coordination</span>
+                    </div>
                 </div>
-            </div>
+            </a>
 
             <!-- Ampersand Box Design -->
-            <div class="company-card featured fade-in fade-in-delay-4">
-                <span class="featured-badge">Synergy</span>
-                <div class="company-icon">📦</div>
-                <h3 class="company-name">[&] Ampersand Box</h3>
-                <p class="company-tagline">Parent Holding Company</p>
-                <p class="company-description">
-                    Strategic technology holding company coordinating portfolio operations, 
-                    with projected $7.75M ARR by 2030 across integrated product lines.
-                </p>
-                <div class="company-meta">
-                    <span class="meta-tag">Portfolio Mgmt</span>
-                    <span class="meta-tag">$7.75M ARR Target</span>
+            <a href="https://ampersandboxdesign.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
+                <div class="company-card featured fade-in fade-in-delay-4">
+                    <span class="featured-badge">Synergetic</span>
+                    <div class="company-icon">📦</div>
+                    <h3 class="company-name">[&] Ampersand Box</h3>
+                    <p class="company-tagline">Parent Holding Company</p>
+                    <p class="company-description">
+                        Strategic technology holding company coordinating portfolio operations,
+                        with projected $7.75M ARR by 2030 across integrated product lines.
+                    </p>
+                    <div class="company-meta">
+                        <span class="meta-tag">Portfolio Mgmt</span>
+                        <span class="meta-tag">$7.75M ARR Target</span>
+                    </div>
                 </div>
-            </div>
+            </a>
         </div>
     </section>
 
@@ -783,14 +801,17 @@
         const observer = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
-                    entry.target.style.opacity = '1';
-                    entry.target.style.transform = 'translateY(0)';
+                    const card = entry.target.querySelector('.company-card');
+                    if (card) {
+                        card.style.opacity = '1';
+                        card.style.transform = 'translateY(0)';
+                    }
                 }
             });
         }, observerOptions);
 
         // Observe all company cards
-        document.querySelectorAll('.company-card').forEach(card => {
+        document.querySelectorAll('.company-card-link').forEach(card => {
             observer.observe(card);
         });
 
