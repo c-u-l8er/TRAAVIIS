@@ -848,21 +848,28 @@
 
         // Dynamic counter animation
         function animateValue(element, start, end, duration) {
+            // Preserve formatting like "$600K" and "$600M" (prefix "$", suffix "K/M/B") during the animation.
+            const original = element.dataset.originalValue || element.textContent;
+            element.dataset.originalValue = original;
+
+            const trimmed = original.trim();
+            const prefix = (trimmed.match(/^[^0-9]+/) || [''])[0];
+            const suffix = (trimmed.match(/[^0-9]+$/) || [''])[0];
+
             const range = end - start;
             const increment = range / (duration / 16);
             let current = start;
-            
+
             const timer = setInterval(() => {
                 current += increment;
                 if ((increment > 0 && current >= end) || (increment < 0 && current <= end)) {
                     current = end;
                     clearInterval(timer);
                 }
-                
+
                 if (element.classList.contains('stat-value')) {
-                    const suffix = element.textContent.match(/[KM$]/g)?.join('') || '';
                     const numericValue = Math.floor(current);
-                    element.textContent = numericValue + suffix;
+                    element.textContent = `${prefix}${numericValue}${suffix}`;
                 }
             }, 16);
         }
