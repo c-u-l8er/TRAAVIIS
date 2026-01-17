@@ -1,896 +1,1123 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Traaviis — Portfolio Company</title>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-dark: #0a0a0f;
-            --bg-card: #141419;
-            --accent-primary: #00e5ff;
-            --accent-secondary: #7c3aed;
-            --accent-gold: #fbbf24;
-            --text-primary: #ffffff;
-            --text-secondary: #a1a1aa;
-            --border: rgba(255, 255, 255, 0.08);
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'DM Sans', sans-serif;
-            background: var(--bg-dark);
-            color: var(--text-primary);
-            overflow-x: hidden;
-            line-height: 1.6;
-        }
-
-        /* Animated background gradient */
-        body::before {
-            content: '';
-            position: fixed;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: 
-                radial-gradient(circle at 20% 50%, rgba(124, 58, 237, 0.15) 0%, transparent 50%),
-                radial-gradient(circle at 80% 80%, rgba(0, 229, 255, 0.12) 0%, transparent 50%),
-                radial-gradient(circle at 40% 90%, rgba(251, 191, 36, 0.08) 0%, transparent 50%);
-            animation: gradientShift 20s ease infinite;
-            z-index: -1;
-        }
-
-        @keyframes gradientShift {
-            0%, 100% { transform: translate(0, 0) rotate(0deg); }
-            33% { transform: translate(-5%, -10%) rotate(120deg); }
-            66% { transform: translate(5%, 5%) rotate(240deg); }
-        }
-
-        /* Header */
-        header {
-            padding: 2rem 4rem;
-            position: fixed;
-            width: 100%;
-            top: 0;
-            z-index: 100;
-            background: rgba(10, 10, 15, 0.8);
-            backdrop-filter: blur(20px);
-            border-bottom: 1px solid var(--border);
-            animation: slideDown 0.8s ease;
-        }
-
-        @keyframes slideDown {
-            from { transform: translateY(-100%); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-
-        .logo {
-            font-family: 'Playfair Display', serif;
-            font-size: 2rem;
-            font-weight: 900;
-            letter-spacing: -0.03em;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            display: inline-block;
-        }
-
-        /* Hero Section */
-        .hero {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            padding: 8rem 4rem 4rem;
-            position: relative;
-        }
-
-        .hero-content {
-            max-width: 1200px;
-            margin: 0 auto;
-            width: 100%;
-        }
-
-        .eyebrow {
-            font-family: 'Space Mono', monospace;
-            font-size: 0.875rem;
-            letter-spacing: 0.2em;
-            text-transform: uppercase;
-            color: var(--accent-primary);
-            margin-bottom: 1.5rem;
-            opacity: 0;
-            animation: fadeInUp 0.8s ease 0.2s forwards;
-        }
-
-        h1 {
-            font-family: 'Playfair Display', serif;
-            font-size: clamp(3rem, 8vw, 6rem);
-            font-weight: 900;
-            line-height: 1.1;
-            margin-bottom: 2rem;
-            letter-spacing: -0.02em;
-            opacity: 0;
-            animation: fadeInUp 0.8s ease 0.4s forwards;
-        }
-
-        .gradient-text {
-            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 50%, var(--accent-gold) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            background-size: 200% 200%;
-            animation: gradientFlow 8s ease infinite;
-        }
-
-        @keyframes gradientFlow {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-        }
-
-        .hero-description {
-            font-size: 1.5rem;
-            color: var(--text-secondary);
-            max-width: 700px;
-            margin-bottom: 3rem;
-            line-height: 1.7;
-            opacity: 0;
-            animation: fadeInUp 0.8s ease 0.6s forwards;
-        }
-
-        @keyframes fadeInUp {
-            from { 
-                opacity: 0; 
-                transform: translateY(30px);
-            }
-            to { 
-                opacity: 1; 
-                transform: translateY(0);
-            }
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 2rem;
-            margin-top: 4rem;
-            opacity: 0;
-            animation: fadeInUp 0.8s ease 0.8s forwards;
-        }
-
-        .stat {
-            padding: 1.5rem;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            transition: all 0.3s ease;
-        }
-
-        .stat:hover {
-            transform: translateY(-5px);
-            border-color: var(--accent-primary);
-            box-shadow: 0 10px 40px rgba(0, 229, 255, 0.15);
-        }
-
-        .stat-value {
-            font-family: 'Playfair Display', serif;
-            font-size: 2.5rem;
-            font-weight: 900;
-            color: var(--accent-primary);
-            display: block;
-            margin-bottom: 0.5rem;
-        }
-
-        .stat-label {
-            font-family: 'Space Mono', monospace;
-            font-size: 0.75rem;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: var(--text-secondary);
-        }
-
-        /* Portfolio Section */
-        .portfolio {
-            padding: 8rem 4rem;
-            position: relative;
-        }
-
-        .section-header {
-            max-width: 1200px;
-            margin: 0 auto 4rem;
-        }
-
-        .section-title {
-            font-family: 'Playfair Display', serif;
-            font-size: clamp(2.5rem, 5vw, 4rem);
-            font-weight: 900;
-            margin-bottom: 1rem;
-            letter-spacing: -0.02em;
-        }
-
-        .section-subtitle {
-            font-size: 1.25rem;
-            color: var(--text-secondary);
-            max-width: 600px;
-        }
-
-        .companies-grid {
-            max-width: 1200px;
-            margin: 0 auto;
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 2rem;
-        }
-
-        .company-card-link {
-            text-decoration: none;
-            display: block;
-        }
-
-        .company-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 2.5rem;
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .company-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 4px;
-            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
-            transform: scaleX(0);
-            transform-origin: left;
-            transition: transform 0.4s ease;
-        }
-
-        .company-card:hover::before {
-            transform: scaleX(1);
-        }
-
-        .company-card:hover {
-            transform: translateY(-10px);
-            border-color: var(--accent-primary);
-            box-shadow: 0 20px 60px rgba(0, 229, 255, 0.2);
-        }
-
-        .company-icon {
-            width: 60px;
-            height: 60px;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            border-radius: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.75rem;
-            margin-bottom: 1.5rem;
-            transition: all 0.4s ease;
-        }
-
-        .company-card:hover .company-icon {
-            transform: rotate(10deg) scale(1.1);
-        }
-
-        .company-name {
-            font-family: 'Playfair Display', serif;
-            font-size: 1.75rem;
-            font-weight: 700;
-            margin-bottom: 0.75rem;
-            color: var(--text-primary);
-        }
-
-        .company-tagline {
-            font-size: 0.95rem;
-            color: var(--accent-primary);
-            font-weight: 500;
-            margin-bottom: 1rem;
-            letter-spacing: 0.02em;
-        }
-
-        .company-description {
-            color: var(--text-secondary);
-            line-height: 1.7;
-            margin-bottom: 1.5rem;
-            font-size: 0.95rem;
-        }
-
-        .company-meta {
-            display: flex;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .meta-tag {
-            font-family: 'Space Mono', monospace;
-            font-size: 0.7rem;
-            padding: 0.4rem 0.8rem;
-            background: rgba(0, 229, 255, 0.1);
-            border: 1px solid rgba(0, 229, 255, 0.3);
-            border-radius: 6px;
-            color: var(--accent-primary);
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-        }
-
-        /* Featured Card Styling */
-        .company-card.featured {
-            grid-column: span 2;
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(0, 229, 255, 0.1));
-            border: 2px solid var(--accent-primary);
-        }
-
-        .company-card.featured .company-icon {
-            width: 80px;
-            height: 80px;
-            font-size: 2.25rem;
-        }
-
-        .company-card.featured .company-name {
-            font-size: 2.5rem;
-        }
-
-        .featured-badge {
-            position: absolute;
-            top: 2rem;
-            right: 2rem;
-            background: var(--accent-gold);
-            color: var(--bg-dark);
-            font-family: 'Space Mono', monospace;
-            font-size: 0.65rem;
-            font-weight: 700;
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-        }
-
-        /* Contact Section */
-        .contact {
-            padding: 8rem 4rem;
-            text-align: center;
-            position: relative;
-        }
-
-        .contact-content {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-
-        .contact h2 {
-            font-family: 'Playfair Display', serif;
-            font-size: clamp(2.5rem, 5vw, 4rem);
-            font-weight: 900;
-            margin-bottom: 2rem;
-            letter-spacing: -0.02em;
-        }
-
-        .contact-description {
-            font-size: 1.25rem;
-            color: var(--text-secondary);
-            margin-bottom: 3rem;
-            line-height: 1.7;
-        }
-
-        .cta-button {
-            display: inline-block;
-            padding: 1.25rem 3rem;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            color: var(--bg-dark);
-            font-family: 'Space Mono', monospace;
-            font-size: 0.875rem;
-            font-weight: 700;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            text-decoration: none;
-            border-radius: 50px;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .cta-button::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-            transition: left 0.5s ease;
-        }
-
-        .cta-button:hover::before {
-            left: 100%;
-        }
-
-        .cta-button:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 40px rgba(0, 229, 255, 0.4);
-        }
-
-        /* Footer */
-        footer {
-            padding: 3rem 4rem;
-            border-top: 1px solid var(--border);
-            text-align: center;
-        }
-
-        .footer-content {
-            max-width: 1200px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 2rem;
-        }
-
-        .footer-logo {
-            font-family: 'Playfair Display', serif;
-            font-size: 1.5rem;
-            font-weight: 900;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .footer-links {
-            display: flex;
-            gap: 2rem;
-        }
-
-        .footer-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-family: 'Space Mono', monospace;
-            font-size: 0.875rem;
-            transition: color 0.3s ease;
-        }
-
-        .footer-links a:hover {
-            color: var(--accent-primary);
-        }
-
-        .copyright {
-            font-family: 'Space Mono', monospace;
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            width: 100%;
-            margin-top: 2rem;
-            text-align: center;
-        }
-
-        /* Responsive Design */
-        @media (min-width: 1400px) {
-            .companies-grid {
-                grid-template-columns: repeat(3, 1fr);
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Traaviis — Portfolio Company</title>
+        <link
+            href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;700&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            :root {
+                --bg-dark: #0a0a0f;
+                --bg-card: #141419;
+                --accent-primary: #00e5ff;
+                --accent-secondary: #7c3aed;
+                --accent-gold: #fbbf24;
+                --text-primary: #ffffff;
+                --text-secondary: #a1a1aa;
+                --border: rgba(255, 255, 255, 0.08);
             }
 
-            .company-card.featured {
-                grid-column: span 3;
-            }
-        }
-
-        @media (max-width: 1024px) {
-            .companies-grid {
-                grid-template-columns: 1fr;
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
             }
 
-            .company-card.featured {
-                grid-column: span 1;
+            body {
+                font-family: "DM Sans", sans-serif;
+                background: var(--bg-dark);
+                color: var(--text-primary);
+                overflow-x: hidden;
+                line-height: 1.6;
             }
-        }
 
-        @media (max-width: 768px) {
-            header, .hero, .portfolio, .contact, footer {
-                padding-left: 2rem;
-                padding-right: 2rem;
+            /* Animated background gradient */
+            body::before {
+                content: "";
+                position: fixed;
+                top: -50%;
+                left: -50%;
+                width: 200%;
+                height: 200%;
+                background:
+                    radial-gradient(
+                        circle at 20% 50%,
+                        rgba(124, 58, 237, 0.15) 0%,
+                        transparent 50%
+                    ),
+                    radial-gradient(
+                        circle at 80% 80%,
+                        rgba(0, 229, 255, 0.12) 0%,
+                        transparent 50%
+                    ),
+                    radial-gradient(
+                        circle at 40% 90%,
+                        rgba(251, 191, 36, 0.08) 0%,
+                        transparent 50%
+                    );
+                animation: gradientShift 20s ease infinite;
+                z-index: -1;
+            }
+
+            @keyframes gradientShift {
+                0%,
+                100% {
+                    transform: translate(0, 0) rotate(0deg);
+                }
+                33% {
+                    transform: translate(-5%, -10%) rotate(120deg);
+                }
+                66% {
+                    transform: translate(5%, 5%) rotate(240deg);
+                }
+            }
+
+            /* Header */
+            header {
+                padding: 2rem 4rem;
+                position: fixed;
+                width: 100%;
+                top: 0;
+                z-index: 100;
+                background: rgba(10, 10, 15, 0.8);
+                backdrop-filter: blur(20px);
+                border-bottom: 1px solid var(--border);
+                animation: slideDown 0.8s ease;
+
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1.5rem;
+            }
+
+            @keyframes slideDown {
+                from {
+                    transform: translateY(-100%);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateY(0);
+                    opacity: 1;
+                }
+            }
+
+            .logo {
+                font-family: "Playfair Display", serif;
+                font-size: 2rem;
+                font-weight: 900;
+                letter-spacing: -0.03em;
+                background: linear-gradient(
+                    135deg,
+                    var(--accent-primary),
+                    var(--accent-secondary)
+                );
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                display: inline-block;
+            }
+
+            .header-amp {
+                font-family: "JetBrains Mono", monospace;
+                font-size: 2rem;
+                letter-spacing: 0.08em;
+                color: var(--accent-gold);
+                text-decoration: none;
+                padding: 0.5rem 0.75rem;
+                border-radius: 10px;
+                border: 1px solid transparent;
+                transition:
+                    color 0.3s ease,
+                    border-color 0.3s ease,
+                    background 0.3s ease;
+            }
+
+            .header-amp:hover,
+            .header-amp:focus-visible {
+                color: var(--accent-gold);
+                border-color: rgba(251, 191, 36, 0.45);
+                background: rgba(251, 191, 36, 0.06);
+                outline: none;
+            }
+
+            /* Hero Section */
+            .hero {
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                padding: 8rem 4rem 4rem;
+                position: relative;
+            }
+
+            .hero-content {
+                max-width: 1200px;
+                margin: 0 auto;
+                width: 100%;
+            }
+
+            .eyebrow {
+                font-family: "Space Mono", monospace;
+                font-size: 0.875rem;
+                letter-spacing: 0.2em;
+                text-transform: uppercase;
+                color: var(--accent-primary);
+                margin-bottom: 1.5rem;
+                opacity: 0;
+                animation: fadeInUp 0.8s ease 0.2s forwards;
             }
 
             h1 {
-                font-size: 3rem;
+                font-family: "Playfair Display", serif;
+                font-size: clamp(3rem, 8vw, 6rem);
+                font-weight: 900;
+                line-height: 1.1;
+                margin-bottom: 2rem;
+                letter-spacing: -0.02em;
+                opacity: 0;
+                animation: fadeInUp 0.8s ease 0.4s forwards;
+            }
+
+            .gradient-text {
+                background: linear-gradient(
+                    135deg,
+                    var(--accent-primary) 0%,
+                    var(--accent-secondary) 50%,
+                    var(--accent-gold) 100%
+                );
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                background-size: 200% 200%;
+                animation: gradientFlow 8s ease infinite;
+            }
+
+            @keyframes gradientFlow {
+                0%,
+                100% {
+                    background-position: 0% 50%;
+                }
+                50% {
+                    background-position: 100% 50%;
+                }
             }
 
             .hero-description {
-                font-size: 1.25rem;
+                font-size: 1.5rem;
+                color: var(--text-secondary);
+                max-width: 700px;
+                margin-bottom: 3rem;
+                line-height: 1.7;
+                opacity: 0;
+                animation: fadeInUp 0.8s ease 0.6s forwards;
+            }
+
+            @keyframes fadeInUp {
+                from {
+                    opacity: 0;
+                    transform: translateY(30px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
             }
 
             .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                gap: 2rem;
+                margin-top: 4rem;
+                opacity: 0;
+                animation: fadeInUp 0.8s ease 0.8s forwards;
+            }
+
+            .stat {
+                padding: 1.5rem;
+                background: var(--bg-card);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                transition: all 0.3s ease;
+            }
+
+            .stat:hover {
+                transform: translateY(-5px);
+                border-color: var(--accent-primary);
+                box-shadow: 0 10px 40px rgba(0, 229, 255, 0.15);
+            }
+
+            .stat-value {
+                font-family: "Playfair Display", serif;
+                font-size: 2.5rem;
+                font-weight: 900;
+                color: var(--accent-primary);
+                display: block;
+                margin-bottom: 0.5rem;
+            }
+
+            .stat-label {
+                font-family: "Space Mono", monospace;
+                font-size: 0.75rem;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+                color: var(--text-secondary);
+            }
+
+            /* Portfolio Section */
+            .portfolio {
+                padding: 8rem 4rem;
+                position: relative;
+            }
+
+            .section-header {
+                max-width: 1200px;
+                margin: 0 auto 4rem;
+            }
+
+            .section-title {
+                font-family: "Playfair Display", serif;
+                font-size: clamp(2.5rem, 5vw, 4rem);
+                font-weight: 900;
+                margin-bottom: 1rem;
+                letter-spacing: -0.02em;
+            }
+
+            .section-subtitle {
+                font-size: 1.25rem;
+                color: var(--text-secondary);
+                max-width: 600px;
+            }
+
+            .companies-grid {
+                max-width: 1200px;
+                margin: 0 auto;
+                display: grid;
                 grid-template-columns: repeat(2, 1fr);
+                gap: 2rem;
+            }
+
+            .company-card-link {
+                text-decoration: none;
+                display: block;
+            }
+
+            .company-card {
+                background: var(--bg-card);
+                border: 1px solid var(--border);
+                border-radius: 20px;
+                padding: 2.5rem;
+                transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+                position: relative;
+                overflow: hidden;
+            }
+
+            .company-card::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 4px;
+                background: linear-gradient(
+                    90deg,
+                    var(--accent-primary),
+                    var(--accent-secondary)
+                );
+                transform: scaleX(0);
+                transform-origin: left;
+                transition: transform 0.4s ease;
+            }
+
+            .company-card:hover::before {
+                transform: scaleX(1);
+            }
+
+            .company-card:hover {
+                transform: translateY(-10px);
+                border-color: var(--accent-primary);
+                box-shadow: 0 20px 60px rgba(0, 229, 255, 0.2);
+            }
+
+            .company-icon {
+                width: 60px;
+                height: 60px;
+                background: linear-gradient(
+                    135deg,
+                    var(--accent-primary),
+                    var(--accent-secondary)
+                );
+                border-radius: 14px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.75rem;
+                margin-bottom: 1.5rem;
+                transition: all 0.4s ease;
+            }
+
+            .company-card:hover .company-icon {
+                transform: rotate(10deg) scale(1.1);
+            }
+
+            .company-name {
+                font-family: "Playfair Display", serif;
+                font-size: 1.75rem;
+                font-weight: 700;
+                margin-bottom: 0.75rem;
+                color: var(--text-primary);
+            }
+
+            .company-tagline {
+                font-size: 0.95rem;
+                color: var(--accent-primary);
+                font-weight: 500;
+                margin-bottom: 1rem;
+                letter-spacing: 0.02em;
+            }
+
+            .company-description {
+                color: var(--text-secondary);
+                line-height: 1.7;
+                margin-bottom: 1.5rem;
+                font-size: 0.95rem;
+            }
+
+            .company-meta {
+                display: flex;
+                gap: 1rem;
+                flex-wrap: wrap;
+            }
+
+            .meta-tag {
+                font-family: "Space Mono", monospace;
+                font-size: 0.7rem;
+                padding: 0.4rem 0.8rem;
+                background: rgba(0, 229, 255, 0.1);
+                border: 1px solid rgba(0, 229, 255, 0.3);
+                border-radius: 6px;
+                color: var(--accent-primary);
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+            }
+
+            /* Featured Card Styling */
+            .company-card.featured {
+                grid-column: span 2;
+                background: linear-gradient(
+                    135deg,
+                    rgba(124, 58, 237, 0.15),
+                    rgba(0, 229, 255, 0.1)
+                );
+                border: 2px solid var(--accent-primary);
+            }
+
+            .company-card.featured .company-icon {
+                width: 80px;
+                height: 80px;
+                font-size: 2.25rem;
+            }
+
+            .company-card.featured .company-name {
+                font-size: 2.5rem;
+            }
+
+            .featured-badge {
+                position: absolute;
+                top: 2rem;
+                right: 2rem;
+                background: var(--accent-gold);
+                color: var(--bg-dark);
+                font-family: "Space Mono", monospace;
+                font-size: 0.65rem;
+                font-weight: 700;
+                padding: 0.5rem 1rem;
+                border-radius: 20px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+
+            /* Contact Section */
+            .contact {
+                padding: 8rem 4rem;
+                text-align: center;
+                position: relative;
+            }
+
+            .contact-content {
+                max-width: 800px;
+                margin: 0 auto;
+            }
+
+            .contact h2 {
+                font-family: "Playfair Display", serif;
+                font-size: clamp(2.5rem, 5vw, 4rem);
+                font-weight: 900;
+                margin-bottom: 2rem;
+                letter-spacing: -0.02em;
+            }
+
+            .contact-description {
+                font-size: 1.25rem;
+                color: var(--text-secondary);
+                margin-bottom: 3rem;
+                line-height: 1.7;
+            }
+
+            .cta-button {
+                display: inline-block;
+                padding: 1.25rem 3rem;
+                background: linear-gradient(
+                    135deg,
+                    var(--accent-primary),
+                    var(--accent-secondary)
+                );
+                color: var(--bg-dark);
+                font-family: "Space Mono", monospace;
+                font-size: 0.875rem;
+                font-weight: 700;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+                text-decoration: none;
+                border-radius: 50px;
+                transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }
+
+            .cta-button::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(
+                    90deg,
+                    transparent,
+                    rgba(255, 255, 255, 0.3),
+                    transparent
+                );
+                transition: left 0.5s ease;
+            }
+
+            .cta-button:hover::before {
+                left: 100%;
+            }
+
+            .cta-button:hover {
+                transform: translateY(-3px);
+                box-shadow: 0 10px 40px rgba(0, 229, 255, 0.4);
+            }
+
+            /* Footer */
+            footer {
+                padding: 3rem 4rem;
+                border-top: 1px solid var(--border);
+                text-align: center;
             }
 
             .footer-content {
-                flex-direction: column;
+                max-width: 1200px;
+                margin: 0 auto;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 2rem;
+            }
+
+            .footer-logo {
+                font-family: "Playfair Display", serif;
+                font-size: 1.5rem;
+                font-weight: 900;
+                background: linear-gradient(
+                    135deg,
+                    var(--accent-primary),
+                    var(--accent-secondary)
+                );
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .footer-links {
+                display: flex;
+                gap: 2rem;
+            }
+
+            .footer-links a {
+                color: var(--text-secondary);
+                text-decoration: none;
+                font-family: "Space Mono", monospace;
+                font-size: 0.875rem;
+                transition: color 0.3s ease;
+            }
+
+            .footer-links a:hover {
+                color: var(--accent-primary);
+            }
+
+            .copyright {
+                font-family: "Space Mono", monospace;
+                font-size: 0.75rem;
+                color: var(--text-secondary);
+                width: 100%;
+                margin-top: 2rem;
                 text-align: center;
             }
-        }
 
-        /* Scroll animations */
-        .fade-in {
-            opacity: 0;
-            animation: fadeInUp 0.8s ease forwards;
-        }
+            /* Responsive Design */
+            @media (min-width: 1400px) {
+                .companies-grid {
+                    grid-template-columns: repeat(3, 1fr);
+                }
 
-        .fade-in-delay-1 { animation-delay: 0.1s; }
-        .fade-in-delay-2 { animation-delay: 0.2s; }
-        .fade-in-delay-3 { animation-delay: 0.3s; }
-        .fade-in-delay-4 { animation-delay: 0.4s; }
-        .fade-in-delay-5 { animation-delay: 0.5s; }
-        .fade-in-delay-6 { animation-delay: 0.6s; }
+                .company-card.featured {
+                    grid-column: span 3;
+                }
+            }
 
-        /* Floating particles effect */
-        .particle {
-            position: fixed;
-            width: 4px;
-            height: 4px;
-            background: var(--accent-primary);
-            border-radius: 50%;
-            pointer-events: none;
-            opacity: 0;
-            animation: float 15s infinite;
-            z-index: -1;
-        }
+            @media (max-width: 1024px) {
+                .companies-grid {
+                    grid-template-columns: 1fr;
+                }
 
-        @keyframes float {
-            0% {
-                transform: translateY(100vh) translateX(0);
+                .company-card.featured {
+                    grid-column: span 1;
+                }
+            }
+
+            @media (max-width: 768px) {
+                header,
+                .hero,
+                .portfolio,
+                .contact,
+                footer {
+                    padding-left: 2rem;
+                    padding-right: 2rem;
+                }
+
+                h1 {
+                    font-size: 3rem;
+                }
+
+                .hero-description {
+                    font-size: 1.25rem;
+                }
+
+                .stats-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                }
+
+                .footer-content {
+                    flex-direction: column;
+                    text-align: center;
+                }
+            }
+
+            /* Scroll animations */
+            .fade-in {
                 opacity: 0;
+                animation: fadeInUp 0.8s ease forwards;
             }
-            10% {
-                opacity: 0.3;
+
+            .fade-in-delay-1 {
+                animation-delay: 0.1s;
             }
-            90% {
-                opacity: 0.3;
+            .fade-in-delay-2 {
+                animation-delay: 0.2s;
             }
-            100% {
-                transform: translateY(-100vh) translateX(100px);
+            .fade-in-delay-3 {
+                animation-delay: 0.3s;
+            }
+            .fade-in-delay-4 {
+                animation-delay: 0.4s;
+            }
+            .fade-in-delay-5 {
+                animation-delay: 0.5s;
+            }
+            .fade-in-delay-6 {
+                animation-delay: 0.6s;
+            }
+
+            /* Floating particles effect */
+            .particle {
+                position: fixed;
+                width: 4px;
+                height: 4px;
+                background: var(--accent-primary);
+                border-radius: 50%;
+                pointer-events: none;
                 opacity: 0;
+                animation: float 15s infinite;
+                z-index: -1;
             }
-        }
-    </style>
-</head>
-<body>
-    <!-- Floating particles -->
-    <div class="particle" style="left: 10%; animation-delay: 0s;"></div>
-    <div class="particle" style="left: 30%; animation-delay: 3s;"></div>
-    <div class="particle" style="left: 50%; animation-delay: 6s;"></div>
-    <div class="particle" style="left: 70%; animation-delay: 9s;"></div>
-    <div class="particle" style="left: 90%; animation-delay: 12s;"></div>
 
-    <!-- Header -->
-    <header>
-        <div class="logo">Traaviis</div>
-    </header>
+            @keyframes float {
+                0% {
+                    transform: translateY(100vh) translateX(0);
+                    opacity: 0;
+                }
+                10% {
+                    opacity: 0.3;
+                }
+                90% {
+                    opacity: 0.3;
+                }
+                100% {
+                    transform: translateY(-100vh) translateX(100px);
+                    opacity: 0;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Floating particles -->
+        <div class="particle" style="left: 10%; animation-delay: 0s"></div>
+        <div class="particle" style="left: 30%; animation-delay: 3s"></div>
+        <div class="particle" style="left: 50%; animation-delay: 6s"></div>
+        <div class="particle" style="left: 70%; animation-delay: 9s"></div>
+        <div class="particle" style="left: 90%; animation-delay: 12s"></div>
 
-    <!-- Hero Section -->
-    <section class="hero">
-        <div class="hero-content">
-            <div class="eyebrow">Portfolio Company</div>
-            <h1>Building the<br /> <span class="gradient-text">Infrastructure</span><br /> of Tomorrow</h1>
-            <p class="hero-description">
-                A technology holding company pioneering next-generation platforms across AI agents, 
-                digital twin synchronization, and graph-RAG intelligence infrastructure—powered by 
-                synergetic vibes [&].
-            </p>
-            
-            <div class="stats-grid">
-                <div class="stat">
-                    <span class="stat-value">8</span>
-                    <span class="stat-label">Portfolio Companies</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-value">$600K</span>
-                    <span class="stat-label">Domain Asset Value</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-value">$700M</span>
-                    <span class="stat-label">Target Valuation</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-value">2</span>
-                    <span class="stat-label">Crown Jewels</span>
+        <!-- Header -->
+        <header>
+            <div class="logo">Traaviis</div>
+            <a
+                class="header-amp"
+                href="https://ampersandboxdesign.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                referrerpolicy="no-referrer"
+                aria-label="Ampersandbox Design (opens in a new tab)"
+                title="Ampersandbox Design"
+                >[&]</a
+            >
+        </header>
+
+        <!-- Hero Section -->
+        <section class="hero">
+            <div class="hero-content">
+                <div class="eyebrow">Portfolio Company</div>
+                <h1>
+                    Building the<br />
+                    <span class="gradient-text">Infrastructure</span><br />
+                    of Tomorrow
+                </h1>
+                <p class="hero-description">
+                    A technology holding company pioneering next-generation
+                    platforms across AI agents, digital twin synchronization,
+                    and graph-RAG intelligence infrastructure—powered by
+                    synergetic vibes [&].
+                </p>
+
+                <div class="stats-grid">
+                    <div class="stat">
+                        <span class="stat-value">8</span>
+                        <span class="stat-label">Portfolio Companies</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">$600K</span>
+                        <span class="stat-label">Domain Asset Value</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">$700M</span>
+                        <span class="stat-label">Target Valuation</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">2</span>
+                        <span class="stat-label">Crown Jewels</span>
+                    </div>
                 </div>
             </div>
-        </div>
-    </section>
+        </section>
 
-    <!-- Portfolio Section -->
-    <section class="portfolio">
-        <div class="section-header">
-            <h2 class="section-title">Portfolio Companies</h2>
-            <p class="section-subtitle">
-                Strategic investments across the highest-growth technology sectors, 
-                from AI agents to digital twin infrastructure.
-            </p>
-        </div>
-
-        <div class="companies-grid">
-            <!-- FleetPrompt -->
-            <a href="https://fleetprompt.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card featured fade-in fade-in-delay-2">
-                    <span class="featured-badge">Silver</span>
-                    <div class="company-icon">🤖</div>
-                    <h3 class="company-name">FleetPrompt</h3>
-                    <p class="company-tagline">AI Agent Marketplace</p>
-                    <p class="company-description">
-                        Production marketplace for AI prompt templates and agent workflows.
-                        Positioned in the explosive AI agents market growing at 49.6% CAGR.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">49.6% CAGR</span>
-                        <span class="meta-tag">$183B Market</span>
-                        <span class="meta-tag">Agentic AI</span>
-                        <span class="meta-tag">$100K-$300K Value</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- TickTickClock - Featured -->
-            <a href="https://ticktickclock.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card featured fade-in fade-in-delay-1">
-                    <span class="featured-badge">Copper</span>
-                    <div class="company-icon">⏱️</div>
-                    <h3 class="company-name">TickTickClock</h3>
-                    <p class="company-tagline">Real-Time Synchronization Platform</p>
-                    <p class="company-description">
-                        Purpose-built digital twin synchronization infrastructure solving the #1 challenge
-                        in the $328B digital twin market. Sub-10ms timestamp precision for manufacturing,
-                        healthcare, and aerospace applications.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">47.9% CAGR</span>
-                        <span class="meta-tag">$328B Market</span>
-                        <span class="meta-tag">Digital Twins</span>
-                        <span class="meta-tag">$200K-$400K Value</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- Graphonomous -->
-            <a href="https://graphonomous.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card fade-in fade-in-delay-3">
-                    <div class="company-icon">🕸️</div>
-                    <h3 class="company-name">Graphonomous</h3>
-                    <p class="company-tagline">Self-Governing Intelligence Infrastructure</p>
-                    <p class="company-description">
-                        The graph that learns, adapts, and decides. Graphonomous turns knowledge graphs into a living
-                        operating system—capturing policies, memories, decisions, and feedback loops so agent systems
-                        can self-improve with guardrails.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">Policy Graph</span>
-                        <span class="meta-tag">Closed-Loop Learning</span>
-                        <span class="meta-tag">Decision Audit Trail</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- WebHost.Systems -->
-            <a href="https://webhost.systems" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card fade-in fade-in-delay-3">
-                    <div class="company-icon">🔧</div>
-                    <h3 class="company-name">WebHost.Systems</h3>
-                    <p class="company-tagline">Multi-Tenant Infrastructure Platform</p>
-                    <p class="company-description">
-                        Enterprise-grade Elixir/Phoenix infrastructure powering schema-per-tenant architecture.
-                        The backbone enabling 80% code reuse across all portfolio companies.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">14.7% CAGR</span>
-                        <span class="meta-tag">SaaS Platform</span>
-                        <span class="meta-tag">$13.4B Market</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- GeoFleetic -->
-            <a href="https://geofleetic.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card fade-in fade-in-delay-5">
-                    <div class="company-icon">🧠</div>
-                    <h3 class="company-name">GeoFleetic</h3>
-                    <p class="company-tagline">Knowledge Graph Intelligence Layer</p>
-                    <p class="company-description">
-                        Graph-RAG-powered intelligence infrastructure enabling multi-agent coordination
-                        through shared knowledge graphs. Built on Arcana for Phoenix/Ash, GeoFleetic
-                        serves as the cognitive backbone for all portfolio companies, providing explainable
-                        AI reasoning and agent collaboration at scale.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">GraphRAG Native</span>
-                        <span class="meta-tag">Multi-Agent Brain</span>
-                        <span class="meta-tag">Explainable AI</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- GPSCoord -->
-            <a href="https://gpscoord.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card fade-in fade-in-delay-6">
-                    <div class="company-icon">📍</div>
-                    <h3 class="company-name">GPS Coord</h3>
-                    <p class="company-tagline">Location Intelligence Suite</p>
-                    <p class="company-description">
-                        Precision GPS coordinate management and tracking infrastructure for
-                        logistics optimization and asset monitoring applications.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">Location Data</span>
-                        <span class="meta-tag">Logistics</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- A2ATraffic -->
-            <a href="https://a2atraffic.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card fade-in fade-in-delay-6">
-                    <div class="company-icon">🔄</div>
-                    <h3 class="company-name">A2A Traffic</h3>
-                    <p class="company-tagline">Agent Communication Protocol</p>
-                    <p class="company-description">
-                        Next-generation agent-to-agent communication infrastructure enabling
-                        seamless coordination across distributed AI systems.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">Protocol Layer</span>
-                        <span class="meta-tag">AI Coordination</span>
-                    </div>
-                </div>
-            </a>
-
-            <!-- Ampersand Box Design -->
-            <a href="https://ampersandboxdesign.com" target="_blank" rel="noopener noreferrer" class="company-card-link">
-                <div class="company-card featured fade-in fade-in-delay-4">
-                    <span class="featured-badge">Platinum</span>
-                    <div class="company-icon">📦</div>
-                    <h3 class="company-name">[&] Ampersand Box</h3>
-                    <p class="company-tagline">Parent Holding Company</p>
-                    <p class="company-description">
-                        Synergetic technology holding company coordinating portfolio operations,
-                        with projected $7.75M ARR by 2030 across integrated product lines.
-                    </p>
-                    <div class="company-meta">
-                        <span class="meta-tag">Portfolio Mgmt</span>
-                        <span class="meta-tag">$7.75M ARR Target</span>
-                    </div>
-                </div>
-            </a>
-        </div>
-    </section>
-
-    <!-- Contact Section -->
-    <section class="contact">
-        <div class="contact-content">
-            <h2>Let's Build Something <span class="gradient-text">Extraordinary</span></h2>
-            <p class="contact-description">
-                Interested in partnerships, acquisitions, or investment opportunities? 
-                We're always open to strategic conversations with forward-thinking organizations.
-            </p>
-            <a href="mailto:contact@traaviis.com" class="cta-button">Get In Touch</a>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer>
-        <div class="footer-content">
-            <div class="footer-logo">Traaviis</div>
-            <div class="footer-links">
-                <a href="https://traaviis.com">Building</a>
-                <a href="https://c-u-l8er.link">Printing</a>
+        <!-- Portfolio Section -->
+        <section class="portfolio">
+            <div class="section-header">
+                <h2 class="section-title">Portfolio Companies</h2>
+                <p class="section-subtitle">
+                    Strategic investments across the highest-growth technology
+                    sectors, from AI agents to digital twin infrastructure.
+                </p>
             </div>
-        </div>
-        <div class="copyright">
-            © 2026 Traaviis Holdings. Building infrastructure for the next generation of technology.
-        </div>
-    </footer>
 
-    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script>
-    <script>
-        // Smooth scroll for navigation
-        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-            anchor.addEventListener('click', function (e) {
-                e.preventDefault();
-                const target = document.querySelector(this.getAttribute('href'));
-                if (target) {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }
-            });
-        });
+            <div class="companies-grid">
+                <!-- FleetPrompt -->
+                <a
+                    href="https://fleetprompt.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card featured fade-in fade-in-delay-2">
+                        <span class="featured-badge">Silver</span>
+                        <div class="company-icon">🤖</div>
+                        <h3 class="company-name">FleetPrompt</h3>
+                        <p class="company-tagline">AI Agent Marketplace</p>
+                        <p class="company-description">
+                            Production marketplace for AI prompt templates and
+                            agent workflows. Positioned in the explosive AI
+                            agents market growing at 49.6% CAGR.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">49.6% CAGR</span>
+                            <span class="meta-tag">$183B Market</span>
+                            <span class="meta-tag">Agentic AI</span>
+                            <span class="meta-tag">$100K-$300K Value</span>
+                        </div>
+                    </div>
+                </a>
 
-        // Intersection Observer for scroll animations
-        const observerOptions = {
-            threshold: 0.1,
-            rootMargin: '0px 0px -100px 0px'
-        };
+                <!-- TickTickClock - Featured -->
+                <a
+                    href="https://ticktickclock.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card featured fade-in fade-in-delay-1">
+                        <span class="featured-badge">Copper</span>
+                        <div class="company-icon">⏱️</div>
+                        <h3 class="company-name">TickTickClock</h3>
+                        <p class="company-tagline">
+                            Real-Time Synchronization Platform
+                        </p>
+                        <p class="company-description">
+                            Purpose-built digital twin synchronization
+                            infrastructure solving the #1 challenge in the $328B
+                            digital twin market. Sub-10ms timestamp precision
+                            for manufacturing, healthcare, and aerospace
+                            applications.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">47.9% CAGR</span>
+                            <span class="meta-tag">$328B Market</span>
+                            <span class="meta-tag">Digital Twins</span>
+                            <span class="meta-tag">$200K-$400K Value</span>
+                        </div>
+                    </div>
+                </a>
 
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    const card = entry.target.querySelector('.company-card');
-                    if (card) {
-                        card.style.opacity = '1';
-                        card.style.transform = 'translateY(0)';
+                <!-- Graphonomous -->
+                <a
+                    href="https://graphonomous.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card fade-in fade-in-delay-3">
+                        <div class="company-icon">🕸️</div>
+                        <h3 class="company-name">Graphonomous</h3>
+                        <p class="company-tagline">
+                            Self-Governing Intelligence Infrastructure
+                        </p>
+                        <p class="company-description">
+                            The graph that learns, adapts, and decides.
+                            Graphonomous turns knowledge graphs into a living
+                            operating system—capturing policies, memories,
+                            decisions, and feedback loops so agent systems can
+                            self-improve with guardrails.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">Policy Graph</span>
+                            <span class="meta-tag">Closed-Loop Learning</span>
+                            <span class="meta-tag">Decision Audit Trail</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- WebHost.Systems -->
+                <a
+                    href="https://webhost.systems"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card fade-in fade-in-delay-3">
+                        <div class="company-icon">🔧</div>
+                        <h3 class="company-name">WebHost.Systems</h3>
+                        <p class="company-tagline">
+                            Multi-Tenant Infrastructure Platform
+                        </p>
+                        <p class="company-description">
+                            Enterprise-grade Elixir/Phoenix infrastructure
+                            powering schema-per-tenant architecture. The
+                            backbone enabling 80% code reuse across all
+                            portfolio companies.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">14.7% CAGR</span>
+                            <span class="meta-tag">SaaS Platform</span>
+                            <span class="meta-tag">$13.4B Market</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- GeoFleetic -->
+                <a
+                    href="https://geofleetic.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card fade-in fade-in-delay-5">
+                        <div class="company-icon">🧠</div>
+                        <h3 class="company-name">GeoFleetic</h3>
+                        <p class="company-tagline">
+                            Knowledge Graph Intelligence Layer
+                        </p>
+                        <p class="company-description">
+                            Graph-RAG-powered intelligence infrastructure
+                            enabling multi-agent coordination through shared
+                            knowledge graphs. Built on Arcana for Phoenix/Ash,
+                            GeoFleetic serves as the cognitive backbone for all
+                            portfolio companies, providing explainable AI
+                            reasoning and agent collaboration at scale.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">GraphRAG Native</span>
+                            <span class="meta-tag">Multi-Agent Brain</span>
+                            <span class="meta-tag">Explainable AI</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- GPSCoord -->
+                <a
+                    href="https://gpscoord.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card fade-in fade-in-delay-6">
+                        <div class="company-icon">📍</div>
+                        <h3 class="company-name">GPS Coord</h3>
+                        <p class="company-tagline">
+                            Location Intelligence Suite
+                        </p>
+                        <p class="company-description">
+                            Precision GPS coordinate management and tracking
+                            infrastructure for logistics optimization and asset
+                            monitoring applications.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">Location Data</span>
+                            <span class="meta-tag">Logistics</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- A2ATraffic -->
+                <a
+                    href="https://a2atraffic.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card fade-in fade-in-delay-6">
+                        <div class="company-icon">🔄</div>
+                        <h3 class="company-name">A2A Traffic</h3>
+                        <p class="company-tagline">
+                            Agent Communication Protocol
+                        </p>
+                        <p class="company-description">
+                            Next-generation agent-to-agent communication
+                            infrastructure enabling seamless coordination across
+                            distributed AI systems.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">Protocol Layer</span>
+                            <span class="meta-tag">AI Coordination</span>
+                        </div>
+                    </div>
+                </a>
+
+                <!-- Ampersand Box Design -->
+                <a
+                    href="https://ampersandboxdesign.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="company-card-link"
+                >
+                    <div class="company-card featured fade-in fade-in-delay-4">
+                        <span class="featured-badge">Platinum</span>
+                        <div class="company-icon">📦</div>
+                        <h3 class="company-name">[&] Ampersand Box</h3>
+                        <p class="company-tagline">Parent Holding Company</p>
+                        <p class="company-description">
+                            Synergetic technology holding company coordinating
+                            portfolio operations, with projected $7.75M ARR by
+                            2030 across integrated product lines.
+                        </p>
+                        <div class="company-meta">
+                            <span class="meta-tag">Portfolio Mgmt</span>
+                            <span class="meta-tag">$7.75M ARR Target</span>
+                        </div>
+                    </div>
+                </a>
+            </div>
+        </section>
+
+        <!-- Contact Section -->
+        <section class="contact">
+            <div class="contact-content">
+                <h2>
+                    Let's Build Something
+                    <span class="gradient-text">Extraordinary</span>
+                </h2>
+                <p class="contact-description">
+                    Interested in partnerships, acquisitions, or investment
+                    opportunities? We're always open to strategic conversations
+                    with forward-thinking organizations.
+                </p>
+                <a href="mailto:contact@traaviis.com" class="cta-button"
+                    >Get In Touch</a
+                >
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer>
+            <div class="footer-content">
+                <div class="footer-logo">Traaviis</div>
+                <div class="footer-links">
+                    <a href="https://traaviis.com">Building</a>
+                    <a href="https://c-u-l8er.link">Printing</a>
+                    <a href="https://wrand.cc">Forking</a>
+                </div>
+            </div>
+            <div class="copyright">
+                © 2026 Traaviis Holdings. Building infrastructure for the next
+                generation of technology.
+            </div>
+        </footer>
+
+        <script
+            data-cfasync="false"
+            src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"
+        ></script>
+        <script>
+            // Smooth scroll for navigation
+            document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+                anchor.addEventListener("click", function (e) {
+                    e.preventDefault();
+                    const target = document.querySelector(
+                        this.getAttribute("href"),
+                    );
+                    if (target) {
+                        target.scrollIntoView({
+                            behavior: "smooth",
+                            block: "start",
+                        });
                     }
-                }
+                });
             });
-        }, observerOptions);
 
-        // Observe all company cards
-        document.querySelectorAll('.company-card-link').forEach(card => {
-            observer.observe(card);
-        });
+            // Intersection Observer for scroll animations
+            const observerOptions = {
+                threshold: 0.1,
+                rootMargin: "0px 0px -100px 0px",
+            };
 
-        // Add parallax effect on mouse move
-        document.addEventListener('mousemove', (e) => {
-            const mouseX = e.clientX / window.innerWidth;
-            const mouseY = e.clientY / window.innerHeight;
-            
-            document.querySelectorAll('.company-icon').forEach((icon, index) => {
-                const speed = (index + 1) * 0.5;
-                const x = (mouseX - 0.5) * speed * 10;
-                const y = (mouseY - 0.5) * speed * 10;
-                icon.style.transform = `translate(${x}px, ${y}px)`;
-            });
-        });
-
-        // Dynamic counter animation
-        function animateValue(element, start, end, duration) {
-            // Preserve formatting like "$600K" and "$600M" (prefix "$", suffix "K/M/B") during the animation.
-            const original = element.dataset.originalValue || element.textContent;
-            element.dataset.originalValue = original;
-
-            const trimmed = original.trim();
-            const prefix = (trimmed.match(/^[^0-9]+/) || [''])[0];
-            const suffix = (trimmed.match(/[^0-9]+$/) || [''])[0];
-
-            const range = end - start;
-            const increment = range / (duration / 16);
-            let current = start;
-
-            const timer = setInterval(() => {
-                current += increment;
-                if ((increment > 0 && current >= end) || (increment < 0 && current <= end)) {
-                    current = end;
-                    clearInterval(timer);
-                }
-
-                if (element.classList.contains('stat-value')) {
-                    const numericValue = Math.floor(current);
-                    element.textContent = `${prefix}${numericValue}${suffix}`;
-                }
-            }, 16);
-        }
-
-        // Trigger counter animation when stats come into view
-        const statsObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting && !entry.target.dataset.animated) {
-                    const value = entry.target.textContent;
-                    const numericValue = parseInt(value.replace(/[^0-9]/g, ''));
-                    
-                    if (numericValue) {
-                        entry.target.dataset.animated = 'true';
-                        animateValue(entry.target, 0, numericValue, 2000);
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        const card =
+                            entry.target.querySelector(".company-card");
+                        if (card) {
+                            card.style.opacity = "1";
+                            card.style.transform = "translateY(0)";
+                        }
                     }
-                }            });
-        }, { threshold: 0.1 });
+                });
+            }, observerOptions);
 
-        document.querySelectorAll('.stat-value').forEach(stat => {
-            statsObserver.observe(stat);
-        });
-    </script>
-</body>
+            // Observe all company cards
+            document.querySelectorAll(".company-card-link").forEach((card) => {
+                observer.observe(card);
+            });
+
+            // Add parallax effect on mouse move
+            document.addEventListener("mousemove", (e) => {
+                const mouseX = e.clientX / window.innerWidth;
+                const mouseY = e.clientY / window.innerHeight;
+
+                document
+                    .querySelectorAll(".company-icon")
+                    .forEach((icon, index) => {
+                        const speed = (index + 1) * 0.5;
+                        const x = (mouseX - 0.5) * speed * 10;
+                        const y = (mouseY - 0.5) * speed * 10;
+                        icon.style.transform = `translate(${x}px, ${y}px)`;
+                    });
+            });
+
+            // Dynamic counter animation
+            function animateValue(element, start, end, duration) {
+                // Preserve formatting like "$600K" and "$600M" (prefix "$", suffix "K/M/B") during the animation.
+                const original =
+                    element.dataset.originalValue || element.textContent;
+                element.dataset.originalValue = original;
+
+                const trimmed = original.trim();
+                const prefix = (trimmed.match(/^[^0-9]+/) || [""])[0];
+                const suffix = (trimmed.match(/[^0-9]+$/) || [""])[0];
+
+                const range = end - start;
+                const increment = range / (duration / 16);
+                let current = start;
+
+                const timer = setInterval(() => {
+                    current += increment;
+                    if (
+                        (increment > 0 && current >= end) ||
+                        (increment < 0 && current <= end)
+                    ) {
+                        current = end;
+                        clearInterval(timer);
+                    }
+
+                    if (element.classList.contains("stat-value")) {
+                        const numericValue = Math.floor(current);
+                        element.textContent = `${prefix}${numericValue}${suffix}`;
+                    }
+                }, 16);
+            }
+
+            // Trigger counter animation when stats come into view
+            const statsObserver = new IntersectionObserver(
+                (entries) => {
+                    entries.forEach((entry) => {
+                        if (
+                            entry.isIntersecting &&
+                            !entry.target.dataset.animated
+                        ) {
+                            const value = entry.target.textContent;
+                            const numericValue = parseInt(
+                                value.replace(/[^0-9]/g, ""),
+                            );
+
+                            if (numericValue) {
+                                entry.target.dataset.animated = "true";
+                                animateValue(
+                                    entry.target,
+                                    0,
+                                    numericValue,
+                                    2000,
+                                );
+                            }
+                        }
+                    });
+                },
+                { threshold: 0.1 },
+            );
+
+            document.querySelectorAll(".stat-value").forEach((stat) => {
+                statsObserver.observe(stat);
+            });
+        </script>
+    </body>
 </html>
