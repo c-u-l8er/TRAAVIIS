@@ -1,0 +1,39 @@
+{
+  "name": "traaviis",
+  "version": "0.1.0",
+  "description": "A minimal terminal harness for the [&] Protocol stack. Pluggable, composable, extensible. Adapt it to your workflow, not the other way around.",
+  "homepage": "https://traaviis.com",
+  "type": "module",
+  "bin": {
+    "traaviis": "bin/traaviis.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "start": "node bin/traaviis.mjs",
+    "test": "node test/harness.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "harness",
+    "terminal",
+    "cli",
+    "ampersand",
+    "agent",
+    "os-008"
+  ],
+  "license": "MIT",
+  "author": "TRAAVIIS Holdings",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/c-u-l8er/TRAAVIIS.git"
+  }
+}
