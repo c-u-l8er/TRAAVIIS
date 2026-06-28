@@ -142,12 +142,44 @@ Three properties make this honest rather than magic:
 1. **Visible fan-out.** Sub-agents are explicit nodes in the session tree, not
    hidden threads. What runs, runs in front of you and is replayable via
    `export`.
-2. **Tier-routed prompts.** Each step is routed to a `provider.*` capability
-   honoring MODEL_TIER budgets (`local_small ▸ local_large ▸ cloud_frontier`),
-   resolved like any other capability — swap the provider, not the kernel.
+2. **Tier-routed prompts.** Each step is routed through the **escalation router**
+   (below): the cheapest rung that can answer wins, and only a genuine miss
+   escalates to a `provider.*` capability honoring MODEL_TIER budgets
+   (`local_small ▸ local_large ▸ cloud_frontier`) — resolved like any other
+   capability, so you swap the provider, not the kernel.
 3. **Gated acts.** Before a sub-agent acts, the action is piped through
    `govern.validate` (box-and-box) and must clear `feasible ▸ permitted ▸ best`
    over an un-weakenable floor. Autonomy never outruns governance.
+
+> **Mandatory floor gate (Phase A, delivered).** Every *effectful* command —
+> anything that spawns a real toolchain (`build`, `test`) — now routes through a
+> single fail-closed seam (`gate()` in `builtins.mjs`) **before** any process is
+> spawned. A product with a governing `*.ampersand.json` must floor to a
+> `decision` verdict to run; any other verdict (`no-admissible`, `parse-error`,
+> escalation, or an unresolvable kernel) **refuses the act without spawning** and
+> taints `exitCode`. An *ungoverned* product is allowed-but-recorded in default
+> mode (the gap is logged, never hidden) and refused under `TRAAVIIS_ENFORCE=1`.
+> Governance is therefore **structural, not advisory**: there is no effectful
+> path that bypasses the floor. Every decision is appended to `h.gateLog` and
+> surfaced by the `/gates` command — the audit trail doubles as the measurement
+> seed for benchmarking the gate itself.
+
+> **Escalation router (Phase B, delivered).** `router.mjs` adds a cost-stratified
+> resolver on top of the floor — the honest core of a *resolve-low /
+> escalate-on-miss* runtime. Tiers are walked **cheapest-first**; the first hit
+> wins. A **MISS** falls through to the next rung. The floor gates the
+> **transition into any effectful tier** (a refused floor refuses the hop,
+> fail-closed). A hit from a tier that declares itself pure (`crystallize: true`)
+> is **memoized downward** into the tier-0 cache, so the next identical request
+> resolves for free. TRAAVIIS ships a two-rung ladder:
+> `deterministic` (if a registered command/capability resolves it, run it — the
+> cheap, model-free path) ▸ `escalate` (nothing cheaper resolved → hand the
+> request **up to the agent**, which *is* the model; floor-gated, and it reports
+> the escalation rather than fabricating a model call). Extensions add rungs
+> (κ/σ/β analyzers, `provider.*` model adapters) by registering resolvers. Every
+> resolution is appended to `h.router.log` and surfaced by `/route` (per-request
+> hop trace) and `/routes` (per-tier cost-ladder seed). This is the *mechanism*;
+> the cost numbers are relative ordering weights, **not** a claimed compute model.
 
 ### The layer boundary (why this doesn't break "tools don't call models")
 
@@ -193,9 +225,13 @@ Following Pi's "primitives, not features," each omission maps to a seam:
    the orchestration loop's tier routing (§3a), honoring the stack's MODEL_TIER
    budgets (local_small / local_large / cloud_frontier). The runtime calls the
    model; the commands it drives stay model-free.
-4. **Governance gate as a hook** — a `beforeRun` hook that runs `box-and-box
-   govern` against a declared policy and blocks on `no-admissible`, attaching
-   the certificate to the session node. Permissions become *floor-then-verdict*.
+4. **Governance gate as a hook** — *delivered for effectful commands (§3a):*
+   `build`/`test` run `box-and-box govern` against the product's floor spec and
+   refuse on any non-`decision` verdict, without spawning, recording each verdict
+   to `/gates`. Permissions are now *floor-then-verdict* for spawning ops; the
+   remaining work is generalizing the same seam into a declarative `beforeRun`
+   hook for arbitrary commands and attaching the full certificate to the session
+   node.
 5. **Memory loop wiring** — `retrieve` before a stage, `learn` after, via
    Graphonomous capabilities, so the harness participates in the
    retrieve ▸ route ▸ act ▸ learn ▸ consolidate loop the stack already runs.

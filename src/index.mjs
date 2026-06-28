@@ -43,10 +43,11 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
-  // One-shot: print or json mode.
+  // One-shot: print or json mode. The harness exit code is returned so a
+  // gating command (e.g. /validate) can fail-closed the process on a DENY.
   const h = await createHarness({ mode: json ? 'json' : 'print' });
   await h.run(rest.join(' '));
-  return 0;
+  return h.exitCode ?? 0;
 }
 
 export { Harness };

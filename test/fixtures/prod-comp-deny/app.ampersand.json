@@ -1,0 +1,7 @@
+{
+  "agent": "comp-deny-agent",
+  "capabilities": ["&body"],
+  "governance": {
+    "hard": ["action = build:prod-comp-deny"]
+  }
+}

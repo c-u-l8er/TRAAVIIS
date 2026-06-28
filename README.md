@@ -45,7 +45,7 @@ Inside the REPL, every command is a slash command (the leading `/` is optional):
 | `/info <name>`     | detail for one product                                  |
 | `/build <name>`    | run the product's build toolchain (`mix` / `npm`)       |
 | `/test <name>`     | run the product's test toolchain                        |
-| `/validate <file>` | govern spec(s) via box-and-box `govern`                 |
+| `/validate <file>` | govern spec(s) via box-and-box `govern` (gates exit code) |
 | `/memory`          | graphonomous-first memory loop status                   |
 | `/plugins`         | loaded extensions, capabilities, and unmet needs        |
 | `/tree`            | show the session as a tree                              |
@@ -86,6 +86,32 @@ TRAAVIIS resolves the stack root in this order:
 It classifies any subdirectory carrying a marker — `mix.exs`, `package.json`,
 `docs/spec/`, or `*.ampersand.json` — and reports its kind, version, and a
 heuristic health dot (governed ● / spec'd ● / bare ○).
+
+### Pointing it at the governance kernel
+
+`/validate` delegates to the box-and-box `govern` CLI. TRAAVIIS resolves it in
+this order (fail-closed — if none resolve, validate exits non-zero rather than
+silently passing):
+
+1. `$TRAAVIIS_KERNEL_PATH` — a `govern.mjs` file, a box-and-box package dir, or
+   the package root (TRAAVIIS appends `bin/govern.mjs`)
+2. an installed `box-and-box` npm package, resolved from this module
+3. the sibling checkout in the stack (`AmpersandBoxDesign/box-and-box`)
+
+`/validate` **gates**: the harness process exit code mirrors the kernel verdict
+across all targets (the worst wins), so CI can fail-closed on a DENY:
+
+| exit | verdict          | meaning                               |
+| ---- | ---------------- | ------------------------------------- |
+| 0    | `decision`       | a decision was made — proceed         |
+| 1    | `no-admissible`  | every option vetoed — DENY            |
+| 2    | `parse-error` / `missing` / no kernel | malformed / not found |
+| 3    | `escalation`     | obligation unmet — escalate           |
+
+```sh
+traaviis --json "specs | validate" || echo "governance gate failed"
+TRAAVIIS_KERNEL_PATH=/opt/box-and-box traaviis validate agent.ampersand.json
+```
 
 ## Change the harness, not your workflow
 

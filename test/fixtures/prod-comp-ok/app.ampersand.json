@@ -1,0 +1,9 @@
+{
+  "agent": "comp-ok-agent",
+  "capabilities": ["&reason", "&memory"],
+  "governance": {
+    "hard": ["never exfiltrate secrets"],
+    "soft": ["prefer cheaper providers"],
+    "escalate_when": { "confidence_below": 0.7 }
+  }
+}

@@ -23,6 +23,7 @@ export class Harness {
     this.session = new Session();
     this._stackCache = null;
     this._lastStage = true; // whether the current stage's output is terminal
+    this.exitCode = 0; // gating: a command may set this; one-shot mode returns it
   }
 
   // ---- registry (extensibility) ----------------------------------------

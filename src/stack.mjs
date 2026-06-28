@@ -5,6 +5,7 @@
 import { readdirSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -17,6 +18,63 @@ export function stackRoot() {
     return parent;
   }
   return process.cwd();
+}
+
+// Resolve a box-and-box bin tool (govern.mjs, compile.mjs, …) without hard-coding
+// a sibling path. Resolution order (fail-closed: returns null if none found,
+// never guesses):
+//   1. TRAAVIIS_KERNEL_PATH env override — a *.mjs file inside bin/ (we locate the
+//      requested tool alongside it), or a package dir (we append bin/<tool>.mjs),
+//      or the box-and-box package root.
+//   2. an installed `box-and-box` npm package, resolved from this module.
+//   3. the sibling checkout in the stack (AmpersandBoxDesign/box-and-box).
+function kernelToolPath(tool, root = stackRoot()) {
+  const rel = `bin/${tool}.mjs`;
+  const fromDir = (d) => {
+    if (!d) return null;
+    // a *.mjs override points into bin/; locate the requested sibling tool there,
+    // so one override resolves govern.mjs AND compile.mjs.
+    if (d.endsWith('.mjs')) {
+      const sib = join(dirname(d), `${tool}.mjs`);
+      return existsSync(sib) ? sib : null;
+    }
+    const bin = join(d, rel);
+    return existsSync(bin) ? bin : null;
+  };
+
+  // 1. explicit override wins.
+  const env = process.env.TRAAVIIS_KERNEL_PATH;
+  if (env) {
+    const p = fromDir(env);
+    if (p) return p;
+  }
+
+  // 2. an installed package (resolve its "." export, then locate bin/<tool>.mjs).
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgEntry = require.resolve('box-and-box'); // → .../box-and-box/index.mjs
+    const p = fromDir(dirname(pkgEntry));
+    if (p) return p;
+  } catch {
+    /* not installed — fall through */
+  }
+
+  // 3. the sibling checkout in the same stack root.
+  const sibling = join(root, `AmpersandBoxDesign/box-and-box/${rel}`);
+  if (existsSync(sibling)) return sibling;
+
+  return null;
+}
+
+// The verdict CLI: judges a decision spec ({req, norms, options}).
+export function kernelGovernPath(root = stackRoot()) {
+  return kernelToolPath('govern', root);
+}
+
+// The govern bridge: compiles a composition [&] ampersand.json governance block
+// into a box-and-box policy ({req, norms}) so it can be judged by `govern`.
+export function kernelCompilePath(root = stackRoot()) {
+  return kernelToolPath('compile', root);
 }
 
 function safeRead(p) {

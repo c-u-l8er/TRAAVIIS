@@ -1,0 +1,1 @@
+{ "req": { "beta_min": 0.9 }, "options": [ { "id": "A", "utility": 6, "value": { "beta": 0.1 } } ] }

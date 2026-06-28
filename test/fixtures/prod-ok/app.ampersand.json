@@ -1,0 +1,1 @@
+{ "options": [ { "id": "A", "utility": 6, "value": { "beta": 0.95, "denyDefault": false } } ] }

@@ -1,0 +1,1 @@
+A product directory with no .ampersand.json governing spec (an "ungoverned" effectful target).
