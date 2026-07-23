@@ -1,161 +1,186 @@
 # TRAAVIIS
 
-**The harness engineer for the [&] Protocol stack.**
-Pluggable, composable, extensible — it builds the harness around your workflow,
-not the other way around.
+**Content-addressed agent environments you can verify.**
+Write the wall. Run the world. Keep the proof.
 
-There are many agent harnesses; traaviis builds yours. Give it a goal and the
-runtime routes each prompt to the right model tier, orchestrates sub-agents
-across the whole [&] ecosystem — Graphonomous, PRISM, PULSE, box-and-box, and
-every spec site — composes their structured results into one pipe, and clears
-every action through a governance verdict. It discovers your products live,
-reports health, and delegates `build` / `test` / `validate` to each project's
-own toolchain. Zero runtime dependencies; small, readable ESM.
+TRAAVIIS builds deterministic worlds that agents can be **evaluated — and
+eventually trained** — against, and proves what happened inside them. You write a
+world in **WallRiderLang**; `trvs` lowers it to a content-addressed
+`SemanticArtifactID`, folds each episode into a replayable **film**, and verifies
+that film with every applicable check: a pure reference reducer, a compiled
+native reducer, and an independent oracle where its domain applies. Coverage is
+made explicit — a verifier that cannot apply is reported `not_applicable`, never
+as pass or fail. Same world, same scenario, same trajectory — same hash, every
+time.
 
-It is the terminal embodiment of **OS-008, the Agent Harness Protocol** — the
-agent's *runtime*, which is exactly where prompt-routing and orchestration
-belong (while the commands and libraries it drives stay model-free). For the
-design rationale and the road to a state-of-the-art harness, see
-[ARCHITECTURE.md](ARCHITECTURE.md). Home: **traaviis.com**.
+`trvs` carries **no world semantics of its own**. It is a thin, honest terminal
+over the existing Forge/TRVM engine (the `wrl_*.py` identity/lowering spine plus
+the `ic_ref` and `ic32` reducers). No model is ever called.
+
+> **The differentiation:** not merely "deterministic environments," but
+> *content-addressed* ones. Two researchers can answer four questions and never
+> argue about the answers — did we run the same world, the same scenario, the
+> same trajectory, and did the verifiers agree?
 
 ## Install
 
 ```sh
-npm install -g traaviis      # or: pnpm add -g traaviis · bun add -g traaviis
-npx traaviis                 # one-off, no install
+pipx install traaviis        # or: pip install traaviis
+trvs doctor                  # check the engine + verifiers are on-path
 ```
 
-Requires Node ≥ 18.
+**No third-party Python dependencies.** Requires Python ≥ 3.9, a compatible
+Forge/TRVM engine reachable at runtime (see `traaviis.engine`), and — for native
+verification — the `ic32` executable (otherwise `verify` degrades to the
+reference reducer).
 
-## Use
+## The command set
+
+Seven commands ship today and fold real worlds over the engine. Three more are
+the **environment surface** that turns a world into something an agent can be
+trained and evaluated against — published as roadmap, not yet built.
+
+| command        | what it does                                             | status  |
+| -------------- | -------------------------------------------------------- | ------- |
+| `trvs doctor`  | engine location, versions, verifier availability         | shipped |
+| `trvs id`      | the world's `SemanticArtifactID` — pure identity         | shipped |
+| `trvs inspect` | actors, edges, resolved config, diagnostics              | shipped |
+| `trvs run`     | lower + deterministically fold; per-epoch film           | shipped |
+| `trvs verify`  | reference / native / oracle agreement (strict)           | shipped |
+| `trvs replay`  | re-fold a film and assert it reproduces (`--expect`)     | shipped |
+| `trvs diff`    | compare two worlds' identity + per-epoch films           | shipped |
+| `trvs init`    | scaffold a new world bundle from a template              | v0.1    |
+| `trvs pack`    | bundle a world + scenarios + tasks + rewards             | v0.2    |
+| `trvs serve`   | expose the world as an agent environment (`--ors`/`--mcp`) | v0.2  |
+| `trvs eval`    | run an agent over a split, score every episode           | v0.3    |
+
+Every shipped command takes `--json` for CI / agent consumption.
+
+## Use (shipped today)
 
 ```sh
-traaviis                     # interactive REPL
-traaviis status             # one-shot (print mode)
-traaviis --json products    # structured output for CI / agents
+trvs id      worlds/alley.wrl                 # sem-8ae91fe9…fe4a
+trvs inspect worlds/alley.wrl                 # actors, edges, config, diagnostics
+trvs run     worlds/alley.wrl                 # per-epoch film strip
+trvs verify  worlds/alley.wrl                 # reference · native · oracle → 3/3
+trvs diff    worlds/alley.wrl worlds/alley_n4.wrl
+
+# replay pins a *film* — the trajectory, not the world's identity:
+film="$(trvs run worlds/alley.wrl --json | python -c 'import json,sys; print(json.load(sys.stdin)["epochs"][-1]["film"])')"
+trvs replay  worlds/alley.wrl --film "$film"   # asserts the fold reproduces that film
 ```
 
-Inside the REPL, every command is a slash command (the leading `/` is optional):
+`replay` also accepts `--expect sem-…` to assert the source still lowers to a
+pinned **semantic identity** — a different question (same *meaning*) from `--film`
+(same *trajectory*). Keep the two domains distinct.
 
-| command            | what it does                                            |
-| ------------------ | ------------------------------------------------------- |
-| `/status` `/st`    | stack health overview                                   |
-| `/products` `/ls`  | list discovered products (pipe-able array)              |
-| `/specs`           | list `.ampersand.json` specs (pipe-able array)          |
-| `/info <name>`     | detail for one product                                  |
-| `/build <name>`    | run the product's build toolchain (`mix` / `npm`)       |
-| `/test <name>`     | run the product's test toolchain                        |
-| `/validate <file>` | govern spec(s) via box-and-box `govern` (gates exit code) |
-| `/memory`          | graphonomous-first memory loop status                   |
-| `/plugins`         | loaded extensions, capabilities, and unmet needs        |
-| `/tree`            | show the session as a tree                              |
-| `/export [file]`   | write the session history to JSON                       |
-| `/mode <m>`        | switch output mode: `interactive` \| `print` \| `json`  |
-| `/help` `/?`       | list commands                                           |
+Exit-code contract for `verify` / `replay` / `diff`: **0** agree/reproduced,
+**1** ran and disagreed/drifted, **2** a verifier was unavailable or the source
+failed to lower. That makes any of them a fail-closed gate in CI or an RL loop.
 
-### Composition primitives
+## The environment surface (roadmap)
 
-`where`, `map`, `each`, `first`, `count`, `json` operate on the structured
-value flowing through a pipe:
+A tool list tells an agent what it *can* call; it does not define tasks, splits,
+rewards, episode completion, or reset. So TRAAVIIS's internal contract is a
+**neutral Episode Kernel** — and public protocols are *adapters* over it, never
+runtime law:
 
-```sh
-traaviis "products | where kind=node | map name | each test"
-traaviis "specs | validate | where verdict!=decision"
-traaviis --json "products | where governed | count"
+```text
+Episode Kernel   start · observe · step · reset · finalize   (internal, neutral)
+        ↓
+ORS adapter      first / primary public surface  →  trvs serve --ors
+MCP adapter      compatibility (tools/resources/prompts)  →  trvs serve --mcp
+JSONL adapter    local automation / debugging
 ```
 
-Every data command returns its structure (so it can be piped) and renders only
-when it's the terminal stage — the same command is a human view, a `--json`
-API, and a pipe source.
+Keeping the kernel neutral means [Open Reward Standard](https://openreward.ai)
+or MCP protocol evolution never becomes TRVM runtime law. The ORS wire surface
+(`list_tasks · session · call_tool → reward · finished`) and MCP primitives
+(`tools · resources · prompts`) are projections of the same kernel.
 
-## Four ways in
+**Strategy:** do not compete with hosting catalogs. TRAAVIIS aims to be one of
+the best ways to *author* deterministic environments that export to them.
 
-- **interactive** — a REPL with slash commands, tab completion, a session tree
-- **print** — `traaviis <cmd>` runs once and exits with human output
-- **json** — `traaviis --json <cmd>` emits structured output
-- **library** — `import { createHarness } from 'traaviis'` and embed it
+### The bundle — `traaviis.environment.v1`
 
-## Pointing it at a stack
+`trvs pack` separates *what an environment means* from *how it is shipped*. The
+**environment manifest** (`env-…`) fixes the world, tasks, rewards, action /
+observation profiles, and split membership; the outer **package** (`bundle-…`)
+carries presentation, docs, and screenshots and may change without moving
+`env-…`. A package is **closed** — the embedded world re-lowers to its declared
+`sem-…` and every task / reward / scenario reference resolves inside the closure,
+or `pack` fails loudly (it re-opens and re-verifies the emitted bundle before
+reporting success).
 
-TRAAVIIS resolves the stack root in this order:
+TRAAVIIS freezes an **artifact ladder**, each level answering one question:
 
-1. `$TRAAVIIS_STACK_ROOT`
-2. the parent directory of the package (when checked out inside an [&] repo)
-3. the current working directory
+| id          | question                        |
+| ----------- | ------------------------------- |
+| `sem-…`     | was it the same world?          |
+| `scen-…`    | same initialization?            |
+| `rew-…`     | same scoring rubric?            |
+| `task-…`    | same assignment?                |
+| `film-…`    | same behavior?                  |
+| `episode-…` | same evaluated outcome?         |
+| `env-…`     | same environment release?       |
+| `bundle-…`  | same distributed package?       |
 
-It classifies any subdirectory carrying a marker — `mix.exs`, `package.json`,
-`docs/spec/`, or `*.ampersand.json` — and reports its kind, version, and a
-heuristic health dot (governed ● / spec'd ● / bare ○).
+Re-scoring the *same* film under a different rubric changes the `episode-…`
+receipt but never the `film-…` — the trajectory did not change.
 
-### Pointing it at the governance kernel
+### Evaluation before training
 
-`/validate` delegates to the box-and-box `govern` CLI. TRAAVIIS resolves it in
-this order (fail-closed — if none resolve, validate exits non-zero rather than
-silently passing):
+The first job is not a trainer — it is honest evaluation. `trvs eval` runs an
+agent over a split and scores every episode; a comparison view puts two runs
+side by side. Because every episode is verified and content-addressed, the
+numbers are reproducible and the films are re-checkable.
 
-1. `$TRAAVIIS_KERNEL_PATH` — a `govern.mjs` file, a box-and-box package dir, or
-   the package root (TRAAVIIS appends `bin/govern.mjs`)
-2. an installed `box-and-box` npm package, resolved from this module
-3. the sibling checkout in the stack (`AmpersandBoxDesign/box-and-box`)
+## Flagship worlds
 
-`/validate` **gates**: the harness process exit code mirrors the kernel verdict
-across all targets (the worst wins), so CI can fail-closed on a DENY:
+- **Golden Spinner** *(shipped)* — the identity, replay and triple-fold
+  tutorial. Installs, verifies, and reproduces byte-for-byte.
+- **Courier / Factory** *(planned)* — move objects, open gates, route signals,
+  spend energy, obey safety constraints, complete deliveries: spatial state,
+  long-horizon tasks, objective rewards, resets, splits.
+- **WallRider / Graffiti** *(planned)* — an agent moves through a city and writes
+  executable tags that alter surfaces, routes and permissions. It proposes graph
+  edits; TRVM decides what they mean.
 
-| exit | verdict          | meaning                               |
-| ---- | ---------------- | ------------------------------------- |
-| 0    | `decision`       | a decision was made — proceed         |
-| 1    | `no-admissible`  | every option vetoed — DENY            |
-| 2    | `parse-error` / `missing` / no kernel | malformed / not found |
-| 3    | `escalation`     | obligation unmet — escalate           |
+## The product boundary
 
-```sh
-traaviis --json "specs | validate" || echo "governance gate failed"
-TRAAVIIS_KERNEL_PATH=/opt/box-and-box traaviis validate agent.ampersand.json
-```
+The seams are frozen on purpose:
 
-## Change the harness, not your workflow
+| layer            | responsibility                                          |
+| ---------------- | ------------------------------------------------------- |
+| **TRAAVIIS**     | the product — CLI, environment surface, evaluator, packaging |
+| **trvs**         | the command-line interface                              |
+| **WallRiderLang**| the language for worlds, actors, tasks and rules        |
+| **Forge**        | the compiler, identity and artifact pipeline            |
+| **TRVM**         | the deterministic execution substrate                   |
+| **Spinner Bench**| the reference workbench and conformance laboratory      |
 
-There is no plugin API beyond *"register a command."* Drop a `.mjs` file in
-`~/.traaviis/extensions/` (user-global) or `<stack root>/.traaviis/extensions/`
-(project-local) and it becomes a first-class command — the same registry the
-built-ins use. Reuse a built-in's name to override it.
+## What TRAAVIIS is not
 
-```js
-// ~/.traaviis/extensions/deploy.mjs
-export const name = 'deploy';          // names the plugin in /plugins
-export default function (h) {
-  h.command({
-    name: 'deploy',
-    summary: 'build then ship a product',
-    capability: 'ops.deploy',          // pluggability: resolvable by capability
-    needs: ['build'],                  // composability: depends on a built-in
-    async run(h, [name], input) {
-      const p = input ?? h.stack().products.find((x) => x.name === name);
-      await h.invoke('build', [p.name]); // reuse another command
-      return { deployed: p.name };       // pipe-able return value
-    },
-  });
-}
-```
-
-You can also point `$TRAAVIIS_EXTENSIONS` at extra files or directories
-(colon-separated). See `examples/extensions/hello.mjs`.
-
-## Primitives, not features
-
-The kernel is a command registry, stack discovery, a session tree, and output
-modes, driven by an orchestration loop that routes prompts and fans out
-sub-agents (see [ARCHITECTURE.md §3a](ARCHITECTURE.md)). Everything else is an
-extension over those primitives. Deliberately left out: baked-in MCP, *hidden*
-sub-agents (the fan-out is always visible in the session tree), permission
-popups, plan mode, built-in to-dos. Reach for an extension — or Graphonomous,
-or `box-and-box govern` — instead.
+- **Not a coding agent** — it builds and proves environments; it is not another
+  chat/coding assistant.
+- **Not a model router** — nothing here calls an LLM or picks a provider. The
+  fold is deterministic; the reward is computed.
+- **Not an RL cloud** — worlds run locally; TRAAVIIS authors environments that
+  export to hosting stacks, it is not the catalog.
+- **Not a game engine** — WallRider worlds are deterministic agent environments,
+  not a rendering or physics engine.
+- **Not the language or engine** — WallRiderLang defines a world; TRVM/Forge
+  lower and fold it. `trvs` holds no world semantics.
+- **Not trust-me** — every film is checked by every applicable verifier and
+  content-addressed. Disagreement is exit 1, not a warning; a verifier that
+  cannot apply is reported `not_applicable`, never as pass or fail.
 
 ## Develop
 
 ```sh
-npm test                     # zero-dependency unit tests
-node bin/traaviis.mjs status # run from source
+python -m pytest test/test_cli.py      # CLI tests over the engine
+python -m traaviis.cli doctor          # run from source
 ```
 
 MIT licensed · TRAAVIIS Holdings · part of the [&] Protocol ecosystem.
+Home: **traaviis.com**.

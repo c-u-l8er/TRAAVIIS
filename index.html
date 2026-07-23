@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TRAAVIIS — the harness engineer for the [&amp;] stack</title>
+    <title>TRAAVIIS — content-addressed agent environments you can verify</title>
     <meta
       name="description"
-      content="TRAAVIIS is the harness engineer: give it a goal and it builds your agent harness — routing prompts across model tiers, orchestrating sub-agents over the [&] Protocol stack, composing their results, and stamping every action with a governance verdict."
+      content="TRAAVIIS builds deterministic worlds for agent evaluation — and eventually training — and proves what happened inside them. Write a WallRiderLang world, lower it to a content-addressed identity, fold it into a replayable film, and verify every episode across the applicable reference, native, and oracle checks. trvs is the terminal; TRVM is the engine."
     />
     <style>
       /* =========================================================
@@ -659,6 +659,42 @@
       }
       .runline .p { color: var(--amber); }
 
+      /* ---- honest ship/plan labelling --------------------------------- */
+      .badge {
+        display: inline-block;
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        vertical-align: middle;
+      }
+      .badge.ship { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+      .badge.plan { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+      .reg .cmd-row.plan { opacity: 0.82; }
+      .reg .cmd-row .desc { color: var(--fg-soft); font-size: 12px; }
+      .reg .cmd-row .st { margin-left: auto; }
+      .hier {
+        margin-top: 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        background: var(--border-soft);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .hier .lvl {
+        background: var(--bg);
+        padding: 12px 16px;
+        display: flex;
+        gap: 14px;
+        align-items: baseline;
+      }
+      .hier .lvl .nm { color: var(--amber); font-weight: 600; min-width: 128px; }
+      .hier .lvl .ds { color: var(--fg-soft); font-size: 13px; }
+
       /* ---- pluggable: capability resolution --------------------------- */
       .caps { margin-top: 20px; display: grid; gap: 10px; }
       .cap-card {
@@ -781,6 +817,41 @@
         h1 .cursor { opacity: 1; }
         .agent, .orch-final, .out .row, .reg .cmd-row.new { opacity: 1; transform: none; }
       }
+      /* ---- captured CLI transcripts (verbatim real trvs output) ---- */
+      .cast {
+        white-space: pre;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--fg-soft);
+        margin: 4px 0 2px;
+      }
+      .cast .row { display: block; min-height: 1.55em; animation: castin 0.34s ease both; }
+      @keyframes castin {
+        from { opacity: 0; transform: translateY(3px); }
+        to { opacity: 1; transform: none; }
+      }
+      .cast b { color: var(--fg); font-weight: 600; }
+      .cast .ok { color: var(--green); }
+      .cast .no { color: var(--red); }
+      .cast .id { color: var(--teal); }
+      .cast .lbl { color: var(--fg-faint); }
+      .three {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin: 20px 0 4px;
+      }
+      @media (max-width: 720px) { .three { grid-template-columns: 1fr; } }
+      .three .b {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        background: var(--panel);
+      }
+      .three .b h3 { font-size: 13px; color: var(--amber); margin-bottom: 5px; }
+      .three .b p { font-size: 13px; color: var(--fg-soft); line-height: 1.5; }
+      .three .b code { color: var(--teal); font-size: 12px; }
     </style>
   </head>
   <body>
@@ -790,11 +861,12 @@
       <nav>
         <a class="brand" href="/"><b>[&amp;]</b> traaviis</a>
         <ul class="nav-links">
-          <li><a href="#orchestrate">orchestrate</a></li>
-          <li><a href="#compose">compose</a></li>
-          <li><a href="#extend">extend</a></li>
-          <li><a href="#pluggable">pluggable</a></li>
-          <li><a href="#govern">govern</a></li>
+          <li><a href="#identity">identity</a></li>
+          <li><a href="#verify">verify</a></li>
+          <li><a href="#replay">replay</a></li>
+          <li><a href="#environment">environment</a></li>
+          <li><a href="#commands">commands</a></li>
+          <li><a href="#worlds">worlds</a></li>
         </ul>
         <div class="nav-right">
           <div class="themes" id="themes" role="group" aria-label="theme">
@@ -803,7 +875,7 @@
             <button data-theme="paper" aria-pressed="false">paper</button>
           </div>
           <a href="https://github.com/c-u-l8er/TRAAVIIS">GitHub</a>
-          <a href="https://www.npmjs.com/package/traaviis">npm</a>
+          <a href="#install">install</a>
         </div>
       </nav>
     </header>
@@ -811,206 +883,414 @@
     <main class="wrap">
       <!-- HERO -->
       <section class="hero">
-        <div class="eyebrow">OS-008 · Agent Harness Protocol</div>
-        <h1 id="headline">There are many agent harnesses.<br />traaviis <span class="amber">builds yours</span><span class="cursor">▋</span></h1>
+        <div class="eyebrow">content-addressed agent environments · WallRiderLang · TRVM</div>
+        <h1 id="headline">Write the wall. Run the world.<br /><span class="amber">Keep the proof.</span><span class="cursor">▋</span></h1>
         <p class="lede">
-          TRAAVIIS is the <b>harness engineer</b>. Give it a goal and it forges the
-          harness for that job — routing each prompt to the right model tier,
-          orchestrating sub-agents across the [&amp;] Protocol stack, composing
-          their results into one pipe, and stamping every action with a
-          governance verdict. Pick a goal below and watch it build.
+          <b>TRAAVIIS</b> builds deterministic worlds that agents can be
+          <b>evaluated — and eventually trained</b> — against, and proves what
+          happened inside them. Write a world in WallRiderLang, and
+          <code>trvs</code> lowers it to a content-addressed
+          <span class="inline">SemanticArtifactID</span>, folds each episode into
+          a replayable <b>film</b>, and verifies that film with every applicable
+          check. Same world, same scenario, same trajectory — same hash, every time.
         </p>
 
         <div class="forge">
-          <span>route a prompt</span>
-          <span>spawn the sub-agents</span>
-          <span>compose the results</span>
-          <span>stamp a verdict</span>
+          <span>author the world</span>
+          <span>run the episode</span>
+          <span>record the film</span>
+          <span>verify &amp; replay</span>
         </div>
 
-        <!-- ORCHESTRATION DEMO -->
-        <div class="term" id="orchestrate">
+        <!-- RUN (real captured transcript) -->
+        <div class="term" id="run">
           <div class="term-bar">
             <i class="r"></i><i class="y"></i><i class="g"></i>
-            <span>traaviis — orchestrating</span>
-            <span class="hint">scripted demo · click a goal</span>
+            <span>trvs — run</span>
+            <span class="hint">captured · verbatim CLI output</span>
           </div>
           <div class="term-body">
-            <div class="goals" id="goals">
-              <span class="label">goal ›</span>
-              <!-- goal buttons injected by JS -->
-            </div>
-            <div class="orch" id="orch" aria-live="polite"></div>
+            <div class="prompt-line"><span class="p">$ trvs run</span> worlds/alley.wrl</div>
+            <div class="cast" data-cast="run"><span class="row">  world         <span class="id">sem-8ae91fe9cbc5fd086ce4356d587c403211e5c7b2b3ebdd316496367429ecfe4a</span></span><span class="row">  scenario      scen-2be578f63401d0a424be78f069cc81278efcb3469ae405ec66a2a340c26b8842</span><span class="row">  reducer       ic_ref</span><span class="row">  epochs        <b>7</b></span><span class="row"> </span><span class="row">  epoch  film</span><span class="row">  1      56a2980eb5530db250848395</span><span class="row">  2      23c7c0cd5d2e7688f0be1b62</span><span class="row">  3      b9cd725ac52a876bf754b16c</span><span class="row">  4      2c2d8ac24faafa9e2492dea2</span><span class="row">  5      7cf6b32b260e16fba6952cbc</span><span class="row">  6      fb270e91d8d4ac3f2e3b5bc0</span><span class="row">  7      8c7bf5edcab3693a81de70ec</span><span class="row"> </span><span class="row">  film          <b>8c7bf5edcab3693a81de70ec</b></span></div>
           </div>
         </div>
 
         <p class="demo-note">
-          The orchestration above runs scripted, locally — no model is called from
-          this page. In the CLI, traaviis routes each step to <em>your</em>
-          configured provider and MODEL_TIER (local_small ▸ local_large ▸
-          cloud_frontier); the tools it drives never call models themselves.
+          Every terminal on this page is <b>verbatim output from the real
+          <code>trvs</code> CLI</b> folding <code>worlds/alley.wrl</code> over the
+          TRVM engine — nothing here is scripted and no model is called. The same
+          world always folds to the same identity and the same film; that is the
+          whole point.
         </p>
 
-        <div class="install">
-          <code><span class="s">$ </span>npm install -g traaviis</code>
+        <div class="install" id="install">
+          <code><span class="s">$ </span>pipx install traaviis</code>
           <button class="copy" id="copyBtn">copy</button>
-          <span class="faint">· or npx traaviis · traaviis.com</span>
+          <span class="faint">· then <span class="inline">trvs doctor</span> · needs the TRVM/forge engine on-path</span>
         </div>
 
-        <!-- THE LOOP -->
+        <!-- THE PIPELINE -->
         <div class="loop">
-          <div class="ph"><b>retrieve</b><span>pull prior context from Graphonomous</span></div>
-          <div class="ph"><b>route</b><span>pick the model tier &amp; sub-agents</span></div>
-          <div class="ph"><b>act</b><span>run commands over the stack</span></div>
-          <div class="ph"><b>learn</b><span>report outcomes back to memory</span></div>
-          <div class="ph"><b>consolidate</b><span>merge into one answer + verdict</span></div>
+          <div class="ph"><b>author</b><span>a WallRiderLang world file</span></div>
+          <div class="ph"><b>run</b><span>fold the episode, deterministically</span></div>
+          <div class="ph"><b>reward</b><span>objective, computed — not asserted</span></div>
+          <div class="ph"><b>verify</b><span>reference · native · oracle</span></div>
+          <div class="ph"><b>replay</b><span>content-addressed evidence, reproduced</span></div>
         </div>
+
+        <p class="demo-note" style="margin-top:22px">
+          Two researchers should be able to answer four questions and never argue
+          about the answers: <b>did we run the same world, the same scenario, the
+          same trajectory — and did the verifiers agree?</b> That is what a
+          content-addressed environment is for. Reward is a computed number over a
+          proven film, not a claim.
+        </p>
       </section>
 
-      <!-- COMPOSE -->
-      <section class="stage" id="compose">
+      <!-- IDENTITY -->
+      <section class="stage" id="identity">
         <span class="node"></span>
-        <div class="kicker">Composable</div>
-        <h2>Every sub-agent writes to the same pipe.</h2>
+        <div class="kicker">Identity</div>
+        <h2>A world is what it means, hashed.</h2>
         <p>
-          What the orchestrator hands each sub-agent is a command line, and what
-          comes back is a <b>structured value</b> — not text. So results compose
-          with <code>|</code> exactly like a shell: generic combinators
-          (<span class="inline">where</span>, <span class="inline">map</span>,
-          <span class="inline">each</span>, <span class="inline">count</span>)
-          work with any command without re-parsing. Build a pipeline and watch it
-          stream — this is the real engine.
+          <code>trvs id</code> lowers the source to its canonical semantic graph
+          and hashes it. Presentation — where a node sits, its colour, the wire
+          curve — never enters the hash; a <span class="inline">rotor</span> or a
+          rewire does. Two files that mean the same world print the same
+          <span class="inline">SemanticArtifactID</span>; one meaningful edit and
+          the id moves. It is the world's fingerprint.
         </p>
 
         <div class="term">
           <div class="term-bar">
             <i class="r"></i><i class="y"></i><i class="g"></i>
-            <span>traaviis — compose</span>
-            <span class="hint">click stages to build the pipe</span>
+            <span>trvs — id</span>
+            <span class="hint">captured · verbatim CLI output</span>
           </div>
           <div class="term-body">
-            <div class="prompt-line"><span class="p">&amp; traaviis ›</span> <span id="pipeText"></span></div>
-            <div class="out" id="out" aria-live="polite"></div>
+            <div class="prompt-line"><span class="p">$ trvs id</span> worlds/alley.wrl</div>
+            <div class="cast" data-cast="id"><span class="row"><span class="id">sem-8ae91fe9cbc5fd086ce4356d587c403211e5c7b2b3ebdd316496367429ecfe4a</span></span></div>
           </div>
-          <div class="term-body" style="padding-top:0">
-            <div class="chips" id="chips"><span class="label">compose ›</span></div>
-          </div>
+        </div>
+
+        <div class="three">
+          <div class="b"><h3>semantic</h3><p><code>sem-…</code> — the world's meaning, geometry-independent.</p></div>
+          <div class="b"><h3>scenario</h3><p><code>scen-…</code> — the run inputs, deliberately kept out of identity.</p></div>
+          <div class="b"><h3>film</h3><p>the per-epoch evidence the deterministic fold produces.</p></div>
         </div>
       </section>
 
-      <!-- EXTEND -->
-      <section class="stage" id="extend">
+      <!-- VERIFY -->
+      <section class="stage" id="verify">
         <span class="node"></span>
-        <div class="kicker">Extensible</div>
-        <h2>Teach the engineer a new move.</h2>
+        <div class="kicker">Verifiable</div>
+        <h2>Prove the film. Show the coverage.</h2>
         <p>
-          There is no plugin API beyond "register a command." Drop a
-          <code>.mjs</code> in <code>~/.traaviis/extensions/</code> and it joins
-          the same registry the built-ins use — instantly available to you, to a
-          pipe, and to the orchestrator's sub-agents. Declare a
-          <span class="inline">capability</span> and the built-ins it
-          <span class="inline">needs</span>, and it composes with everything else.
-          Register the example and run it:
+          <code>trvs verify</code> folds the world through the pure-Python
+          <span class="inline">reference</span> reducer, re-folds it through the
+          compiled <span class="inline">native</span> reducer, and cross-checks
+          both against an independent hand-written
+          <span class="inline">oracle</span> where that oracle's domain applies. A
+          film is not asserted — it is checked by <b>every applicable verifier</b>,
+          and the coverage is explicit. Golden Spinner agrees
+          <span class="inline">3/3</span>; a verifier that cannot apply is reported
+          <span class="inline">not_applicable</span>, never as pass or fail.
         </p>
 
-        <pre class="code"><span class="c">// ~/.traaviis/extensions/deploy.mjs</span>
-<span class="k">export default</span> <span class="k">function</span> (h) {
-  h.<span class="a">command</span>({
-    name: <span class="s">'deploy'</span>,
-    capability: <span class="s">'ops.deploy'</span>,        <span class="c">// resolvable by capability</span>
-    needs: [<span class="s">'build'</span>],              <span class="c">// composes with a built-in</span>
-    <span class="k">async</span> run(h, [name], input) {
-      <span class="k">await</span> h.<span class="a">invoke</span>(<span class="s">'build'</span>, [name]);  <span class="c">// reuse another command</span>
-      <span class="k">return</span> { deployed: name };        <span class="c">// pipe-able output</span>
-    },
-  });
-}</pre>
-
-        <div class="demo-panel">
-          <div class="ph-head">command registry <span class="faint">· live</span></div>
-          <div class="body">
-            <div class="reg" id="registry"></div>
-            <div class="demo-actions">
-              <button class="btn" id="regBtn">register deploy.mjs</button>
-              <button class="btn" id="runDeployBtn" disabled>run: deploy box-and-box</button>
-            </div>
-            <div class="runline" id="runline"></div>
+        <div class="term">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — verify</span>
+            <span class="hint">captured · verbatim CLI output</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs verify</span> worlds/alley.wrl</div>
+            <div class="cast" data-cast="verify"><span class="row">  world         <span class="id">sem-8ae91fe9cbc5fd086ce4356d587c403211e5c7b2b3ebdd316496367429ecfe4a</span></span><span class="row">  scenario      scen-2be578f63401d0a424be78f069cc81278efcb3469ae405ec66a2a340c26b8842</span><span class="row">  reference     <span class="ok">✓</span></span><span class="row">  native        <span class="ok">✓</span></span><span class="row">  oracle        <span class="ok">✓</span></span><span class="row">  agreement     <b>3/3</b></span></div>
           </div>
         </div>
-      </section>
 
-      <!-- PLUGGABLE -->
-      <section class="stage" id="pluggable">
-        <span class="node"></span>
-        <div class="kicker">Pluggable</div>
-        <h2>Swap an implementation, not the kernel.</h2>
-        <p>
-          Sub-agents, providers, and governance backends are reached by
-          <b>capability</b>, never by hard wiring. Pick a provider for each
-          capability below and watch the harness re-resolve — and flag any
-          <span class="inline">unmet need</span>. <span class="inline">/plugins</span>
-          reports exactly this at runtime.
-        </p>
-        <div class="caps" id="caps"></div>
-
-        <div class="grid">
-          <div class="cell"><h3>interactive</h3><p>REPL with pipes, completion, and a session tree.</p></div>
-          <div class="cell"><h3>print</h3><p><code>traaviis status</code> — run once, exit.</p></div>
-          <div class="cell"><h3>json</h3><p><code>traaviis --json products</code> — structured for CI &amp; agents.</p></div>
-          <div class="cell"><h3>rpc</h3><p><code>traaviis --rpc</code> — JSONL in, events out: drive it from an editor or another agent.</p></div>
-        </div>
-      </section>
-
-      <!-- GOVERN -->
-      <section class="stage" id="govern">
-        <span class="node"></span>
-        <div class="kicker">Governed</div>
-        <h2>Every action clears a verdict, not a popup.</h2>
-        <p>
-          Before the orchestrator lets a sub-agent act, the action is piped through
-          the <span class="inline">box-and-box</span> kernel, which returns a
-          certificate: floor-then-gradient over an un-weakenable safety floor,
-          <span class="inline">feasible ▸ permitted ▸ best</span>. The verdict is a
-          value you can pipe, attach to the session tree, and gate CI on — so
-          autonomy never outruns governance.
-        </p>
         <div class="cert">
           <div class="cert-head">
-            <span class="ttl">certificate · govern.validate</span>
-            <span class="stamp">decision · exit 0</span>
+            <span class="ttl">certificate · triple fold</span>
+            <span class="stamp">agreement · exit 0</span>
           </div>
           <div class="cert-body">
-            <div class="cert-row"><span class="lbl">action</span><span>deploy box-and-box (from orchestrator)</span></div>
-            <div class="cert-row"><span class="lbl">ladder</span>
+            <div class="cert-row"><span class="lbl">reducers</span>
               <span class="ladder">
-                <span class="step on">feasible</span><span class="arr">▸</span>
-                <span class="step on">permitted</span><span class="arr">▸</span>
-                <span class="step on">best</span>
+                <span class="step on">reference</span><span class="arr">▸</span>
+                <span class="step on">native</span><span class="arr">▸</span>
+                <span class="step on">oracle</span>
               </span>
             </div>
-            <div class="cert-row"><span class="lbl">floor</span><span class="green">held — no rule weakened</span></div>
+            <div class="cert-row"><span class="lbl">film</span><span class="green">ic_ref = ic32 = oracle — byte-for-byte</span></div>
+            <div class="cert-row"><span class="lbl">exit</span><span>0 agree · 1 disagree · 2 unavailable</span></div>
           </div>
         </div>
       </section>
 
-      <!-- PRIMITIVES -->
-      <section class="stage" id="primitives">
+      <!-- REPLAY -->
+      <section class="stage" id="replay">
+        <span class="node"></span>
+        <div class="kicker">Replayable</div>
+        <h2>Pin a film. Prove it reproduces. Diff two worlds.</h2>
+        <p>
+          A film is content-addressed evidence. <code>trvs replay</code> re-folds a
+          world and, given a pinned <span class="inline">--expect</span> id or
+          <span class="inline">--film</span> hash, asserts the fold reproduces it —
+          exit 0 when it does, 1 when it drifts. <code>trvs diff</code> folds two
+          worlds and marks the first epoch where their films diverge. This is the
+          replayable-reward substrate an RL loop can gate on.
+        </p>
+
+        <div class="term">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — replay --expect</span>
+            <span class="hint">captured · verbatim CLI output</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs replay</span> worlds/alley.wrl --expect "$(trvs id worlds/alley.wrl)"</div>
+            <div class="cast" data-cast="replay"><span class="row">  world         <span class="id">sem-8ae91fe9cbc5fd086ce4356d587c403211e5c7b2b3ebdd316496367429ecfe4a</span></span><span class="row">  scenario      scen-2be578f63401d0a424be78f069cc81278efcb3469ae405ec66a2a340c26b8842</span><span class="row">  reducer       ic_ref</span><span class="row">  epochs        7</span><span class="row"> </span><span class="row">  epoch  label            film</span><span class="row">  1      set rotor = quar 56a2980eb5530db250848395</span><span class="row">  2      idle pulse tick  23c7c0cd5d2e7688f0be1b62</span><span class="row">  3      set rotor = 256. b9cd725ac52a876bf754b16c</span><span class="row">  4      reset orb fault  2c2d8ac24faafa9e2492dea2</span><span class="row">  5      set rotor = 128. 7cf6b32b260e16fba6952cbc</span><span class="row">  6      idle pulse tick  fb270e91d8d4ac3f2e3b5bc0</span><span class="row">  7      set rotor = 10.0 8c7bf5edcab3693a81de70ec</span><span class="row"> </span><span class="row">  final film    8c7bf5edcab3693a81de70ec</span><span class="row">  reproduced    <span class="ok">✓ yes</span></span></div>
+          </div>
+        </div>
+
+        <div class="term">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — diff</span>
+            <span class="hint">captured · demo world vs an n=4 variant</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs diff</span> worlds/alley.wrl worlds/alley_n4.wrl</div>
+            <div class="cast" data-cast="diff"><span class="row">  a             <span class="id">sem-8ae91fe9cbc5fd086ce4356d587c403211e5c7b2b3ebdd316496367429ecfe4a</span>  (alley.wrl)</span><span class="row">  b             <span class="id">sem-24cf1b583f925ed27a4107272064546019a7042dd902f0a415786bc57b0f6113</span>  (alley_n4.wrl)</span><span class="row">  identity      <span class="no">✗ differ</span></span><span class="row"> </span><span class="row">  epoch  a film                 b film</span><span class="row">  1      56a2980eb5530db25084   cefc85b866ab3430a66f   <span class="no">✗</span></span><span class="row">  2      23c7c0cd5d2e7688f0be   0a18b4ed95946e59b1c4   <span class="no">✗</span></span><span class="row">  3      b9cd725ac52a876bf754   52cecf7a5f31f9c731e3   <span class="no">✗</span></span><span class="row">  4      2c2d8ac24faafa9e2492   b1258d4f2293c12e9043   <span class="no">✗</span></span><span class="row">  5      7cf6b32b260e16fba695   d6e497c2efae09f87bdb   <span class="no">✗</span></span><span class="row">  6      fb270e91d8d4ac3f2e3b   5d1fe6a506110328aca9   <span class="no">✗</span></span><span class="row">  7      8c7bf5edcab3693a81de   318829a5c9bf543272c6   <span class="no">✗</span></span><span class="row"> </span><span class="row">  first divergence epoch 1</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- INSPECT -->
+      <section class="stage" id="inspect">
+        <span class="node"></span>
+        <div class="kicker">Legible</div>
+        <h2>See exactly what you wrote — as the engine sees it.</h2>
+        <p>
+          <code>trvs inspect</code> shows the lowered world: every actor with its
+          resolved static config, every edge with its kind, and any diagnostics.
+          The named rotor <span class="inline">quarter_turn_z</span> has already
+          become <span class="inline">[181, 0, 0, 181]</span>; the wires carry
+          their semantic kind. Nothing hides between your source and its identity.
+        </p>
+
+        <div class="term">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — inspect</span>
+            <span class="hint">captured · verbatim CLI output</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs inspect</span> worlds/alley.wrl</div>
+            <div class="cast" data-cast="inspect"><span class="row">  world         <span class="id">sem-8ae91fe9cbc5fd086ce4356d587c403211e5c7b2b3ebdd316496367429ecfe4a</span></span><span class="row">  profile       forge.world.core.v1</span><span class="row">  actors        6</span><span class="row">  edges         4</span><span class="row">  diagnostics   0</span><span class="row"> </span><span class="row">  actors</span><span class="row">  d0 door</span><span class="row">  ob orb</span><span class="row">  p0 pulser    clock=['periodic', 2, 0]</span><span class="row">  p1 pulser    clock=['once', 1]</span><span class="row">  r0 relay</span><span class="row">  sp spinner   configurable=True n=8 rotor=[181, 0, 0, 181] w=16</span><span class="row"> </span><span class="row">  graph</span><span class="row">  p0 --SignalWire--&gt; r0</span><span class="row">  p1 --SignalWire--&gt; d0</span><span class="row">  r0 --SignalWire--&gt; sp</span><span class="row">  sp --SocketControl--&gt; ob</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- COMMAND SET -->
+      <section class="stage" id="commands">
+        <span class="node"></span>
+        <div class="kicker">The terminal</div>
+        <h2>Ten commands. One honest workflow.</h2>
+        <p>
+          <code>trvs</code> is a small, stable surface. Seven commands ship today
+          and fold real worlds over the TRVM engine; three are the environment
+          surface that turns a world into something an agent can be trained and
+          evaluated against. Nothing below calls a model.
+        </p>
+
+        <div class="reg">
+          <div class="cmd-row"><span class="nm">trvs doctor</span><span class="desc">engine location, versions, verifier availability</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs id</span><span class="desc">the world's SemanticArtifactID — pure identity</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs inspect</span><span class="desc">actors, edges, resolved config, diagnostics</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs run</span><span class="desc">lower + deterministically fold; per-epoch film</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs verify</span><span class="desc">reference · native · oracle agreement (strict)</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs replay</span><span class="desc">re-fold a film and assert it reproduces</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs diff</span><span class="desc">compare two worlds' identity + per-epoch films</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs init</span><span class="desc">scaffold a new world bundle from a template</span><span class="st"><span class="badge plan">v0.1</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs pack</span><span class="desc">bundle a world + scenarios + tasks + rewards</span><span class="st"><span class="badge plan">v0.2</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs serve</span><span class="desc">expose the world as an agent environment (ORS · MCP)</span><span class="st"><span class="badge plan">v0.2</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs eval</span><span class="desc">run an agent over a split, score every episode</span><span class="st"><span class="badge plan">v0.3</span></span></div>
+        </div>
+        <p class="soft" style="margin-top:14px;font-size:13px">
+          <span class="badge ship">shipped</span> commands are real over the
+          engine today. <span class="badge plan">planned</span> commands describe
+          the environment surface below and are not yet built — they are the
+          published roadmap, not a claim.
+        </p>
+      </section>
+
+      <!-- ENVIRONMENT CONTRACT (ORS first) -->
+      <section class="stage" id="environment">
+        <span class="node"></span>
+        <div class="kicker">The environment surface · planned</div>
+        <h2>A neutral kernel. Protocols are adapters.</h2>
+        <p>
+          A tool list tells an agent what it <em>can</em> call. It does not define
+          tasks, splits, rewards, episode completion, or reset. So TRAAVIIS's
+          internal contract is a <b>neutral Episode Kernel</b> — and public
+          protocols are adapters over it, not runtime law. The Open Reward
+          Standard is the first and primary adapter; MCP is a compatibility
+          adapter; a local JSONL surface is for automation and debugging.
+        </p>
+
+        <div class="loop">
+          <div class="ph"><b>start</b><span>initialize a task, no actions applied</span></div>
+          <div class="ph"><b>observe</b><span>deterministic projection of state</span></div>
+          <div class="ph"><b>step</b><span>one action → reduce to next boundary</span></div>
+          <div class="ph"><b>reset</b><span>reconstruct initial state (≠ replay)</span></div>
+          <div class="ph"><b>finalize</b><span>terminate; pin film + episode receipt</span></div>
+        </div>
+
+        <div class="caps">
+          <div class="cap-card">
+            <div class="ttl">primary adapter — <code>trvs serve world.trvs --ors</code></div>
+            <div class="resolved">
+              The Open Reward wire surface — <code>list_tasks · session ·
+              call_tool → reward · finished</code> — over the neutral kernel. Runs
+              locally; exportable to training stacks. <span class="miss">not yet built</span>
+            </div>
+          </div>
+          <div class="cap-card">
+            <div class="ttl">compatibility adapter — <code>trvs serve world.trvs --mcp</code></div>
+            <div class="resolved">
+              The same world as MCP tools / resources / prompts, wrapping the
+              kernel — never the source of truth. <span class="miss">not yet built</span>
+            </div>
+          </div>
+        </div>
+
+        <p class="soft" style="margin-top:16px;font-size:13px">
+          Strategy: <b>do not compete with hosting catalogs.</b> TRAAVIIS aims to
+          be one of the best ways to <em>author</em> deterministic environments
+          that export to them.
+        </p>
+      </section>
+
+      <!-- BUNDLE -->
+      <section class="stage" id="bundle">
+        <span class="node"></span>
+        <div class="kicker">The artifact ladder · planned</div>
+        <h2>Eight identities. One clean question each.</h2>
+        <p>
+          TRAAVIIS separates <em>what a thing means</em> from <em>how it is
+          shipped</em>. The environment contract
+          (<span class="inline">env-…</span>) fixes the world, tasks, rewards,
+          and splits; the outer package
+          (<span class="inline">bundle-…</span>) carries presentation and docs and
+          may change without moving <span class="inline">env-…</span>. Each layer
+          answers exactly one question, and re-scoring a film never pretends the
+          trajectory changed.
+        </p>
+
+        <div class="grid">
+          <div class="cell"><h3>sem-… · scen-…</h3><p>the world's meaning, and the initial/run scenario — kept apart on purpose.</p></div>
+          <div class="cell"><h3>rew-… · task-…</h3><p>a reward rubric, and a task binding scenario + prompt + reward + termination.</p></div>
+          <div class="cell"><h3>film-… · episode-…</h3><p>the actual trajectory, and the receipt: task + film + score + verifier report.</p></div>
+          <div class="cell"><h3>env-… · bundle-…</h3><p>the environment contract, and the transport package — identity vs. shipping.</p></div>
+        </div>
+      </section>
+
+      <!-- EVALUATE -->
+      <section class="stage" id="evaluate">
+        <span class="node"></span>
+        <div class="kicker">Evaluation before training · planned</div>
+        <h2>Prove the environment before you train in it.</h2>
+        <p>
+          The first job is not a trainer — it is honest evaluation.
+          <code>trvs eval</code> runs an agent over a split and scores every
+          episode; <code>trvs compare</code> puts two runs side by side. Because
+          every episode is verified and content-addressed, the numbers are
+          reproducible and the films are re-checkable.
+        </p>
+
+        <div class="term">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — eval</span>
+            <span class="hint">planned surface · illustrative shape</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs eval</span> warehouse.trvs --agent "python agent.py" --split dev</div>
+            <div class="cast" data-cast="eval"><span class="row">  episodes           100</span><span class="row">  completed           71</span><span class="row">  verified            71</span><span class="row">  invalid actions      8</span><span class="row">  mean reward        0.64</span><span class="row">  median steps         22</span><span class="row">  unique films         94</span><span class="row">  replayable         <span class="ok">100%</span></span></div>
+          </div>
+        </div>
+        <p class="soft" style="margin-top:12px;font-size:12.5px">
+          Illustrative shape of a planned command — not captured output. Every
+          other terminal on this page is verbatim real <code>trvs</code>.
+        </p>
+      </section>
+
+      <!-- THREE WORLDS -->
+      <section class="stage" id="worlds">
+        <span class="node"></span>
+        <div class="kicker">Flagship worlds</div>
+        <h2>One proves the mechanism. Two make it real.</h2>
+        <p>
+          The Spinner is the conformance artifact — exact, tiny, already folding
+          three ways. On top of it sit two worlds that show what a deterministic,
+          reward-bearing environment is actually for.
+        </p>
+
+        <div class="grid">
+          <div class="cell">
+            <h3>Golden Spinner <span class="badge ship">shipped</span></h3>
+            <p>The identity, replay and triple-fold tutorial. Installs, verifies, and reproduces byte-for-byte. Proof that the mechanism is real.</p>
+          </div>
+          <div class="cell">
+            <h3>Courier / Factory <span class="badge plan">planned</span></h3>
+            <p>Move objects, open gates, route signals, spend energy, obey safety constraints, complete deliveries — spatial state, long-horizon tasks, objective rewards, resets, splits.</p>
+          </div>
+          <div class="cell">
+            <h3>WallRider / Graffiti <span class="badge plan">planned</span></h3>
+            <p>An agent moves through a city and writes executable tags that alter surfaces, routes and permissions. It proposes graph edits; TRVM decides what they mean. The brand demo.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- PRODUCT BOUNDARY -->
+      <section class="stage" id="boundary">
+        <span class="node"></span>
+        <div class="kicker">Where the seams are</div>
+        <h2>TRAAVIIS is the product. It stands on a stack.</h2>
+        <p>
+          The boundary is frozen on purpose. <code>trvs</code> carries no world
+          semantics — it packages capabilities the layers below already provide,
+          for someone who does not know the internal history of TRVM.
+        </p>
+
+        <div class="hier">
+          <div class="lvl"><span class="nm">TRAAVIIS</span><span class="ds">the product — CLI, environment surface, evaluator, packaging</span></div>
+          <div class="lvl"><span class="nm">trvs</span><span class="ds">the command-line interface</span></div>
+          <div class="lvl"><span class="nm">WallRiderLang</span><span class="ds">the language for worlds, actors, tasks and rules</span></div>
+          <div class="lvl"><span class="nm">Forge</span><span class="ds">the compiler, identity and artifact pipeline</span></div>
+          <div class="lvl"><span class="nm">TRVM</span><span class="ds">the deterministic execution substrate</span></div>
+          <div class="lvl"><span class="nm">Spinner Bench</span><span class="ds">the reference workbench and conformance laboratory</span></div>
+        </div>
+      </section>
+
+      <!-- WHAT IT IS NOT -->
+      <section class="stage" id="isnot">
         <span class="node"></span>
         <div class="kicker">Primitives, not features</div>
-        <h2>A kernel you can hold in your head.</h2>
+        <h2>What TRAAVIIS is not.</h2>
         <p>
-          The engineer is small on purpose: a command registry, a pipe engine,
-          capability manifests, a session tree, output modes — plus the
-          orchestration loop that drives them. Everything else is an extension.
-          Here's what's deliberately left as a seam, not baked in.
+          <code>trvs</code> is a thin, honest terminal over an engine that already
+          exists. Its credibility comes from what it refuses to do.
         </p>
         <div class="didnt">
-          <div class="item"><div class="no">No hidden agents</div><p>The orchestrator's fan-out is visible — every sub-agent prints in front of you.</p></div>
-          <div class="item"><div class="no">No model in the tools</div><p>The harness routes prompts; the commands it drives never call a model.</p></div>
-          <div class="item"><div class="no">No permission popups</div><p>Governance is a verdict + certificate — see above.</p></div>
-          <div class="item"><div class="no">No baked-in MCP</div><p>Bridge to MCP with an extension when you actually want one.</p></div>
-          <div class="item"><div class="no">No plan mode</div><p>Plans are session-tree nodes you export and replay.</p></div>
-          <div class="item"><div class="no">No magic</div><p>Zero runtime deps, readable ESM. Read it. Fork it. Own it.</p></div>
+          <div class="item"><div class="no">Not a coding agent</div><p>trvs builds and proves environments. It is not another Claude Code, not a chat interface.</p></div>
+          <div class="item"><div class="no">Not a model router</div><p>Nothing here calls an LLM or picks a provider. The fold is deterministic; the reward is computed.</p></div>
+          <div class="item"><div class="no">Not an RL cloud</div><p>Worlds run locally. TRAAVIIS authors environments that export to hosting stacks — it is not the catalog.</p></div>
+          <div class="item"><div class="no">Not a game engine</div><p>WallRider worlds are deterministic agent environments, not a rendering or physics engine.</p></div>
+          <div class="item"><div class="no">Not the language or engine</div><p>WallRiderLang defines a world; TRVM/Forge lower and fold it. trvs carries no world semantics.</p></div>
+          <div class="item"><div class="no">Not trust-me</div><p>Every film is checked by every applicable verifier and content-addressed. Disagreement is exit 1, not a warning.</p></div>
         </div>
       </section>
     </main>
@@ -1025,10 +1305,12 @@
         </div>
         <div class="fine">
           TRAAVIIS Holdings — part of the [&amp;] Protocol ecosystem. MIT licensed.
-          Built for the OS-008 Agent Harness Protocol. The harness is the agent's
-          runtime — it routes prompts and orchestrates sub-agents; the stack's
-          tools and libraries stay model-free. The page's three themes ship to the
-          CLI: <span class="inline">/theme phosphor</span>.
+          TRAAVIIS turns WallRiderLang / TRVM worlds into portable, resettable,
+          reward-bearing, replayable and independently verifiable agent
+          environments. It carries no world semantics: WRL defines the language,
+          TRVM/Forge run the fold, and no model is ever called. Every terminal on
+          this page is verbatim real <span class="inline">trvs</span> output
+          except the one explicitly marked as a planned surface.
         </div>
       </div>
     </footer>
@@ -1087,321 +1369,15 @@
       const esc = (s) =>
         String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-      // ---- ORCHESTRATION DEMO -----------------------------------------
-      // Scripted, deterministic. Shows the harness decomposing a goal into
-      // sub-agents, routing each to a model tier, running a command over the
-      // stack, then consolidating into one answer. No model is called here.
+      // ---- captured transcript reveal ---------------------------------
+      // Every .cast already holds verbatim real trvs output in the DOM (so it
+      // is correct with JS off); this only staggers the per-line fade so a
+      // panel reads like a terminal streaming, never fabricating a result.
       (function () {
-        const GOALS = [
-          {
-            id: "ship",
-            label: "ship box-and-box",
-            prompt: "ship box-and-box safely",
-            agents: [
-              { nm: "planner", tier: "local_small", cmd: "info box-and-box", res: "kind=node · governed ●", ok: true },
-              { nm: "builder", tier: "local_large", cmd: "build box-and-box", res: "compiled · 0 warnings", ok: true },
-              { nm: "tester", tier: "local_large", cmd: "test box-and-box", res: "116 laws · all pass", ok: true },
-              { nm: "governor", tier: "cloud_frontier", cmd: "validate *.ampersand.json", res: "feasible ▸ permitted ▸ best", ok: true },
-            ],
-            answer: "box-and-box is shippable — floor held, 116/116 laws green, verdict: best.",
-          },
-          {
-            id: "audit",
-            label: "audit the stack",
-            prompt: "which products are unsafe to release?",
-            agents: [
-              { nm: "scanner", tier: "local_small", cmd: "products", res: "7 products discovered", ok: true },
-              { nm: "filter", tier: "local_small", cmd: "products | where !governed", res: "4 ungoverned", ok: true },
-              { nm: "auditor", tier: "cloud_frontier", cmd: "specs | validate", res: "2 specs missing verdict", ok: false },
-            ],
-            answer: "4 products ungoverned and 2 specs fail validation — block release on PRISM & PULSE.",
-          },
-          {
-            id: "test",
-            label: "test all node products",
-            prompt: "run tests across every node product",
-            agents: [
-              { nm: "selector", tier: "local_small", cmd: "products | where kind=node", res: "4 selected", ok: true },
-              { nm: "runner-a", tier: "local_large", cmd: "each test", res: "box-and-box ✓ · TRAAVIIS ✓", ok: true },
-              { nm: "runner-b", tier: "local_large", cmd: "each test", res: "WebHost.Systems ✓ · bendscript.com ✕", ok: false },
-            ],
-            answer: "3/4 node products green — bendscript.com failing, routed to deliberate.",
-          },
-        ];
-
-        const goalsEl = document.getElementById("goals");
-        const orchEl = document.getElementById("orch");
-        let timers = [];
-        const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
-        const after = (ms, fn) => timers.push(setTimeout(fn, ms));
-
-        GOALS.forEach((g) => {
-          const b = document.createElement("button");
-          b.className = "goal";
-          b.dataset.id = g.id;
-          b.setAttribute("aria-pressed", "false");
-          b.textContent = g.label;
-          b.addEventListener("click", () => run(g));
-          goalsEl.appendChild(b);
-        });
-
-        function setPressed(id) {
-          goalsEl.querySelectorAll(".goal").forEach((b) =>
-            b.setAttribute("aria-pressed", String(b.dataset.id === id))
-          );
-        }
-
-        function run(g) {
-          clearTimers();
-          setPressed(g.id);
-          orchEl.innerHTML =
-            '<div class="pl"><span class="p">& orchestrator ›</span> ' +
-            '<span class="goaltext">"' + esc(g.prompt) + '"</span></div>' +
-            '<div class="agents" id="agents"></div>';
-          const agentsEl = document.getElementById("agents");
-
-          const reveal = (i) => {
-            const a = g.agents[i];
-            const div = document.createElement("div");
-            div.className = "agent " + (a.ok ? "ok" : "fail");
-            div.style.animationDelay = "0s";
-            div.innerHTML =
-              '<div class="top">' +
-                '<span class="nm">' + esc(a.nm) + '</span>' +
-                '<span class="tier ' + a.tier + '">' + a.tier.replace("_", " ") + '</span>' +
-                '<span class="cmd">' + esc(a.cmd) + '</span>' +
-              '</div>' +
-              '<div class="res"><span class="mk">' + (a.ok ? "✓" : "✕") + '</span> ' + esc(a.res) + '</div>';
-            agentsEl.appendChild(div);
-          };
-
-          if (REDUCE) {
-            g.agents.forEach((_, i) => reveal(i));
-            final(g);
-            return;
-          }
-          g.agents.forEach((_, i) => after(260 + i * 620, () => reveal(i)));
-          after(260 + g.agents.length * 620 + 260, () => final(g));
-        }
-
-        function final(g) {
-          const ok = g.agents.every((a) => a.ok);
-          const div = document.createElement("div");
-          div.className = "orch-final";
-          div.innerHTML =
-            '<span class="lbl">consolidate ▸ </span>' +
-            '<span class="ans">' + esc(g.answer) + '</span>';
-          orchEl.appendChild(div);
-        }
-
-        // auto-run the first goal as an intro
-        run(GOALS[0]);
-      })();
-
-      // ---- COMPOSE ENGINE (mirrors the CLI pipe semantics) ------------
-      (function () {
-        const PRODUCTS = [
-          { name: "graphonomous", kind: "elixir", governed: true, health: "ok" },
-          { name: "box-and-box", kind: "node", governed: true, health: "ok" },
-          { name: "PRISM", kind: "elixir", governed: false, health: "warn" },
-          { name: "PULSE", kind: "docs", governed: false, health: "warn" },
-          { name: "WebHost.Systems", kind: "node", governed: false, health: "warn" },
-          { name: "bendscript.com", kind: "node", governed: false, health: "warn" },
-          { name: "TRAAVIIS", kind: "node", governed: true, health: "ok" },
-        ];
-        const STAGES = [
-          { id: "wnode", text: "where kind=node", fn: (a) => a.filter((x) => x.kind === "node") },
-          { id: "wgov", text: "where governed", fn: (a) => a.filter((x) => x.governed) },
-          { id: "map", text: "map name", fn: (a) => a.map((x) => (x && x.name != null ? x.name : x)) },
-          { id: "each", text: "each test", fn: (a) => a.map((x) => {
-              const name = typeof x === "string" ? x : x && x.name;
-              const ok = ([...String(name)].reduce((s, c) => s + c.charCodeAt(0), 0) % 5) !== 0;
-              return { name, ok };
-            }) },
-          { id: "count", text: "count", fn: (a) => (Array.isArray(a) ? a.length : 0) },
-        ];
-
-        const active = new Set();
-        const pipeText = document.getElementById("pipeText");
-        const outEl = document.getElementById("out");
-        const chipsEl = document.getElementById("chips");
-
-        STAGES.forEach((s) => {
-          const b = document.createElement("button");
-          b.className = "chip";
-          b.dataset.id = s.id;
-          b.setAttribute("aria-pressed", "false");
-          b.textContent = "| " + s.text;
-          b.addEventListener("click", () => {
-            active.has(s.id) ? active.delete(s.id) : active.add(s.id);
-            render();
+        document.querySelectorAll(".cast").forEach((cast) => {
+          cast.querySelectorAll(".row").forEach((r, i) => {
+            r.style.animationDelay = (REDUCE ? 0 : Math.min(i * 0.05, 0.6)) + "s";
           });
-          chipsEl.appendChild(b);
-        });
-
-        function compute() {
-          let data = PRODUCTS.slice();
-          for (const s of STAGES) if (active.has(s.id)) data = s.fn(Array.isArray(data) ? data : []);
-          return data;
-        }
-        function pipelineString() {
-          let str = "products";
-          for (const s of STAGES) if (active.has(s.id)) str += " | " + s.text;
-          return str;
-        }
-        function pad(s, n) { s = String(s); return s.length >= n ? s : s + " ".repeat(n - s.length); }
-        function rowHTML(x) {
-          if (x == null) return '<span class="faint">∅</span>';
-          if (typeof x === "string") return '<span class="faint">- </span>' + esc(x);
-          if (typeof x === "object" && "ok" in x)
-            return (x.ok ? '<span class="green">✓</span>' : '<span class="red">✕</span>') +
-              " " + esc(x.name) + ' <span class="faint">' + (x.ok ? "test ok" : "test failed") + "</span>";
-          if (typeof x === "object" && x.kind) {
-            const cls = x.health === "ok" ? "dot" : x.health === "warn" ? "dot warn" : "dot idle";
-            return '<span class="' + cls + '">●</span> ' + pad(esc(x.name), 18) +
-              ' <span class="teal">' + esc(x.kind) + "</span>" +
-              (x.governed ? '  <span class="faint">governed</span>' : "");
-          }
-          return esc(x);
-        }
-        function render() {
-          chipsEl.querySelectorAll(".chip").forEach((c) =>
-            c.setAttribute("aria-pressed", String(active.has(c.dataset.id)))
-          );
-          pipeText.textContent = pipelineString();
-          const data = compute();
-          outEl.innerHTML = "";
-          if (!Array.isArray(data)) {
-            const d = document.createElement("div");
-            d.className = "row";
-            d.innerHTML = '<span class="count">' + esc(data) + "</span>";
-            outEl.appendChild(d);
-            return;
-          }
-          if (!data.length) { outEl.innerHTML = '<div class="row faint">(no rows)</div>'; return; }
-          data.forEach((x, i) => {
-            const d = document.createElement("div");
-            d.className = "row";
-            d.style.animationDelay = (REDUCE ? 0 : i * 0.05) + "s";
-            d.innerHTML = rowHTML(x);
-            outEl.appendChild(d);
-          });
-        }
-
-        function intro() {
-          if (REDUCE) { active.add("wnode"); active.add("each"); render(); return; }
-          const target = ["wnode", "each"];
-          let i = 0;
-          render();
-          const step = () => { if (i < target.length) { active.add(target[i++]); render(); setTimeout(step, 560); } };
-          setTimeout(step, 400);
-        }
-        intro();
-      })();
-
-      // ---- EXTEND: live command registry ------------------------------
-      (function () {
-        const BUILTINS = [
-          { nm: "status", cap: "stack.status", src: "built-in" },
-          { nm: "products", cap: "stack.products", src: "built-in" },
-          { nm: "build", cap: "stack.build", src: "built-in" },
-          { nm: "validate", cap: "govern.validate", src: "built-in" },
-        ];
-        const regEl = document.getElementById("registry");
-        const regBtn = document.getElementById("regBtn");
-        const runBtn = document.getElementById("runDeployBtn");
-        const runline = document.getElementById("runline");
-        let registered = false;
-
-        function draw() {
-          regEl.innerHTML = "";
-          const rows = BUILTINS.slice();
-          if (registered) rows.push({ nm: "deploy", cap: "ops.deploy", src: "~/.traaviis/extensions/deploy.mjs", isNew: true });
-          rows.forEach((r) => {
-            const d = document.createElement("div");
-            d.className = "cmd-row" + (r.isNew ? " new" : "");
-            d.innerHTML =
-              '<span class="nm">' + esc(r.nm) + '</span>' +
-              '<span class="cap">' + esc(r.cap) + '</span>' +
-              '<span class="src">' + esc(r.src) + '</span>';
-            regEl.appendChild(d);
-          });
-        }
-        draw();
-
-        regBtn.addEventListener("click", () => {
-          if (registered) return;
-          registered = true;
-          draw();
-          regBtn.textContent = "registered ✓";
-          regBtn.disabled = true;
-          runBtn.disabled = false;
-          runline.innerHTML = '<span class="faint">deploy now resolves by name and by capability ops.deploy</span>';
-        });
-
-        runBtn.addEventListener("click", () => {
-          runline.innerHTML =
-            '<span class="p">& traaviis ›</span> deploy box-and-box' +
-            '<br><span class="faint">↳ needs: build → invoking…</span>' +
-            '<br><span class="green">✓</span> { deployed: "box-and-box" }';
-        });
-      })();
-
-      // ---- PLUGGABLE: capability resolution ---------------------------
-      (function () {
-        const CAPS = [
-          {
-            cap: "provider.chat", need: "the model tier the orchestrator routes prompts to",
-            opts: [
-              { id: "local_small", label: "local_small", ok: true },
-              { id: "local_large", label: "local_large", ok: true },
-              { id: "cloud_frontier", label: "cloud_frontier", ok: true },
-              { id: "none", label: "(unset)", ok: false },
-            ],
-            sel: "local_large",
-          },
-          {
-            cap: "govern.validate", need: "the backend that issues verdicts",
-            opts: [
-              { id: "box-and-box", label: "box-and-box", ok: true },
-              { id: "none", label: "(unset)", ok: false },
-            ],
-            sel: "box-and-box",
-          },
-        ];
-        const capsEl = document.getElementById("caps");
-
-        CAPS.forEach((c, ci) => {
-          const card = document.createElement("div");
-          card.className = "cap-card";
-          card.innerHTML =
-            '<div class="ttl">capability <code>' + esc(c.cap) + '</code> — ' + esc(c.need) + '</div>' +
-            '<div class="opts"></div>' +
-            '<div class="resolved"></div>';
-          const optsEl = card.querySelector(".opts");
-          const resEl = card.querySelector(".resolved");
-
-          function paint() {
-            optsEl.querySelectorAll(".chip").forEach((b) =>
-              b.setAttribute("aria-pressed", String(b.dataset.id === c.sel))
-            );
-            const opt = c.opts.find((o) => o.id === c.sel);
-            if (opt.ok)
-              resEl.innerHTML = '<span class="ok">✓ resolved</span> → ' + esc(c.cap) + ' provided by <b>' + esc(opt.label) + '</b>';
-            else
-              resEl.innerHTML = '<span class="miss">⚠ unmet need</span> → ' + esc(c.cap) + ' has no provider · /plugins would flag this';
-          }
-
-          c.opts.forEach((o) => {
-            const b = document.createElement("button");
-            b.className = "chip";
-            b.dataset.id = o.id;
-            b.textContent = o.label;
-            b.addEventListener("click", () => { c.sel = o.id; paint(); });
-            optsEl.appendChild(b);
-          });
-          capsEl.appendChild(card);
-          paint();
         });
       })();
     </script>

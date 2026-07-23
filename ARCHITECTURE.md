@@ -1,244 +1,203 @@
-# TRAAVIIS — Architecture & the road to a SOTA terminal harness
+# TRAAVIIS — Architecture & the road to the environment surface
 
-> **Thesis.** A state-of-the-art terminal harness is not the one with the most
-> features. It is the one with the smallest kernel and the sharpest seams — the
-> one that is most **pluggable**, **composable**, and **extensible**. Features
-> are liabilities; primitives are leverage. TRAAVIIS is designed so that
-> everything a user wants is *assembled* from a handful of primitives rather
-> than *shipped* as a fixed menu.
+> **Thesis.** TRAAVIIS is the local-first authoring, evaluation, and
+> verification toolchain for **deterministic agent environments**. Not another
+> coding agent, not a model router, not an RL cloud, not the whole TRVM research
+> workbench. Its value is a single loop: *write the world → run the episode →
+> compute objective rewards → verify → replay, compare, and publish.*
+>
+> **Write the wall. Run the world. Keep the proof.**
 
-> **TRAAVIIS is the harness engineer.** It is not a fixed harness you adapt to;
-> it is the runtime that *builds* the harness for the job in front of you. Give
-> it a goal and it routes each prompt to the right model tier, decomposes the
-> work into sub-agents, drives them over the [&] stack through the same kernel,
-> composes their structured results into one pipe, and clears every action
-> through a governance verdict. The harness is the agent's runtime — so the
-> harness is exactly where prompt-routing and orchestration *belong*.
-
-This document is the result of researching how the leading harnesses are built,
-extracting the patterns that actually carry their weight, and mapping them onto
-a kernel for the [&] Protocol stack.
+This document describes the product boundary, what ships today, and the road to
+the environment surface (`serve`/`pack`/`eval`). It supersedes the earlier
+"terminal harness engineer" thesis — that positioning is retired.
 
 ---
 
-## 1. How to research "SOTA terminal harness"
+## 1. The product boundary
 
-The honest way to find the state of the art is to study the systems that have
-already paid for their lessons, then isolate the *mechanism* (not the feature
-list) behind each one. The reference set:
+The seams are frozen on purpose. `trvs` carries **no world semantics**; it
+packages capabilities the layers below already provide, for someone who does not
+know the internal history of TRVM.
 
-| System | What to steal | What it teaches |
-| --- | --- | --- |
-| **Pi** (pi.dev / Earendil) | "Stay small at the core; extend via TS extensions, skills, prompt templates, themes, packages." 4 surfaces: interactive, print/JSON, RPC (JSONL), SDK. | *Primitives, not features.* MCP, sub-agents, plan mode, permission popups are deliberately **not** built in — each is reachable as an extension. |
-| **Nushell** | Structured values flow through `\|`. A pipe carries tables/records, not byte streams, so `where`, `get`, `each` compose without re-parsing. | **Composability is a data-model decision.** If every command emits/consumes structured values, composition is free. |
-| **Unix shells** | Tiny tools + pipes + a uniform interface (text streams). | The *uniform interface* is what makes the ecosystem open-ended. Pick one and never break it. |
-| **Claude Code / aider** | Hooks/events, slash commands, MCP, sub-agents, sandboxed execution, permission gates. | The expensive parts are **policy** (what's allowed) and **provenance** (what happened). Externalize both. |
-| **The [&] Protocol itself** | Capabilities compose via a manifest; `box-and-box` issues governance *verdicts*; Graphonomous is the memory loop; PULSE sequences loops. | The stack already has composition, governance, and memory protocols — the harness should *delegate* to them, not reinvent them. |
+| layer            | responsibility                                          |
+| ---------------- | ------------------------------------------------------- |
+| **TRAAVIIS**     | the product — CLI, environment SDK, evaluator, packaging, visual workbench |
+| **trvs**         | the command-line interface                              |
+| **WallRiderLang**| the language for worlds, actors, tasks and rules        |
+| **Forge**        | the compiler, identity and artifact pipeline            |
+| **TRVM**         | the deterministic execution substrate                   |
+| **Spinner Bench**| the reference workbench and conformance laboratory      |
 
-The synthesis: **a SOTA harness is a uniform-interface kernel plus three seams**
-— a *plug* seam (register capabilities), a *compose* seam (pipe structured
-values), and an *extend* seam (override/augment by registration). Everything
-else — providers, governance, memory, sub-agents — lives behind those seams.
+Two rules follow directly:
 
----
-
-## 2. The three axes
-
-### Extensibility — *change the harness, not your workflow*
-
-There is exactly one extension mechanism: **register a command.** An extension
-is a `.mjs` file that default-exports `(h) => { h.command({...}) }`. It is the
-same registry the built-ins use, so an extension can **override** a built-in by
-reusing its name, add a brand-new command, register a theme, or install a hook.
-
-- Lookup order (later wins): built-ins → `~/.traaviis/extensions/` →
-  `<stack>/.traaviis/extensions/` → `$TRAAVIIS_EXTENSIONS`.
-- No plugin SDK to learn, no manifest format to satisfy, no lifecycle to honor.
-  The "API" is the command spec.
-- Code: [`src/extensions.mjs`](src/extensions.mjs), [`src/harness.mjs`](src/harness.mjs) `command()`.
-
-### Composability — *pipe commands like a shell*
-
-Every command has the signature `run(h, args, input) -> value`. The return
-`value` of one stage becomes the `input` of the next. A line is a **pipeline**
-split on top-level `|`:
-
-```
-products | where kind=node | map name | each test
-specs | validate | where verdict!=decision
-```
-
-This is the Nushell lesson applied: the pipe carries **structured values**
-(arrays/records), not text, so generic combinators compose with any data
-command without parsing.
-
-- Generic combinators ship as ordinary commands: `where`, `map`, `each`,
-  `first`, `count`, `json`.
-- Data commands (`products`, `specs`, `status`, …) **return** their structure
-  and render via `h.present(data, prettyFn)` — which only prints when the stage
-  is terminal, and emits JSON in `--json` mode. So the *same command* is a
-  human view, a JSON API, and a pipe source.
-- Cross-command calls use `await h.invoke(name, args, input)` (no session
-  side-effects) — this is how an extension's `deploy` reuses the built-in
-  `build`.
-- Code: [`src/harness.mjs`](src/harness.mjs) `parsePipeline()`, `run()`,
-  `invoke()`, `present()`.
-
-### Pluggability — *capabilities, not hard wiring*
-
-Commands may declare a `capability` they provide and the capabilities they
-`needs`. The harness keeps a capability → command index, resolves by capability
-as well as by name, tracks every extension as a **plugin manifest**, and can
-report **unmet needs**.
-
-```
-/plugins        → loaded extensions, the commands + capabilities each adds,
-                  the full capability set, and any unmet `needs`
-```
-
-This is what lets providers, themes, governance backends, and memory adapters
-be swapped without touching the kernel: depend on the *capability*
-(`govern.validate`, `stack.build`), not the implementation.
-
-- Code: [`src/harness.mjs`](src/harness.mjs) `capabilities`, `resolve()`,
-  `unmetNeeds()`; [`src/extensions.mjs`](src/extensions.mjs) manifest tracking;
-  `plugins` built-in.
+1. **Spinner Bench is not TRAAVIIS.** It remains the place where the
+   language/runtime is exercised, visually inspected, and proven. TRAAVIIS
+   *consumes* those capabilities and packages them.
+2. **`trvs` invents no state semantics.** Every command is a thin call over the
+   Forge engine's stable public API (`traaviis.engine → forge_api`). Identity,
+   lowering, folding, and verification live below the CLI and are versioned
+   there.
 
 ---
 
-## 3. The kernel — five primitives, nothing more
+## 2. What is real today
 
-```
-1. command registry      extensibility  (register / override / resolve-by-capability)
-2. pipe engine + values  composability  (parsePipeline → run → invoke → present)
-3. capability manifests   pluggability   (capability index, needs, plugin list)
-4. session history tree   replay/share   (every line recorded; export to JSON)
-5. output modes           surfaces       (interactive | print | json)
-```
+`traaviis` is a zero-dependency Python package exposing the `trvs` command over
+`traaviis.engine`. Seven commands fold real worlds:
 
-If a proposed behavior cannot be expressed as a command over these five, the
-correct response is usually to sharpen a primitive — not to add a sixth.
-`src/` is intentionally small and dependency-free; read it top to bottom.
+| command        | contract                                                        |
+| -------------- | --------------------------------------------------------------- |
+| `trvs doctor`  | reports engine dir, API version, `ic_ref`/`ic32`/oracle status  |
+| `trvs id`      | re-lowers source → `SemanticArtifactID` (pure identity)         |
+| `trvs inspect` | lowered actors, edges, resolved static config, diagnostics      |
+| `trvs run`     | folds the world through `ic_ref`; prints the per-epoch film     |
+| `trvs verify`  | cross-checks `ic_ref` vs native `ic32` vs the Fixture oracle    |
+| `trvs replay`  | re-folds and asserts a pinned `--expect` id / `--film` hash     |
+| `trvs diff`    | folds two worlds and marks the first divergent epoch            |
 
----
+**Identity model.** Presentation (position, colour, wire curve) never enters the
+hash; a rotor value or a rewire does. Run inputs (the scenario) are deliberately
+kept *out* of the `SemanticArtifactID` and carried as a separate `scen-…`
+digest. This is the split that makes an environment content-addressable.
 
-## 3a. The orchestration loop — the engineer at work
-
-The five primitives are the materials; the **orchestration loop** is the
-engineer that works them. It is *not* a sixth primitive — it is a runtime loop
-that drives the five, mirroring the stack's
-`retrieve ▸ route ▸ act ▸ learn ▸ consolidate` cadence:
-
-```
-goal ─▶ retrieve   pull prior context (Graphonomous)
-       ▶ route     pick the model tier + decompose into sub-agents
-       ▶ act       each sub-agent runs commands over the kernel (pipe engine)
-       ▶ learn     report each outcome back to memory
-       ▶ consolidate  merge structured results into one answer + verdict
-```
-
-Three properties make this honest rather than magic:
-
-1. **Visible fan-out.** Sub-agents are explicit nodes in the session tree, not
-   hidden threads. What runs, runs in front of you and is replayable via
-   `export`.
-2. **Tier-routed prompts.** Each step is routed through the **escalation router**
-   (below): the cheapest rung that can answer wins, and only a genuine miss
-   escalates to a `provider.*` capability honoring MODEL_TIER budgets
-   (`local_small ▸ local_large ▸ cloud_frontier`) — resolved like any other
-   capability, so you swap the provider, not the kernel.
-3. **Gated acts.** Before a sub-agent acts, the action is piped through
-   `govern.validate` (box-and-box) and must clear `feasible ▸ permitted ▸ best`
-   over an un-weakenable floor. Autonomy never outruns governance.
-
-> **Mandatory floor gate (Phase A, delivered).** Every *effectful* command —
-> anything that spawns a real toolchain (`build`, `test`) — now routes through a
-> single fail-closed seam (`gate()` in `builtins.mjs`) **before** any process is
-> spawned. A product with a governing `*.ampersand.json` must floor to a
-> `decision` verdict to run; any other verdict (`no-admissible`, `parse-error`,
-> escalation, or an unresolvable kernel) **refuses the act without spawning** and
-> taints `exitCode`. An *ungoverned* product is allowed-but-recorded in default
-> mode (the gap is logged, never hidden) and refused under `TRAAVIIS_ENFORCE=1`.
-> Governance is therefore **structural, not advisory**: there is no effectful
-> path that bypasses the floor. Every decision is appended to `h.gateLog` and
-> surfaced by the `/gates` command — the audit trail doubles as the measurement
-> seed for benchmarking the gate itself.
-
-> **Escalation router (Phase B, delivered).** `router.mjs` adds a cost-stratified
-> resolver on top of the floor — the honest core of a *resolve-low /
-> escalate-on-miss* runtime. Tiers are walked **cheapest-first**; the first hit
-> wins. A **MISS** falls through to the next rung. The floor gates the
-> **transition into any effectful tier** (a refused floor refuses the hop,
-> fail-closed). A hit from a tier that declares itself pure (`crystallize: true`)
-> is **memoized downward** into the tier-0 cache, so the next identical request
-> resolves for free. TRAAVIIS ships a two-rung ladder:
-> `deterministic` (if a registered command/capability resolves it, run it — the
-> cheap, model-free path) ▸ `escalate` (nothing cheaper resolved → hand the
-> request **up to the agent**, which *is* the model; floor-gated, and it reports
-> the escalation rather than fabricating a model call). Extensions add rungs
-> (κ/σ/β analyzers, `provider.*` model adapters) by registering resolvers. Every
-> resolution is appended to `h.router.log` and surfaced by `/route` (per-request
-> hop trace) and `/routes` (per-tier cost-ladder seed). This is the *mechanism*;
-> the cost numbers are relative ordering weights, **not** a claimed compute model.
-
-### The layer boundary (why this doesn't break "tools don't call models")
-
-The stack rule is that **tools and libraries** — MCP servers, box-and-box,
-Graphonomous, PRISM — never call a model; the **agent** does. TRAAVIIS is not
-one of those tools. **It is the harness: the agent's runtime.** It is the
-"agent" side of that sentence. So routing prompts and calling models is exactly
-its job, while every *command* it drives stays model-free and every *library*
-it composes stays a pure verdict/memory/measurement function. The boundary is
-sharpened, not crossed:
-
-| Layer | Calls a model? | Examples |
-| --- | --- | --- |
-| **Harness / runtime** (this) | **yes** — routes prompts, orchestrates sub-agents | TRAAVIIS orchestration loop |
-| Commands / tools | no | `build`, `test`, `validate`, extensions |
-| Libraries / MCP | no | box-and-box, Graphonomous, PRISM |
+**Verification contract.** A film is not asserted — it is *checked by every
+applicable verifier*. The reference reducer (`ic_ref`), the compiled native
+reducer (`ic32`), and an independent oracle each run where their domain applies
+and must agree byte-for-byte. Coverage is explicit: a verifier that cannot apply
+to a world is reported `not_applicable`, never counted as a pass or a fail. The
+Golden Spinner agrees 3/3; a bare Blank Spinner is a valid world for
+`ic_ref == ic32` but sits outside the Fixture oracle's domain. Exit codes: `0`
+agree, `1` ran-and-disagreed, `2` a verifier was unavailable. That makes any
+verifying command a fail-closed gate.
 
 ---
 
-## 4. What we deliberately did NOT build (and the seam to use instead)
+## 3. The environment surface (roadmap)
 
-Following Pi's "primitives, not features," each omission maps to a seam:
+The gap between "a verifiable world" and "an environment an agent trains
+against" is task/reward/episode lifecycle. The internal contract for that
+lifecycle is a **neutral Episode Kernel** — public protocols are *adapters* over
+it, never runtime law. This keeps [Open Reward Standard](https://openreward.ai)
+or MCP evolution from ever becoming TRVM runtime semantics.
 
-| Not built | Reach for | Why it belongs outside the kernel |
-| --- | --- | --- |
-| Baked-in MCP | an extension that registers MCP-bridge commands | MCP is one integration, not the harness's identity. |
-| *Hidden* sub-agents | the orchestration loop, whose fan-out is **visible** | The harness *does* orchestrate sub-agents (§3a) — but every one is a session-tree node printed in front of you, never a hidden thread. |
-| Permission popups | `box-and-box govern` verdicts (`govern.validate`) | Governance is a **verdict + certificate**, not a modal. |
-| Plan mode | session-tree nodes you `export` and replay | A plan is just recorded intent. |
-| Built-in to-dos | Graphonomous goals | Memory + goals belong to the memory loop, per stack policy. |
-| LLM calls inside a *command* or *library* | the harness runtime, which routes prompts on the agent's behalf | Stack policy holds at the tool/library layer; the harness is the runtime where prompt-routing belongs (§3a). |
+```text
+Episode Kernel   start · observe · step · reset · finalize   (internal, neutral)
+        ↓
+ORS adapter      first / primary public surface  →  trvs serve --ors
+MCP adapter      compatibility (tools/resources/prompts)  →  trvs serve --mcp
+JSONL adapter    local automation / debugging
+```
+
+The ORS wire surface (`list_tasks · session · call_tool → reward · finished`)
+and the MCP primitives (`tools · resources · prompts`) are both *projections* of
+the same kernel. The kernel owns the semantics; adapters only translate.
+
+### 3a. The artifact ladder
+
+TRAAVIIS freezes an eight-level artifact ladder, each level answering exactly one
+question, so two researchers never argue about what agreed and what did not:
+
+| id          | question                        | domain                        |
+| ----------- | ------------------------------- | ----------------------------- |
+| `sem-…`     | was it the same world?          | Hash(IR + policies)           |
+| `scen-…`    | same initialization?            | run inputs, out of identity   |
+| `rew-…`     | same scoring rubric?            | declared reward spec          |
+| `task-…`    | same assignment?                | scenario + reward + terminate |
+| `film-…`    | same behavior?                  | the recorded trajectory       |
+| `episode-…` | same evaluated outcome?         | film + rubric → receipt       |
+| `env-…`     | same environment release?       | world + tasks + rewards + splits |
+| `bundle-…`  | same distributed package?       | env + presentation + docs     |
+
+Re-scoring the *same* film under a different rubric changes the `episode-…`
+receipt but never the `film-…` — the trajectory did not change.
+
+### 3b. The bundle — `traaviis.environment.v1`
+
+`trvs pack` separates *what an environment means* from *how it is shipped*. The
+**environment manifest** (`env-…`) fixes the world, tasks, rewards, action /
+observation profiles, and split membership; the outer **package** (`bundle-…`)
+carries presentation, docs, and screenshots and may change without moving
+`env-…`. It layers over the existing `forge.bundle.v2` (world + scenarios,
+already closed), adding `{tasks, rewards, splits, action/observation profiles}`.
+
+Three laws (mirroring the existing Forge bundle discipline):
+
+- **self-sufficiency** — the object set is derived from the doc.
+- **closure** — the active world re-lowers to its declared `sem-…` and every
+  task / reward / scenario reference resolves inside the closure, or import
+  fails loudly.
+- **identity** — `pack` re-opens and re-verifies the emitted bundle before
+  reporting success.
+
+An episode emits a receipt:
+
+```json
+{ "world_id": "sem-…", "scenario_id": "scen-…", "task_id": "task-…",
+  "reward_id": "rew-…", "film_id": "film-…", "episode_id": "episode-…",
+  "reward": 1, "finished": true,
+  "verification": { "reference": true, "native": true, "oracle": "not_applicable" } }
+```
+
+Every verifier field is `true`, `false`, or `not_applicable` — coverage is never
+silently dropped.
+
+### 3c. Evaluation before training
+
+The first job is not a trainer. `trvs eval` runs an agent over a split and scores
+every episode; a comparison view diffs two runs. Because every episode is
+verified and content-addressed, the numbers are reproducible and the films are
+re-checkable. Training frameworks drive rollouts *through* the ORS adapter later.
+
+### 3d. Later: verified process rewards
+
+Because TRVM films observe each transition, TRAAVIIS can eventually emit
+intermediate, verifier-grounded rewards (e.g. `+0.2 preserved safety invariant`,
+`-0.3 duplicated forbidden resource`) rather than only a terminal reward. This
+depends entirely on verifier reliability, so it ships **after** deterministic
+terminal rewards and complete episodes are solid.
 
 ---
 
-## 5. Roadmap to SOTA (capability-shaped, so each lands as a plug)
+## 4. Sequencing
 
-1. **RPC / JSONL surface** — a 4th mode: read commands as JSONL on stdin, emit
-   structured events on stdout, so TRAAVIIS embeds in editors and agents
-   (Pi's RPC lesson). Capability: `surface.rpc`.
-2. **Packages** — a `traaviis.plugin.json` that bundles extensions + themes +
-   prompt templates, installable from npm/git, surfaced in `/plugins`.
-3. **Provider/model adapters** — pluggable `provider.*` capabilities that power
-   the orchestration loop's tier routing (§3a), honoring the stack's MODEL_TIER
-   budgets (local_small / local_large / cloud_frontier). The runtime calls the
-   model; the commands it drives stay model-free.
-4. **Governance gate as a hook** — *delivered for effectful commands (§3a):*
-   `build`/`test` run `box-and-box govern` against the product's floor spec and
-   refuse on any non-`decision` verdict, without spawning, recording each verdict
-   to `/gates`. Permissions are now *floor-then-verdict* for spawning ops; the
-   remaining work is generalizing the same seam into a declarative `beforeRun`
-   hook for arbitrary commands and attaching the full certificate to the session
-   node.
-5. **Memory loop wiring** — `retrieve` before a stage, `learn` after, via
-   Graphonomous capabilities, so the harness participates in the
-   retrieve ▸ route ▸ act ▸ learn ▸ consolidate loop the stack already runs.
-6. **PULSE manifest** — declare TRAAVIIS's own loop topology
-   (`traaviis.pulse.json`) so PRISM can benchmark the harness as a loop.
-7. **Themes + prompt templates** — register palettes (`h.theme`) and reusable
-   prompt commands, completing Pi's extension taxonomy.
+- **v0.7-5 (Spinner Bench)** — close the Public Alpha: freeze presentation,
+  package source, document limits, publish reproducible acceptance. Then freeze
+  Bench feature work.
+- **TRAAVIIS v0.1** — `doctor · init · id · inspect · run · verify · replay ·
+  pack`; ship Golden Spinner as the first bundle.
+- **TRAAVIIS v0.2** — the Episode Kernel + `trvs serve --ors`; ship the
+  Courier/Factory world so the kernel is exercised by a stateful, long-horizon
+  environment *before* `eval` is called complete.
+- **TRAAVIIS v0.3** — `eval · compare · reports` over the kernel; MCP adapter.
+- **TRAAVIIS v0.4** — an ORS/TRL example, process-reward hooks, environment
+  publishing; ship WallRider/Graffiti world.
 
-Each item is a *capability behind a seam*, not a new kernel feature — which is
-the whole point.
+---
+
+## 5. What is deliberately not built
+
+Model routing · generic sub-agent orchestration · another chat interface · a
+cloud GPU training service · a giant environment marketplace · a complete game
+engine · plugin systems before the bundle/session API is stable · a complex
+interactive REPL · automatic LLM world generation as the core proposition.
+
+LLM-assisted authoring (`trvs propose "add a locked gate opened by two
+signals"`) can be useful later — but the model must produce a *reviewable graph
+edit*, and the deterministic system stays authoritative.
+
+---
+
+## 6. The environment RFC (rulings received)
+
+The environment surface introduces genuinely new semantic/runtime constructs.
+Those were ruled below `trvs`, not invented in it. The rulings — reward as a
+first-class `rew-…` artifact, tasks as first-class with splits as manifest sets,
+`env-…` vs `bundle-…`, the episode/reset/replay contract (`reset` reconstructs
+initial state, `replay` reapplies a recorded action stream — they are *not* the
+same), one server / many sessions with no global lock, and `init`/`pack`
+admission laws — are captured in `RFC_TRAAVIIS_ARTIFACTS.md`, together with the
+mutation laws each construct must satisfy. That RFC, not this document, is the
+next thing to turn into engine code.
+
+MIT licensed · TRAAVIIS Holdings · part of the [&] Protocol ecosystem.
