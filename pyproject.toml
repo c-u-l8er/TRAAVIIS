@@ -5,16 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "traaviis"
 version = "0.1.0"
-description = "TRAAVIIS -- the verifiable world terminal for WallRiderLang and TRVM. Author spatial actor worlds, run them deterministically, and verify the film."
+description = "TRAAVIIS -- a local-first toolchain for evidence-grade agent evaluation, with TRVM worlds as its exact-replay substrate."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "c-u-l8er" }]
-keywords = ["wallriderlang", "wrl", "trvm", "deterministic", "world", "terminal", "cli", "eval", "agent-evaluation"]
+keywords = ["agent-evaluation", "eval", "evidence-grade", "deterministic", "wallriderlang", "wrl", "trvm", "cli"]
 
-# Zero runtime dependencies. The CLI is a thin terminal front-end over the
-# existing Forge/TRVM engine (the wrl_*.py spine + the ic32 reference/native
-# reducers), located at runtime -- see traaviis.engine.
+# No third-party Python runtime dependencies. The world commands (id/inspect/run/
+# verify/replay/diff) require the Forge/TRVM engine at runtime (see traaviis.engine)
+# and native verification requires the ic32 reducer; Residency evaluation
+# (eval-one) does not require Forge unless the task requires the identity verifier.
 dependencies = []
 
 [project.scripts]

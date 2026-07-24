@@ -62,6 +62,7 @@ episode tampered (``reward = 0`` / ``validity = invalid``).
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from . import admission, execfacts, identity, patchapply, reward, runner, verifiers
+from .execfacts import UnsupportedPolicyError
 from .vcontext import VerifierContextV1, VerifierResult
 
 __all__ = ["eval_one", "EPISODE_VERSION", "UnsupportedPolicyError"]
@@ -69,17 +70,6 @@ __all__ = ["eval_one", "EPISODE_VERSION", "UnsupportedPolicyError"]
 EPISODE_VERSION = "traaviis.episode.v1"
 
 Verifier = Callable[[VerifierContextV1], VerifierResult]
-
-
-class UnsupportedPolicyError(Exception):
-    """The task's run policy asks for a guarantee the trusted-local runner can't give.
-
-    The runner is a *trusted-local* process runner, not a sandbox: it observes
-    filesystem writes by rescan and applies no network isolation. A task that
-    requests, e.g., ``network:"disabled"`` is demanding an enforcement this runner
-    does not deliver — accepting it would seal a dishonest ``execution_facts``
-    sandbox label. Such a policy is rejected at preflight, before the agent runs.
-    """
 
 # The three substrate-independent verifiers, wired live through the uniform seam.
 _LIVE_VERIFIERS: Dict[str, Verifier] = {
@@ -179,29 +169,6 @@ def _required_config_error(
     return None
 
 
-def _check_run_policy(policy: Mapping[str, Any], runner_profile: str) -> None:
-    """Reject a run policy the trusted-local runner cannot honestly satisfy.
-
-    The runner profile states the sandbox guarantee it actually delivers (see
-    ``execfacts.RUNNER_PROFILES``). A task may only request the network posture the
-    profile really provides (``unrestricted`` for the trusted-local runner) — or
-    leave it unset. Any stronger request (e.g. ``disabled``) is refused *before*
-    the agent runs, so no episode ever seals a sandbox label it did not enforce.
-    """
-    caps = execfacts.RUNNER_PROFILES.get(runner_profile)
-    if caps is None:
-        raise UnsupportedPolicyError(f"unknown runner profile {runner_profile!r}")
-    requested = policy.get("network")
-    supported = caps["network"]
-    if requested is not None and requested != supported:
-        raise UnsupportedPolicyError(
-            f"runner profile {runner_profile!r} is a trusted-local process runner, "
-            f"not a sandbox: it cannot honor network={requested!r} (it provides only "
-            f"network={supported!r}). Declare network={supported!r} + "
-            f"runner_profile={runner_profile!r} for an honest episode."
-        )
-
-
 def eval_one(
     task: Mapping[str, Any],
     content: Mapping[str, str],
@@ -247,7 +214,7 @@ def eval_one(
     admission.cross_bind_task(task, reward_id_v, snap_id)
 
     # --- Preflight policy: refuse a run posture the runner can't honestly keep --
-    _check_run_policy(policy, runner_profile)
+    execfacts.validate_run_policy(policy, runner_profile)
 
     # Seal each scored signal's {contract, implementation} version pair from the
     # reward's ask + the wired verifier's own declared version (never the task's).

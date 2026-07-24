@@ -1,9 +1,12 @@
-"""trvs / traaviis -- the verifiable world terminal for WallRiderLang and TRVM.
+"""trvs / traaviis -- a local-first toolchain for evidence-grade agent evaluation.
 
-Real commands over the Forge engine's stable public API (traaviis.engine ->
-forge_api). Nothing here is scripted: `id`/`inspect` re-lower the source, `run`
-folds it through the ic_ref reducer, and `verify` cross-checks ic_ref against the
-native ic32 reducer and the independent Fixture oracle.
+TRAAVIIS evaluates a user-supplied agent against a frozen subject and proves what
+happened, with TRVM worlds as its exact-replay substrate. The world commands run
+real over the Forge engine's stable public API (traaviis.engine -> forge_api):
+`id`/`inspect` re-lower the source, `run` folds it through the ic_ref reducer, and
+`verify` cross-checks ic_ref against the native ic32 reducer and the independent
+Fixture oracle. `eval-one` admits an eval bundle, runs the agent, and folds one
+content-addressed episode receipt.
 
     trvs doctor              -- engine location, versions, verifier availability
     trvs id      WORLD.wrl   -- the world's SemanticArtifactID (pure identity)
@@ -14,7 +17,8 @@ native ic32 reducer and the independent Fixture oracle.
     trvs diff    A.wrl B.wrl -- compare two worlds' identity + per-epoch films
     trvs eval-one BUNDLE     -- run one trusted-local Residency episode over a bundle
 
-The model may propose worlds; TRAAVIIS and TRVM decide what they mean.
+TRAAVIIS does not embed, select, or route a model. Evaluation runs a user-supplied
+agent command, which may use one; the world commands call none.
 """
 import argparse
 import json
@@ -451,39 +455,75 @@ def _load_json(path, what):
         raise SystemExit(EXIT_UNAVAILABLE)
 
 
-def _bundle_paths(bundle):
-    """Resolve the bundle's member paths, honoring an optional ``bundle.json``.
+def _bundle_member(root_real, key, ref):
+    """Resolve one bundle-relative reference to a *contained*, symlink-free path.
 
-    Without a manifest the default names are used. With one, its ``eval_bundle_version``
-    must match and every referenced path must be a safe relative POSIX path — a
-    ``../escape`` or absolute path is rejected here (exit 2), never opened.
+    Lexical safety (``safe_relposix``: no absolute, no ``..``) is necessary but not
+    sufficient — a lexically-clean ref can still point at an external file through a
+    symlink (``bundle/task.json`` → ``/etc/passwd``), or the subject root itself can
+    be a symlink to an external directory. So we also require *filesystem*
+    containment: the fully-resolved real path must equal the lexical candidate (any
+    symlink along the way — final or intermediate — makes them differ) and stay
+    under the already-resolved bundle root. Anything else is refused (exit 2) before
+    the path is ever opened.
     """
-    manifest_path = os.path.join(bundle, "bundle.json")
+    if not isinstance(ref, str) or not ref.strip():
+        sys.stderr.write("trvs: bundle.json %s reference must be a path\n" % key)
+        raise SystemExit(EXIT_UNAVAILABLE)
+    rel = ref.rstrip("/")  # a trailing slash on subject/ is cosmetic
+    try:
+        safe = safe_relposix(rel)
+    except PathError as exc:
+        sys.stderr.write(
+            "trvs: bundle.json %s reference escapes the bundle: %s\n" % (key, exc))
+        raise SystemExit(EXIT_UNAVAILABLE)
+    candidate = os.path.normpath(os.path.join(root_real, safe.replace("/", os.sep)))
+    candidate_real = os.path.realpath(candidate)
+    if candidate_real != candidate:
+        sys.stderr.write(
+            "trvs: bundle.json %s reference resolves through a symlink\n" % key)
+        raise SystemExit(EXIT_UNAVAILABLE)
+    try:
+        contained = os.path.commonpath([root_real, candidate_real]) == root_real
+    except ValueError:  # different drives/roots (Windows)
+        contained = False
+    if not contained:
+        sys.stderr.write(
+            "trvs: bundle.json %s reference escapes the bundle root\n" % key)
+        raise SystemExit(EXIT_UNAVAILABLE)
+    return candidate
+
+
+def _bundle_paths(bundle):
+    """Resolve the bundle's member paths from its **required** ``bundle.json``.
+
+    For the public developer preview a versioned bundle is never inferred from
+    directory convention: a missing ``bundle.json`` is an admission error (exit 2).
+    Its ``eval_bundle_version`` must match, and every referenced member is resolved
+    through ``_bundle_member`` — safe relative path *and* filesystem containment (no
+    symlink escape, no external subject root), rejected before it is opened.
+    """
+    root_real = os.path.realpath(bundle)  # resolve a symlinked bundle root once
+    manifest_path = os.path.join(root_real, "bundle.json")
+    if not os.path.isfile(manifest_path) or os.path.islink(manifest_path):
+        sys.stderr.write(
+            "trvs: bundle is missing a required bundle.json manifest "
+            "(eval-bundle.v1)\n")
+        raise SystemExit(EXIT_UNAVAILABLE)
+    manifest = _load_json(manifest_path, "bundle.json")
+    version = manifest.get("eval_bundle_version")
+    if version != EVAL_BUNDLE_VERSION:
+        sys.stderr.write(
+            "trvs: bundle.json has unsupported eval_bundle_version %r "
+            "(expected %r)\n" % (version, EVAL_BUNDLE_VERSION))
+        raise SystemExit(EXIT_UNAVAILABLE)
     refs = dict(_BUNDLE_DEFAULTS)
-    if os.path.isfile(manifest_path):
-        manifest = _load_json(manifest_path, "bundle.json")
-        version = manifest.get("eval_bundle_version")
-        if version != EVAL_BUNDLE_VERSION:
-            sys.stderr.write(
-                "trvs: bundle.json has unsupported eval_bundle_version %r "
-                "(expected %r)\n" % (version, EVAL_BUNDLE_VERSION))
-            raise SystemExit(EXIT_UNAVAILABLE)
-        for key in refs:
-            if key in manifest:
-                refs[key] = manifest[key]
+    for key in refs:
+        if key in manifest:
+            refs[key] = manifest[key]
     resolved = {}
     for key, ref in refs.items():
-        if not isinstance(ref, str) or not ref.strip():
-            sys.stderr.write("trvs: bundle.json %s reference must be a path\n" % key)
-            raise SystemExit(EXIT_UNAVAILABLE)
-        rel = ref.rstrip("/")  # a trailing slash on subject/ is cosmetic
-        try:
-            safe_relposix(rel)
-        except PathError as exc:
-            sys.stderr.write(
-                "trvs: bundle.json %s reference escapes the bundle: %s\n" % (key, exc))
-            raise SystemExit(EXIT_UNAVAILABLE)
-        resolved[key] = os.path.join(bundle, rel.replace("/", os.sep))
+        resolved[key] = _bundle_member(root_real, key, ref)
     return resolved
 
 
@@ -606,7 +646,8 @@ def cmd_eval_one(engine, args):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="trvs",
-        description="TRAAVIIS -- the verifiable world terminal for WallRiderLang and TRVM.")
+        description="TRAAVIIS -- a local-first toolchain for evidence-grade agent "
+                    "evaluation, with TRVM worlds as its exact-replay substrate.")
     p.add_argument("--version", action="version", version="traaviis %s" % __version__)
     sub = p.add_subparsers(dest="command", metavar="<command>")
 

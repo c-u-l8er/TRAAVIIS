@@ -74,6 +74,26 @@ def test_no_patched_tree_is_fail():
     assert SV.tests_verifier(ctx).state == R.FAIL
 
 
+def test_unsupported_test_run_policy_is_error():
+    # The test verifier shares the honest trusted-local runner; a test plan that
+    # requests network:"disabled" would otherwise run unrestricted under a label
+    # that claims isolation. It must be refused as an inadmissible fixture (error),
+    # NOT silently run — the equivalent of the agent-policy preflight.
+    plan = {"commands": [{"argv": _CHECK, "cwd": "."}],
+            "run_policy": {"network": "disabled"}}
+    ctx = _tests_ctx(BASELINE, PATCHED_OK, plan=plan)
+    assert SV.tests_verifier(ctx).state == R.ERROR
+
+
+def test_honest_test_run_policy_is_accepted():
+    # The honest posture (network:"unrestricted") the runner actually delivers runs.
+    plan = {"commands": [{"argv": _CHECK, "cwd": "."}],
+            "run_policy": {"network": "unrestricted",
+                           "runner_profile": "residency.trusted-local.v1"}}
+    ctx = _tests_ctx(BASELINE, PATCHED_OK, plan=plan)
+    assert SV.tests_verifier(ctx).state == R.PASS
+
+
 # --- identity verifier -------------------------------------------------------
 
 def _identity_ctx(patched, must_remain):

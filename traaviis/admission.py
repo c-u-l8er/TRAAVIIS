@@ -232,8 +232,14 @@ def verify_subject_tree(
             if safe_rel in binary:
                 content[safe_rel] = data
             else:
+                # The admitted materialization must be the *canonical* LF
+                # representation, not merely something that hashes to it. A CRLF
+                # and an LF subject seal the same snap-… (snapshot hashing
+                # normalizes to LF); if we handed back the original line endings
+                # the same snap-… could expose different bytes to the agent and
+                # yield a different trace. Normalize first, then decode.
                 try:
-                    content[safe_rel] = data.decode("utf-8")
+                    content[safe_rel] = _normalize_lf(data).decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise AdmissionError(
                         f"subject file {safe_rel!r} is not UTF-8 text; declare it "

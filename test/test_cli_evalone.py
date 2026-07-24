@@ -311,6 +311,69 @@ def test_bundle_manifest_traversal_is_rejected():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_missing_bundle_manifest_is_rejected():
+    # The public preview requires an explicit bundle.json; a versioned bundle is
+    # never inferred from directory convention. Removing it → exit 2.
+    tmp = tempfile.mkdtemp(prefix="traaviis-bundle-")
+    try:
+        dst = _copy_bundle(tmp)
+        os.remove(os.path.join(dst, "bundle.json"))
+        code, _ = _run(_eval_argv(dst))
+        assert code == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_bundle_member_file_symlink_escape_is_rejected():
+    # A lexically-clean manifest ref that points OUTSIDE the bundle through a
+    # symlink (snapshot.json → an external file) must be refused, never opened.
+    tmp = tempfile.mkdtemp(prefix="traaviis-bundle-")
+    try:
+        dst = _copy_bundle(tmp)
+        outside = os.path.join(tmp, "outside.json")
+        shutil.move(os.path.join(dst, "snapshot.json"), outside)
+        os.symlink(outside, os.path.join(dst, "snapshot.json"))
+        code, _ = _run(_eval_argv(dst))
+        assert code == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_bundle_subject_root_symlink_escape_is_rejected():
+    # The subject root itself may not be a symlink to an external directory.
+    tmp = tempfile.mkdtemp(prefix="traaviis-bundle-")
+    try:
+        dst = _copy_bundle(tmp)
+        outside = os.path.join(tmp, "outside-subject")
+        shutil.move(os.path.join(dst, "subject"), outside)
+        os.symlink(outside, os.path.join(dst, "subject"), target_is_directory=True)
+        code, _ = _run(_eval_argv(dst))
+        assert code == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_bundle_intermediate_directory_symlink_is_rejected():
+    # An intermediate directory symlink in a manifest ref is refused even when its
+    # target stays inside the bundle — the resolved path is not the lexical one.
+    tmp = tempfile.mkdtemp(prefix="traaviis-bundle-")
+    try:
+        dst = _copy_bundle(tmp)
+        real_task = os.path.join(dst, "task.json")
+        holder = os.path.join(dst, "holder")
+        os.makedirs(holder)
+        shutil.copy(real_task, os.path.join(holder, "task.json"))
+        os.symlink(holder, os.path.join(dst, "viasym"), target_is_directory=True)
+        manifest_p = os.path.join(dst, "bundle.json")
+        manifest = _load(manifest_p)
+        manifest["task"] = "viasym/task.json"  # in-bundle target, but via a symlink
+        _dump(manifest_p, manifest)
+        code, _ = _run(_eval_argv(dst))
+        assert code == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _main():
     tests = sorted(
         (name, obj)

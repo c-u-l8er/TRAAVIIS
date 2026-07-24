@@ -30,6 +30,8 @@ from typing import Any, Mapping, Optional
 __all__ = [
     "EXECUTION_FACTS_VERSION",
     "RUNNER_PROFILES",
+    "UnsupportedPolicyError",
+    "validate_run_policy",
     "normalize_platform",
     "build_execution_facts",
 ]
@@ -47,6 +49,49 @@ RUNNER_PROFILES = {
         "network": "unrestricted",
     },
 }
+
+class UnsupportedPolicyError(Exception):
+    """A run policy asks for a guarantee the runner profile does not deliver.
+
+    The trusted-local runner is a process runner, not a sandbox: it observes
+    filesystem writes by rescan and applies no network isolation. A policy — the
+    agent's ``agent_run_policy`` *or* a test plan's ``run_policy`` — that requests
+    a stronger posture (e.g. ``network:"disabled"``) or names a different runner
+    profile is demanding an enforcement this runner does not provide. Accepting it
+    would seal a dishonest sandbox label / run an isolation-free command under a
+    label that claims isolation, so it is rejected at preflight.
+    """
+
+
+def validate_run_policy(policy: Mapping[str, Any], runner_profile: str) -> None:
+    """Assert ``policy`` only requests what ``runner_profile`` actually delivers.
+
+    The single shared capability check for **both** the agent run policy and the
+    ``tests`` verifier's run policy (they share one honest trusted-local runner, so
+    they must share one honesty gate). A policy may name ``runner_profile`` and
+    ``network`` only if they equal the active profile's real guarantees; either may
+    be omitted (the profile default applies). Any stronger or mismatched request
+    raises ``UnsupportedPolicyError`` before the command runs.
+    """
+    caps = RUNNER_PROFILES.get(runner_profile)
+    if caps is None:
+        raise UnsupportedPolicyError(f"unknown runner profile {runner_profile!r}")
+    requested_profile = policy.get("runner_profile")
+    if requested_profile is not None and requested_profile != runner_profile:
+        raise UnsupportedPolicyError(
+            f"policy names runner_profile={requested_profile!r} but this run uses "
+            f"{runner_profile!r}"
+        )
+    requested_net = policy.get("network")
+    supported_net = caps["network"]
+    if requested_net is not None and requested_net != supported_net:
+        raise UnsupportedPolicyError(
+            f"runner profile {runner_profile!r} is a trusted-local process runner, "
+            f"not a sandbox: it cannot honor network={requested_net!r} (it provides "
+            f"only network={supported_net!r}). Declare network={supported_net!r} + "
+            f"runner_profile={runner_profile!r} for an honest run."
+        )
+
 
 _OS_ALIASES = {"linux": "linux", "darwin": "darwin", "macos": "darwin",
                "win32": "windows", "windows": "windows"}

@@ -34,9 +34,10 @@ import tempfile
 from typing import Any, Mapping, Tuple
 
 from . import reward
+from .execfacts import UnsupportedPolicyError, validate_run_policy
 from .forge_adapter import ForgeIdentityAdapterV1, ForgeUnavailable
 from .paths import PathError, safe_join, safe_relposix
-from .runner import _materialize, _seal_env
+from .runner import RUNNER_PROFILE, _materialize, _seal_env
 from .vcontext import VerifierContextV1, VerifierResult
 
 __all__ = [
@@ -123,6 +124,15 @@ def tests_verifier(context: VerifierContextV1) -> VerifierResult:
     except ValueError as exc:
         # A malformed test plan is an invalid fixture, not agent evidence.
         return VerifierResult(reward.ERROR, {"reason": f"bad test_plan: {exc}"})
+    # The test verifier runs its commands on the SAME honest trusted-local runner as
+    # the agent; a test run_policy that requests an isolation the runner cannot keep
+    # (e.g. network:"disabled") would otherwise run unrestricted under a label that
+    # claims otherwise. Refuse it here — an inadmissible fixture is an error, not a
+    # verdict against the agent.
+    try:
+        validate_run_policy(plan.get("run_policy", {}), RUNNER_PROFILE)
+    except UnsupportedPolicyError as exc:
+        return VerifierResult(reward.ERROR, {"reason": f"unsupported test run_policy: {exc}"})
 
     baseline = run_command_set(plan, context.original_content)
     if baseline == _INFRA_ERROR:

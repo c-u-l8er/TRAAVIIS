@@ -10,7 +10,9 @@ Runs with pytest, or standalone: `python3 test/test_admission.py`.
 
 import hashlib
 import os
+import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -18,6 +20,14 @@ from traaviis import admission as A  # noqa: E402
 from traaviis import identity as I  # noqa: E402
 
 CONTENT = {"spec/one.md": "alpha\nbeta\n", "src/mod.py": "return 1\n"}
+
+
+def _write_tree(root, files):
+    for rel, data in files.items():
+        p = os.path.join(root, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(p) or root, exist_ok=True)
+        with open(p, "wb") as fh:
+            fh.write(data)
 
 
 def _content_hash(text):
@@ -113,6 +123,31 @@ def test_binary_path_hashed_byte_exact():
     except A.AdmissionError:
         return
     raise AssertionError("expected AdmissionError: LF-normalized != byte-exact hash")
+
+
+# --- verify_subject_tree canonical-LF admission ------------------------------
+
+def test_crlf_and_lf_subject_admit_identical_canonical_content():
+    # The same snap-… seals a CRLF subject and an LF subject (snapshot hashing
+    # normalizes to LF). The admitted materialization must be the CANONICAL LF form
+    # for BOTH — otherwise the same snap-… could hand the agent different bytes and
+    # yield a different trace. verify_subject_tree must return byte-identical LF
+    # content from either tree.
+    snap = _snapshot()  # sealed over LF CONTENT
+    lf_dir = tempfile.mkdtemp(prefix="traaviis-lf-")
+    crlf_dir = tempfile.mkdtemp(prefix="traaviis-crlf-")
+    try:
+        _write_tree(lf_dir, {k: v.encode("utf-8") for k, v in CONTENT.items()})
+        _write_tree(crlf_dir, {k: v.replace("\n", "\r\n").encode("utf-8")
+                               for k, v in CONTENT.items()})
+        lf_content = A.verify_subject_tree(snap, lf_dir)
+        crlf_content = A.verify_subject_tree(snap, crlf_dir)
+        assert lf_content == crlf_content
+        assert all("\r" not in v for v in crlf_content.values())
+        assert crlf_content == CONTENT  # exactly the canonical LF subject
+    finally:
+        shutil.rmtree(lf_dir, ignore_errors=True)
+        shutil.rmtree(crlf_dir, ignore_errors=True)
 
 
 # --- admit_subject (id + binding together) -----------------------------------
