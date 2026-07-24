@@ -1,0 +1,10 @@
+profile forge.world.core.v1
+
+[pulser:p0](every 2){sig_out}
+[relay:r0]{sig_in, sig_out}
+[spinner:sp](w=16, n=8, rotor=quarter_turn_z, configurable){sig_in, socket}
+[orb:ob]{pose}
+
+[pulser:p0] --sig--> [relay:r0]
+[relay:r0] --sig--> [spinner:sp]
+[spinner:sp] --socket--> [orb:ob]

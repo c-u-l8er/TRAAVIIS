@@ -1,0 +1,8 @@
+{
+  "eval_bundle_version": "traaviis.eval-bundle.v1",
+  "task": "task.json",
+  "reward": "reward.json",
+  "snapshot": "snapshot.json",
+  "subject": "subject",
+  "agent": "agent.json"
+}

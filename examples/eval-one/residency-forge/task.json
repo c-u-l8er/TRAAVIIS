@@ -1,0 +1,71 @@
+{
+  "task_spec_version": "traaviis.task.v1",
+  "substrate_profile": "residency.repository.v1",
+  "subject": {
+    "snapshot_id": "snap-c66198abf3ef6153d4bd6033fa40a0bd0028df3a7699ab645dc947710e51cba4"
+  },
+  "instructions": {
+    "objective": "cite spec/residency.md, patch src/mod.py within the return contract, and keep world/frozen.wrl's identity"
+  },
+  "reward_id": "rew-25c4ce1276a7b70a473548354ae5d14f1c852ba087ffd09bc9b17b550c5c05a5",
+  "verifier_plan": {
+    "required": [
+      "citations",
+      "patch",
+      "finding_completeness",
+      "tests",
+      "identity"
+    ],
+    "not_applicable": [
+      "native",
+      "oracle"
+    ]
+  },
+  "test_plan": {
+    "commands": [
+      {
+        "argv": [
+          "/usr/bin/python3",
+          "-c",
+          "import sys;sys.exit(0 if open('src/mod.py').read().strip() in ('return 1','return 2') else 1)"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 30
+      }
+    ],
+    "baseline": "must_pass",
+    "run_policy": {
+      "runner_profile": "residency.trusted-local.v1",
+      "network": "unrestricted"
+    }
+  },
+  "identity_policy": {
+    "must_remain": {
+      "world": {
+        "path": "world/frozen.wrl",
+        "profile": "forge.world.core.v1",
+        "before_id": "sem-67e954cfe3115166b49388366df3f062a46572ba2baf53380f1520f4050b60ae"
+      }
+    }
+  },
+  "termination": {
+    "mode": "one_shot"
+  },
+  "agent_run_policy": {
+    "policy_version": "traaviis.agent-run-policy.v1",
+    "command_mode": "argv",
+    "shell": false,
+    "network": "unrestricted",
+    "timeout_seconds": 30,
+    "max_output_bytes": 4194304,
+    "environment": {
+      "TRAAVIIS_STUB_MODE": "ok"
+    },
+    "writable_paths": [
+      "."
+    ],
+    "result_path": "result.json",
+    "patch_path": "candidate.patch"
+  },
+  "task_id": "task-1547aa55e4a81baa5b495f1604fa4a08e5a9fd4a5e01e22bad6ffda35b665e39"
+}
