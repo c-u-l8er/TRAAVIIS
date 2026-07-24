@@ -1,0 +1,130 @@
+"""Pure Residency verifiers over sealed evidence (RFC Evidence Residency §6).
+
+Each verifier is a **pure function** of the snapshot content plus the agent's
+outputs, returning exactly one of the four states
+(``pass | fail | not_applicable | error`` — see ``traaviis.reward``). No
+subprocess, no network, no LLM: every signal is a deterministic function over
+frozen bytes (§7).
+
+This module implements the three substrate-*independent* verifiers:
+
+  ``citations``            every finding citation resolves in the snapshot and the
+                           quote matches the normalized source span exactly.
+  ``patch``                the candidate diff applies cleanly to a fresh copy of
+                           the snapshot content.
+  ``finding_completeness`` the finding carries the required structured fields and
+                           evidence coverage — never prose quality (§7).
+
+The remaining two Residency signals are deferred to later slices because they
+touch substrate: ``tests`` needs the controlled runner (subprocess) and
+``identity`` needs the Forge re-lower (TRVM). Per §10a a **missing or malformed
+agent output is a ``fail``**, never an ``error``; ``error`` is reserved for
+substrate unavailability, of which these pure verifiers have none.
+"""
+
+from typing import Any, Mapping
+
+from . import reward
+from .patchapply import PatchError, apply_unified_diff
+
+__all__ = ["verify_citations", "verify_patch", "verify_finding_completeness"]
+
+PASS = reward.PASS
+FAIL = reward.FAIL
+
+
+def _content_lines(text: str) -> list:
+    ended_nl = text.endswith("\n")
+    lines = text.split("\n")
+    if ended_nl:
+        lines = lines[:-1]
+    return lines
+
+
+def verify_citations(finding: Mapping[str, Any], content: Mapping[str, str]) -> str:
+    """`pass` iff every citation resolves and its quote matches the source span.
+
+    ``content`` maps snapshot relpath -> normalized (LF) text. A citation is
+    ``{path, start_line, end_line, quote}`` with 1-based inclusive line ranges
+    (§5a). Any missing field, unknown path, out-of-range span, or quote mismatch
+    is a ``fail`` (malformed/unsupported output, never an ``error``).
+    """
+    claims = finding.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return FAIL
+    for claim in claims:
+        citations = claim.get("citations") if isinstance(claim, Mapping) else None
+        if not isinstance(citations, list) or not citations:
+            return FAIL
+        for cit in citations:
+            if not isinstance(cit, Mapping):
+                return FAIL
+            path = cit.get("path")
+            start = cit.get("start_line")
+            end = cit.get("end_line")
+            quote = cit.get("quote")
+            if not (isinstance(path, str) and isinstance(start, int)
+                    and isinstance(end, int) and isinstance(quote, str)):
+                return FAIL
+            if path not in content:
+                return FAIL
+            if start < 1 or end < start:
+                return FAIL
+            lines = _content_lines(content[path])
+            if end > len(lines):
+                return FAIL
+            span = "\n".join(lines[start - 1:end])
+            if span != quote:
+                return FAIL
+    return PASS
+
+
+def verify_patch(patch: Mapping[str, Any], content: Mapping[str, str]) -> str:
+    """`pass` iff the candidate diff applies exactly to a fresh copy of ``content``.
+
+    A missing/malformed diff or any inexact application is a ``fail`` (§10a),
+    never an ``error``.
+    """
+    diff = patch.get("diff")
+    if not isinstance(diff, str) or not diff.strip():
+        return FAIL
+    try:
+        apply_unified_diff(content, diff)
+    except PatchError:
+        return FAIL
+    return PASS
+
+
+def verify_finding_completeness(finding: Mapping[str, Any]) -> str:
+    """`pass` iff the finding has the required structured fields + evidence.
+
+    Structural only (§7): at least one claim, each with a non-empty ``statement``
+    and at least one citation carrying ``path`` + a valid 1-based inclusive span
+    + a ``quote``. Never judges prose quality.
+    """
+    claims = finding.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return FAIL
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            return FAIL
+        statement = claim.get("statement")
+        if not isinstance(statement, str) or not statement.strip():
+            return FAIL
+        citations = claim.get("citations")
+        if not isinstance(citations, list) or not citations:
+            return FAIL
+        for cit in citations:
+            if not isinstance(cit, Mapping):
+                return FAIL
+            path = cit.get("path")
+            start = cit.get("start_line")
+            end = cit.get("end_line")
+            quote = cit.get("quote")
+            if not (isinstance(path, str) and path
+                    and isinstance(start, int) and isinstance(end, int)
+                    and isinstance(quote, str)):
+                return FAIL
+            if start < 1 or end < start:
+                return FAIL
+    return PASS
