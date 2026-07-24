@@ -100,17 +100,25 @@ question, so two researchers never argue about what agreed and what did not:
 
 | id          | question                        | domain                        |
 | ----------- | ------------------------------- | ----------------------------- |
-| `sem-…`     | was it the same world?          | Hash(IR + policies)           |
+| `sem-…`     | was it the same subject?        | Hash(IR + policies)           |
 | `scen-…`    | same initialization?            | run inputs, out of identity   |
 | `rew-…`     | same scoring rubric?            | declared reward spec          |
-| `task-…`    | same assignment?                | scenario + reward + terminate |
-| `film-…`    | same behavior?                  | the recorded trajectory       |
-| `episode-…` | same evaluated outcome?         | film + rubric → receipt       |
-| `env-…`     | same environment release?       | world + tasks + rewards + splits |
+| `task-…`    | same assignment?                | subject + reward + terminate  |
+| `trace-…`   | same behavior?                  | the recorded observable record |
+| `episode-…` | same evaluated outcome?         | trace + rubric → receipt      |
+| `env-…`     | same environment release?       | subject + tasks + rewards + splits |
 | `bundle-…`  | same distributed package?       | env + presentation + docs     |
 
-Re-scoring the *same* film under a different rubric changes the `episode-…`
-receipt but never the `film-…` — the trajectory did not change.
+The shared evaluation constructs (`task-…`, `rew-…`, `episode-…`, the substrate
+profile) live in the `traaviis.*` namespace; substrate-specific evidence lives
+below. A **`trace-…`** is the substrate-neutral observable record; a
+**`film-…`** is the *TRVM case* of a `trace-…` — a deterministic-execution
+artifact that does not generalize to arbitrary substrates. Forge owns TRVM
+compilation and identity (`sem-…`/`scen-…`/`film-…`); TRAAVIIS owns the shared
+evaluation ladder.
+
+Re-scoring the *same* trace under a different rubric changes the `episode-…`
+receipt but never the `trace-…` — the recorded behavior did not change.
 
 ### 3b. The bundle — `traaviis.environment.v1`
 
@@ -133,21 +141,28 @@ Three laws (mirroring the existing Forge bundle discipline):
 An episode emits a receipt:
 
 ```json
-{ "world_id": "sem-…", "scenario_id": "scen-…", "task_id": "task-…",
-  "reward_id": "rew-…", "film_id": "film-…", "episode_id": "episode-…",
-  "reward": 1, "finished": true,
-  "verification": { "reference": true, "native": true, "oracle": "not_applicable" } }
+{ "episode_version": "traaviis.episode.v1", "substrate_profile": "trvm.world.v1",
+  "task_id": "task-…", "subject": { "world": "sem-…", "scenario": "scen-…" },
+  "reward_id": "rew-…", "trace": "film-…", "episode_id": "episode-…",
+  "reward": 1, "status": "ok", "finished": true,
+  "verification": { "reference": "pass", "native": "pass", "oracle": "not_applicable" } }
 ```
 
-Every verifier field is `true`, `false`, or `not_applicable` — coverage is never
-silently dropped.
+For a Residency episode the same receipt carries
+`"substrate_profile": "residency.repository.v1"`, a `trace-…` in place of the
+`film-…`, and `citations`/`patch`/`tests`/`identity` verifier fields. Every
+verifier field is one of `pass`, `fail`, `not_applicable`, or `error` — coverage
+is never silently dropped, and `error` (substrate unavailable) stays distinct
+from `fail` (the work was wrong).
 
 ### 3c. Evaluation before training
 
-The first job is not a trainer. `trvs eval` runs an agent over a split and scores
-every episode; a comparison view diffs two runs. Because every episode is
-verified and content-addressed, the numbers are reproducible and the films are
-re-checkable. Training frameworks drive rollouts *through* the ORS adapter later.
+The first job is not a trainer, and the first interface is not a batch. It is a
+one-shot **`trvs eval-one task.json --agent-command …`** over a single frozen
+subject. Batch `trvs eval` (a split, a comparison view diffing two runs) follows
+once eval-one is boring. Because every episode is verified and content-addressed,
+the numbers are reproducible and the traces are re-checkable. Training frameworks
+drive rollouts *through* the ORS adapter later.
 
 ### 3d. Later: verified process rewards
 
@@ -161,17 +176,31 @@ terminal rewards and complete episodes are solid.
 
 ## 4. Sequencing
 
+The thesis is **evidence-grade environments for evaluating agents**. The
+sequencing builds *one* end-to-end evaluation environment before widening the
+platform. Flagship worlds ship in this order:
+
+**Golden Spinner → Evidence Residency → Courier → WallRider.**
+
 - **v0.7-5 (Spinner Bench)** — close the Public Alpha: freeze presentation,
   package source, document limits, publish reproducible acceptance. Then freeze
-  Bench feature work.
-- **TRAAVIIS v0.1** — `doctor · init · id · inspect · run · verify · replay ·
-  pack`; ship Golden Spinner as the first bundle.
+  Bench feature work. Bench proceeds *independently* and does not block the
+  evaluation surface below.
+- **TRAAVIIS v0.1** — the shared artifact ladder as pure identity functions
+  (`snapshot_id · finding_id · patch_id · trace_id · reward_id · task_id ·
+  episode_id`) with mutation-law tests, then `trvs eval-one` over
+  **Evidence Residency** — an agent inspects a frozen repository, finds a real
+  spec/impl inconsistency, cites evidence, proposes the smallest patch, runs the
+  declared checks, and returns a structured finding + a re-verifiable receipt.
+  Ship Golden Spinner as the first TRVM bundle alongside. See
+  `RFC_EVIDENCE_RESIDENCY.md`.
 - **TRAAVIIS v0.2** — the Episode Kernel + `trvs serve --ors`; ship the
-  Courier/Factory world so the kernel is exercised by a stateful, long-horizon
-  environment *before* `eval` is called complete.
-- **TRAAVIIS v0.3** — `eval · compare · reports` over the kernel; MCP adapter.
+  **Courier**/Factory world so the kernel is exercised by a stateful,
+  long-horizon environment *before* batch `eval` is called complete.
+- **TRAAVIIS v0.3** — batch `eval · compare · reports` over the kernel; MCP
+  adapter.
 - **TRAAVIIS v0.4** — an ORS/TRL example, process-reward hooks, environment
-  publishing; ship WallRider/Graffiti world.
+  publishing; ship the **WallRider**/Graffiti world.
 
 ---
 
@@ -197,7 +226,19 @@ first-class `rew-…` artifact, tasks as first-class with splits as manifest set
 initial state, `replay` reapplies a recorded action stream — they are *not* the
 same), one server / many sessions with no global lock, and `init`/`pack`
 admission laws — are captured in `RFC_TRAAVIIS_ARTIFACTS.md`, together with the
-mutation laws each construct must satisfy. That RFC, not this document, is the
-next thing to turn into engine code.
+mutation laws each construct must satisfy.
+
+Two RFCs, not this document, are the next things to turn into engine code:
+
+- **`RFC_TRAAVIIS_ARTIFACTS.md`** — the substrate-neutral shared ladder
+  (`traaviis.*`): `TaskSpecV1`, `RewardSpecV1`, `SubstrateProfileV1`,
+  `EpisodeReceiptV1`, and the `env-…`/`bundle-…`/`pack`/`serve` surface (the
+  latter marked DEFERRED behind the first environment).
+- **`RFC_EVIDENCE_RESIDENCY.md`** — the first flagship substrate
+  (`residency.repository.v1`): `SnapshotV1`, agent outputs
+  (`FindingV1`/`PatchV1`/`TraceV1`), the four verifier states and their reward
+  behavior, `AgentRunPolicyV1`, and the `trvs eval-one` one-shot flow. The first
+  code proves the pure identity functions with mutation-law tests only — it does
+  not launch an agent.
 
 MIT licensed · TRAAVIIS Holdings · part of the [&] Protocol ecosystem.

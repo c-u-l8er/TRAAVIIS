@@ -116,29 +116,39 @@ TRAAVIIS freezes an **artifact ladder**, each level answering one question:
 
 | id          | question                        |
 | ----------- | ------------------------------- |
-| `sem-…`     | was it the same world?          |
+| `sem-…`     | was it the same subject?        |
 | `scen-…`    | same initialization?            |
 | `rew-…`     | same scoring rubric?            |
 | `task-…`    | same assignment?                |
-| `film-…`    | same behavior?                  |
+| `trace-…`   | same behavior?                  |
 | `episode-…` | same evaluated outcome?         |
 | `env-…`     | same environment release?       |
 | `bundle-…`  | same distributed package?       |
 
-Re-scoring the *same* film under a different rubric changes the `episode-…`
-receipt but never the `film-…` — the trajectory did not change.
+A **`trace-…`** is the substrate-neutral observable record; a **`film-…`** is the
+*TRVM case* of a `trace-…`. Re-scoring the *same* trace under a different rubric
+changes the `episode-…` receipt but never the `trace-…` — the recorded behavior
+did not change. The shared evaluation constructs live in the `traaviis.*`
+namespace; substrate-specific evidence (TRVM `sem·scen·film`, Residency
+`snap·trace·finding·patch`) lives below.
 
 ### Evaluation before training
 
-The first job is not a trainer — it is honest evaluation. `trvs eval` runs an
-agent over a split and scores every episode; a comparison view puts two runs
-side by side. Because every episode is verified and content-addressed, the
-numbers are reproducible and the films are re-checkable.
+The first job is not a trainer, and the first interface is not a batch — it is a
+one-shot `trvs eval-one task.json --agent-command …` over a single frozen
+subject. Batch `trvs eval` over a split (with a side-by-side comparison view)
+follows once eval-one is boring. Because every episode is verified and
+content-addressed, the numbers are reproducible and the traces are re-checkable.
 
 ## Flagship worlds
 
 - **Golden Spinner** *(shipped)* — the identity, replay and triple-fold
   tutorial. Installs, verifies, and reproduces byte-for-byte.
+- **Evidence Residency** *(next)* — an agent inspects a frozen repository, finds
+  one real spec/implementation inconsistency, cites the conflicting evidence,
+  proposes the smallest patch, runs the declared checks, and returns a structured
+  finding + a re-verifiable receipt. The first end-to-end evaluation environment;
+  see `RFC_EVIDENCE_RESIDENCY.md`.
 - **Courier / Factory** *(planned)* — move objects, open gates, route signals,
   spend energy, obey safety constraints, complete deliveries: spatial state,
   long-horizon tasks, objective rewards, resets, splits.
