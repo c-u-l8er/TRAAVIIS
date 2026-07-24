@@ -235,14 +235,16 @@ aggregation must drop `null`-reward episodes, never average them in as zeros.
 
 ## 7. Reward — deterministic, decomposable, no LLM prose judging
 
-`RewardSpecV1` for the first task:
+`RewardSpecV1` for the first task is a **canonical keyed signal map** (see
+`RFC_TRAAVIIS_ARTIFACTS.md` §2): each key binds one verifier result to one
+weight. The identifiers are load-bearing — renaming a signal moves `rew-…`.
 
 ```text
-citation validity      0.25
-patch applicability    0.20
-tests                  0.30
-identity discipline    0.15
-finding completeness   0.10
+citations             → residency.citations.v1   0.25
+patch                 → residency.patch.v1        0.20
+tests                 → residency.tests.v1        0.30
+identity              → residency.identity.v1     0.15
+finding_completeness  → residency.finding.v1      0.10
 ```
 
 **`finding completeness` means required structured fields + evidence coverage**,
@@ -298,17 +300,26 @@ change agent output
   → finding / patch / trace / episode move
   → task / snap unchanged
 
-rerun verifiers on identical frozen artifacts
+rerun the SAME verifier versions over identical frozen artifacts
+  UNDER identical canonical execution facts
   → episode identity remains stable
 
 change verifier implementation version
+  OR change canonical execution facts (toolchain, exit codes, platform)
   → episode moves
   → underlying evidence artifacts (snap / trace / finding / patch) unchanged
 ```
 
-The last law is load-bearing: **verifier versions are recorded in the receipt**,
-so a scoring-logic change is auditable and moves the `episode-…` without
-rewriting what the agent actually produced.
+The stability law is stated precisely because the receipt records
+`execution_facts`. Stability holds only when **both** the verifier versions
+**and** the *canonical* execution facts are identical; changing either moves the
+`episode-…`. (The *volatile* execution facts — wall-clock, absolute paths,
+transient PIDs — are excluded from the hash, so they never move it.) This
+reconciles with the already-stated law that a different **actual** toolchain
+moves the episode: **verifier versions and canonical execution facts are
+recorded in the receipt**, so a scoring-logic change or a toolchain change is
+auditable and moves the `episode-…` without rewriting what the agent actually
+produced.
 
 ---
 
@@ -357,7 +368,8 @@ The runner enforces it; the receipt records what actually happened.
   "network": "disabled",
   "timeout_seconds": 900,
   "max_output_bytes": 4194304,
-  "environment_allowlist": ["PATH", "HOME", "LANG"],
+  "environment": { "LANG": "C.UTF-8", "HOME": "/sandbox/home" },
+  "toolchain_profile": "residency.python-3.11.v1",
   "writable_paths": ["."],
   "result_path": "result.json",
   "patch_path": "candidate.patch" }
@@ -372,8 +384,18 @@ Rules:
 - **`timeout_seconds` / `max_output_bytes`** are hard bounds. Exceeding either
   terminates the run; the episode records the termination reason and the
   affected verifier reports `error` (substrate unavailability), not `fail`.
-- **`environment_allowlist`** — only listed keys are passed through; everything
-  else is stripped so the environment is not a hidden input to identity.
+- **`environment` is a sealed key→value map, not a host allowlist.** Host
+  environment values (`PATH`, `HOME`, `LANG`, …) are **not** inherited — their
+  values could change behavior without entering `task-…`, which would break the
+  frozen-subject claim. Only the sealed keys with their **fixed, normalized
+  values** are exported; everything else is stripped. The runner constructs a
+  controlled `PATH` from the `toolchain_profile`; it never inherits the host's
+  arbitrary `PATH`. An allowlist is safe only when **both** the key *and* its
+  normalized value are fixed, which is exactly what a sealed map is.
+- **`toolchain_profile`** names the sealed toolchain (interpreter, package set).
+  The **actual resolved executables and versions** go into the receipt's
+  `execution_facts`, so a toolchain drift is auditable and moves `episode-…`
+  (see §9), while the *declared* profile is part of `task-…`.
 - **`writable_paths`** scopes filesystem mutation; writes outside the set are a
   policy violation that invalidates the episode.
 - **`result_path` / `patch_path`** are where the runner reads the structured

@@ -89,31 +89,41 @@ MCP adapter      compatibility (tools/resources/prompts)  →  trvs serve --mcp
 JSONL adapter    local automation / debugging
 ```
 
-The ORS wire surface (`list_tasks · session · call_tool → reward · finished`)
-and the MCP primitives (`tools · resources · prompts`) are both *projections* of
-the same kernel. The kernel owns the semantics; adapters only translate.
+The kernel carries **no substrate semantics**; each verb is substrate-defined
+and may be declared *unsupported* rather than faked. `start` prepares the frozen
+subject; `finalize` seals the trace and outputs, runs the verifier plan, scores
+the reward, and emits the episode. `observe` / `step` / `reset` are supported
+only where a substrate can honour them — **Evidence Residency v1 is one-shot and
+implements only `start → finalize`.** For the TRVM profile, `observe` is a
+label-free `_digest_domain` projection, `step` extends the epoch-input stream,
+`reset` reconstructs `sem-… + scen-…` at epoch 0, and `finalize` checks
+`ic_ref == ic32 == oracle`; those are TRVM profile bindings, not kernel law. The
+ORS wire surface (`list_tasks · session · call_tool → reward · finished`) and the
+MCP primitives (`tools · resources · prompts`) are both *projections* of the same
+kernel. The kernel owns the semantics; adapters only translate.
 
 ### 3a. The artifact ladder
 
-TRAAVIIS freezes an eight-level artifact ladder, each level answering exactly one
-question, so two researchers never argue about what agreed and what did not:
+TRAAVIIS freezes a **substrate-neutral** artifact ladder. The lowest rung is the
+*substrate subject*, sealed differently by each substrate; every rung above it is
+shared, so two researchers never argue about what agreed and what did not:
 
-| id          | question                        | domain                        |
-| ----------- | ------------------------------- | ----------------------------- |
-| `sem-…`     | was it the same subject?        | Hash(IR + policies)           |
-| `scen-…`    | same initialization?            | run inputs, out of identity   |
-| `rew-…`     | same scoring rubric?            | declared reward spec          |
-| `task-…`    | same assignment?                | subject + reward + terminate  |
-| `trace-…`   | same behavior?                  | the recorded observable record |
-| `episode-…` | same evaluated outcome?         | trace + rubric → receipt      |
-| `env-…`     | same environment release?       | subject + tasks + rewards + splits |
-| `bundle-…`  | same distributed package?       | env + presentation + docs     |
+| id / rung             | question                        | domain                        |
+| --------------------- | ------------------------------- | ----------------------------- |
+| **substrate subject** | was it the same subject?        | TRVM: `sem-…`+`scen-…` · Residency: `snap-…` |
+| `rew-…`               | same scoring rubric?            | declared reward spec          |
+| `task-…`              | same assignment?                | subject + reward + terminate  |
+| `trace-…`             | same observable behavior?       | the recorded observable record |
+| `episode-…`           | same evaluated outcome?         | trace + rubric → receipt      |
+| `env-…`               | same environment release?       | subject + tasks + rewards + splits |
+| `bundle-…`            | same distributed package?       | env + presentation + docs     |
 
 The shared evaluation constructs (`task-…`, `rew-…`, `episode-…`, the substrate
 profile) live in the `traaviis.*` namespace; substrate-specific evidence lives
-below. A **`trace-…`** is the substrate-neutral observable record; a
-**`film-…`** is the *TRVM case* of a `trace-…` — a deterministic-execution
-artifact that does not generalize to arbitrary substrates. Forge owns TRVM
+below. `sem-…`/`scen-…` are **TRVM substrate identities**, not universal rungs;
+`snap-…` is the Residency subject. A **`trace-…`** is the substrate-neutral
+observable record; a **`film-…`** is the *TRVM case* of a `trace-…` — a
+deterministic-execution artifact that does not generalize. Forge owns TRVM
 compilation and identity (`sem-…`/`scen-…`/`film-…`); TRAAVIIS owns the shared
 evaluation ladder.
 
@@ -123,18 +133,22 @@ receipt but never the `trace-…` — the recorded behavior did not change.
 ### 3b. The bundle — `traaviis.environment.v1`
 
 `trvs pack` separates *what an environment means* from *how it is shipped*. The
-**environment manifest** (`env-…`) fixes the world, tasks, rewards, action /
-observation profiles, and split membership; the outer **package** (`bundle-…`)
-carries presentation, docs, and screenshots and may change without moving
-`env-…`. It layers over the existing `forge.bundle.v2` (world + scenarios,
-already closed), adding `{tasks, rewards, splits, action/observation profiles}`.
+**environment manifest** (`env-…`) fixes the substrate subject, tasks, rewards,
+action / observation or verifier profiles, and split membership; the outer
+**package** (`bundle-…`) carries presentation, docs, and screenshots and may
+change without moving `env-…`. For the TRVM substrate it layers over the existing
+`forge.bundle.v2` (world + scenarios, already closed), adding
+`{tasks, rewards, splits, profiles}`.
 
-Three laws (mirroring the existing Forge bundle discipline):
+`pack` runs against a **substrate-profile admission interface**
+(`validate_subject · verify_closure · recompute_subject_identity ·
+reopen_package`), not against `world` verbs; each substrate implements it (TRVM
+re-lowers source → `sem-…`; Residency recomputes snapshot → `snap-…`). Three
+laws (mirroring the existing Forge bundle discipline):
 
 - **self-sufficiency** — the object set is derived from the doc.
-- **closure** — the active world re-lowers to its declared `sem-…` and every
-  task / reward / scenario reference resolves inside the closure, or import
-  fails loudly.
+- **closure** — the subject re-derives to its declared identity and every task /
+  reward / subject reference resolves inside the closure, or import fails loudly.
 - **identity** — `pack` re-opens and re-verifies the emitted bundle before
   reporting success.
 

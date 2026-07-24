@@ -1,21 +1,24 @@
 # TRAAVIIS
 
-**Content-addressed agent environments you can verify.**
+**Evidence-grade environments for evaluating agents.**
 Write the wall. Run the world. Keep the proof.
 
-TRAAVIIS builds deterministic worlds that agents can be **evaluated — and
-eventually trained** — against, and proves what happened inside them. You write a
-world in **WallRiderLang**; `trvs` lowers it to a content-addressed
-`SemanticArtifactID`, folds each episode into a replayable **film**, and verifies
-that film with every applicable check: a pure reference reducer, a compiled
-native reducer, and an independent oracle where its domain applies. Coverage is
-made explicit — a verifier that cannot apply is reported `not_applicable`, never
-as pass or fail. Same world, same scenario, same trajectory — same hash, every
-time.
+TRAAVIIS provides **evidence-grade environments for evaluating agents** and
+proves what happened inside them. TRVM worlds are its strongest deterministic
+substrate; **Evidence Residency** is its first repository-evidence substrate. In
+the TRVM world substrate you write a world in **WallRiderLang**; `trvs` lowers it
+to a content-addressed `SemanticArtifactID`, folds each episode into a replayable
+**film**, and verifies that film with every applicable check: a pure reference
+reducer, a compiled native reducer, and an independent oracle where its domain
+applies. Coverage is made explicit — a verifier that cannot apply is reported
+`not_applicable`, never as pass or fail. Same world, same scenario, same
+trajectory — same hash, every time.
 
 `trvs` carries **no world semantics of its own**. It is a thin, honest terminal
 over the existing Forge/TRVM engine (the `wrl_*.py` identity/lowering spine plus
-the `ic_ref` and `ic32` reducers). No model is ever called.
+the `ic_ref` and `ic32` reducers). **TRAAVIIS does not embed, select, or route a
+model.** The shipped world commands call none; evaluation (`eval-one`) runs an
+agent command *supplied by the user*, which may itself use a model.
 
 > **The differentiation:** not merely "deterministic environments," but
 > *content-addressed* ones. Two researchers can answer four questions and never
@@ -36,23 +39,26 @@ reference reducer).
 
 ## The command set
 
-Seven commands ship today and fold real worlds over the engine. Three more are
-the **environment surface** that turns a world into something an agent can be
-trained and evaluated against — published as roadmap, not yet built.
+Seven commands ship today and fold real worlds over the engine. The
+**environment surface** — published as roadmap, not yet built — turns a subject
+into something an agent can be evaluated against. Its **beachhead is
+`trvs eval-one`**: a one-shot evaluation of a single frozen subject. Packaging
+and serving come after.
 
-| command        | what it does                                             | status  |
-| -------------- | -------------------------------------------------------- | ------- |
-| `trvs doctor`  | engine location, versions, verifier availability         | shipped |
-| `trvs id`      | the world's `SemanticArtifactID` — pure identity         | shipped |
-| `trvs inspect` | actors, edges, resolved config, diagnostics              | shipped |
-| `trvs run`     | lower + deterministically fold; per-epoch film           | shipped |
-| `trvs verify`  | reference / native / oracle agreement (strict)           | shipped |
-| `trvs replay`  | re-fold a film and assert it reproduces (`--expect`)     | shipped |
-| `trvs diff`    | compare two worlds' identity + per-epoch films           | shipped |
-| `trvs init`    | scaffold a new world bundle from a template              | v0.1    |
-| `trvs pack`    | bundle a world + scenarios + tasks + rewards             | v0.2    |
-| `trvs serve`   | expose the world as an agent environment (`--ors`/`--mcp`) | v0.2  |
-| `trvs eval`    | run an agent over a split, score every episode           | v0.3    |
+| command         | what it does                                             | status         |
+| --------------- | -------------------------------------------------------- | -------------- |
+| `trvs doctor`   | engine location, versions, verifier availability         | shipped        |
+| `trvs id`       | the world's `SemanticArtifactID` — pure identity         | shipped        |
+| `trvs inspect`  | actors, edges, resolved config, diagnostics              | shipped        |
+| `trvs run`      | lower + deterministically fold; per-epoch film           | shipped        |
+| `trvs verify`   | reference / native / oracle agreement (strict)           | shipped        |
+| `trvs replay`   | re-fold a film and assert it reproduces (`--expect`)     | shipped        |
+| `trvs diff`     | compare two worlds' identity + per-epoch films           | shipped        |
+| `trvs eval-one` | evaluate one agent run over one frozen subject           | **next**       |
+| `trvs eval`     | run an agent over a split, score every episode           | after eval-one |
+| `trvs init`     | scaffold a new environment subject from a template       | later          |
+| `trvs pack`     | package a subject + tasks + rewards into an environment   | later          |
+| `trvs serve`    | expose an environment to an agent (`--ors`/`--mcp`)      | later          |
 
 Every shipped command takes `--json` for CI / agent consumption.
 
@@ -164,7 +170,8 @@ The seams are frozen on purpose:
 | ---------------- | ------------------------------------------------------- |
 | **TRAAVIIS**     | the product — CLI, environment surface, evaluator, packaging |
 | **trvs**         | the command-line interface                              |
-| **WallRiderLang**| the language for worlds, actors, tasks and rules        |
+| **TaskSpecV1**   | the substrate-neutral assignment + evaluation contract  |
+| **WallRiderLang**| the language for TRVM worlds, actors and world rules    |
 | **Forge**        | the compiler, identity and artifact pipeline            |
 | **TRVM**         | the deterministic execution substrate                   |
 | **Spinner Bench**| the reference workbench and conformance laboratory      |

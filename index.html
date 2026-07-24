@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TRAAVIIS — content-addressed agent environments you can verify</title>
+    <title>TRAAVIIS — evidence-grade environments for evaluating agents</title>
     <meta
       name="description"
-      content="TRAAVIIS builds deterministic worlds for agent evaluation — and eventually training — and proves what happened inside them. Write a WallRiderLang world, lower it to a content-addressed identity, fold it into a replayable film, and verify every episode across the applicable reference, native, and oracle checks. trvs is the terminal; TRVM is the engine."
+      content="TRAAVIIS provides evidence-grade environments for evaluating agents and proves what happened inside them. TRVM worlds are its strongest deterministic substrate. Lower a subject to a content-addressed identity, fold each episode into a replayable trace, and verify it across the applicable reference, native, and oracle checks. trvs is the terminal; TRVM is one engine under it."
     />
     <style>
       /* =========================================================
@@ -883,13 +883,13 @@
     <main class="wrap">
       <!-- HERO -->
       <section class="hero">
-        <div class="eyebrow">content-addressed agent environments · WallRiderLang · TRVM</div>
+        <div class="eyebrow">evidence-grade environments for evaluating agents · WallRiderLang · TRVM</div>
         <h1 id="headline">Write the wall. Run the world.<br /><span class="amber">Keep the proof.</span><span class="cursor">▋</span></h1>
         <p class="lede">
-          <b>TRAAVIIS</b> builds deterministic worlds that agents can be
-          <b>evaluated — and eventually trained</b> — against, and proves what
-          happened inside them. Write a world in WallRiderLang, and
-          <code>trvs</code> lowers it to a content-addressed
+          <b>TRAAVIIS</b> provides <b>evidence-grade environments for
+          evaluating agents</b>, and proves what happened inside them. TRVM
+          worlds are its strongest deterministic substrate. Write a world in
+          WallRiderLang, and <code>trvs</code> lowers it to a content-addressed
           <span class="inline">SemanticArtifactID</span>, folds each episode into
           a replayable <b>film</b>, and verifies that film with every applicable
           check. Same world, same scenario, same trajectory — same hash, every time.
@@ -918,9 +918,10 @@
         <p class="demo-note">
           Every terminal on this page is <b>verbatim output from the real
           <code>trvs</code> CLI</b> folding <code>worlds/alley.wrl</code> over the
-          TRVM engine — nothing here is scripted and no model is called. The same
-          world always folds to the same identity and the same film; that is the
-          whole point.
+          TRVM engine — nothing here is scripted. <b>TRAAVIIS does not embed,
+          select, or route a model</b>; the shipped world commands call none. The
+          same world always folds to the same identity and the same film; that is
+          the whole point.
         </p>
 
         <div class="install" id="install">
@@ -1097,12 +1098,14 @@
       <section class="stage" id="commands">
         <span class="node"></span>
         <div class="kicker">The terminal</div>
-        <h2>Ten commands. One honest workflow.</h2>
+        <h2>One honest workflow.</h2>
         <p>
           <code>trvs</code> is a small, stable surface. Seven commands ship today
-          and fold real worlds over the TRVM engine; three are the environment
-          surface that turns a world into something an agent can be trained and
-          evaluated against. Nothing below calls a model.
+          and fold real worlds over the TRVM engine; the rest are the environment
+          surface that turns a subject into something an agent can be evaluated
+          against. Its beachhead is <code>trvs eval-one</code> — a one-shot
+          evaluation of a single frozen subject. Nothing below embeds, selects,
+          or routes a model.
         </p>
 
         <div class="reg">
@@ -1113,10 +1116,11 @@
           <div class="cmd-row"><span class="nm">trvs verify</span><span class="desc">reference · native · oracle agreement (strict)</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs replay</span><span class="desc">re-fold a film and assert it reproduces</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs diff</span><span class="desc">compare two worlds' identity + per-epoch films</span><span class="st"><span class="badge ship">shipped</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs init</span><span class="desc">scaffold a new world bundle from a template</span><span class="st"><span class="badge plan">v0.1</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs pack</span><span class="desc">bundle a world + scenarios + tasks + rewards</span><span class="st"><span class="badge plan">v0.2</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs serve</span><span class="desc">expose the world as an agent environment (ORS · MCP)</span><span class="st"><span class="badge plan">v0.2</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs eval</span><span class="desc">run an agent over a split, score every episode</span><span class="st"><span class="badge plan">v0.3</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs eval-one</span><span class="desc">evaluate one agent run over one frozen subject</span><span class="st"><span class="badge plan">next</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs eval</span><span class="desc">run an agent over a split, score every episode</span><span class="st"><span class="badge plan">after eval-one</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs init</span><span class="desc">scaffold a new environment subject from a template</span><span class="st"><span class="badge plan">later</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs pack</span><span class="desc">package a subject + tasks + rewards into an environment</span><span class="st"><span class="badge plan">later</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs serve</span><span class="desc">expose an environment to an agent (ORS · MCP)</span><span class="st"><span class="badge plan">later</span></span></div>
         </div>
         <p class="soft" style="margin-top:14px;font-size:13px">
           <span class="badge ship">shipped</span> commands are real over the
@@ -1141,12 +1145,19 @@
         </p>
 
         <div class="loop">
-          <div class="ph"><b>start</b><span>initialize a task, no actions applied</span></div>
+          <div class="ph"><b>start</b><span>prepare a subject for a task</span></div>
           <div class="ph"><b>observe</b><span>deterministic projection of state</span></div>
-          <div class="ph"><b>step</b><span>one action → reduce to next boundary</span></div>
+          <div class="ph"><b>step</b><span>one action → advance to next boundary</span></div>
           <div class="ph"><b>reset</b><span>reconstruct initial state (≠ replay)</span></div>
-          <div class="ph"><b>finalize</b><span>terminate; pin film + episode receipt</span></div>
+          <div class="ph"><b>finalize</b><span>seal trace + outputs; pin episode receipt</span></div>
         </div>
+
+        <p class="soft" style="margin-top:14px;font-size:13px">
+          The kernel carries no substrate semantics; any verb may be
+          <em>unsupported</em>. Evidence Residency v1 is one-shot and implements
+          only <b>start → finalize</b>. For the TRVM profile, observe is a
+          label-free projection and step advances the fold to an epoch boundary.
+        </p>
 
         <div class="caps">
           <div class="cap-card">
@@ -1177,22 +1188,23 @@
       <section class="stage" id="bundle">
         <span class="node"></span>
         <div class="kicker">The artifact ladder · planned</div>
-        <h2>Eight identities. One clean question each.</h2>
+        <h2>One clean question each.</h2>
         <p>
           TRAAVIIS separates <em>what a thing means</em> from <em>how it is
           shipped</em>. The environment contract
-          (<span class="inline">env-…</span>) fixes the world, tasks, rewards,
+          (<span class="inline">env-…</span>) fixes the subject, tasks, rewards,
           and splits; the outer package
           (<span class="inline">bundle-…</span>) carries presentation and docs and
           may change without moving <span class="inline">env-…</span>. Each layer
-          answers exactly one question, and re-scoring a film never pretends the
-          trajectory changed.
+          answers exactly one question, and re-scoring a trace never pretends the
+          behavior changed. The lowest rung is the <b>substrate subject</b>,
+          sealed differently per substrate; everything above it is shared.
         </p>
 
         <div class="grid">
-          <div class="cell"><h3>sem-… · scen-…</h3><p>the world's meaning, and the initial/run scenario — kept apart on purpose.</p></div>
-          <div class="cell"><h3>rew-… · task-…</h3><p>a reward rubric, and a task binding scenario + prompt + reward + termination.</p></div>
-          <div class="cell"><h3>film-… · episode-…</h3><p>the actual trajectory, and the receipt: task + film + score + verifier report.</p></div>
+          <div class="cell"><h3>substrate subject</h3><p>same subject? TRVM seals <span class="inline">sem-…</span> + <span class="inline">scen-…</span>; Residency seals <span class="inline">snap-…</span>.</p></div>
+          <div class="cell"><h3>rew-… · task-…</h3><p>a reward rubric, and a task binding subject + prompt + reward + termination.</p></div>
+          <div class="cell"><h3>trace-… · episode-…</h3><p>the observable record (TRVM's <span class="inline">film-…</span> is its exact-trace case), and the receipt.</p></div>
           <div class="cell"><h3>env-… · bundle-…</h3><p>the environment contract, and the transport package — identity vs. shipping.</p></div>
         </div>
       </section>
@@ -1203,11 +1215,11 @@
         <div class="kicker">Evaluation before training · planned</div>
         <h2>Prove the environment before you train in it.</h2>
         <p>
-          The first job is not a trainer — it is honest evaluation.
-          <code>trvs eval</code> runs an agent over a split and scores every
-          episode; <code>trvs compare</code> puts two runs side by side. Because
-          every episode is verified and content-addressed, the numbers are
-          reproducible and the films are re-checkable.
+          The first job is not a trainer, and the first interface is not a batch —
+          it is a one-shot <code>trvs eval-one</code> over a single frozen subject.
+          Batch <code>trvs eval</code> over a split follows once eval-one is
+          boring. Because every episode is verified and content-addressed, the
+          numbers are reproducible and the traces are re-checkable.
         </p>
 
         <div class="term">
@@ -1273,7 +1285,8 @@
         <div class="hier">
           <div class="lvl"><span class="nm">TRAAVIIS</span><span class="ds">the product — CLI, environment surface, evaluator, packaging</span></div>
           <div class="lvl"><span class="nm">trvs</span><span class="ds">the command-line interface</span></div>
-          <div class="lvl"><span class="nm">WallRiderLang</span><span class="ds">the language for worlds, actors, tasks and rules</span></div>
+          <div class="lvl"><span class="nm">TaskSpecV1</span><span class="ds">the substrate-neutral assignment + evaluation contract</span></div>
+          <div class="lvl"><span class="nm">WallRiderLang</span><span class="ds">the language for TRVM worlds, actors and world rules</span></div>
           <div class="lvl"><span class="nm">Forge</span><span class="ds">the compiler, identity and artifact pipeline</span></div>
           <div class="lvl"><span class="nm">TRVM</span><span class="ds">the deterministic execution substrate</span></div>
           <div class="lvl"><span class="nm">Spinner Bench</span><span class="ds">the reference workbench and conformance laboratory</span></div>
@@ -1291,7 +1304,7 @@
         </p>
         <div class="didnt">
           <div class="item"><div class="no">Not a coding agent</div><p>trvs builds and proves environments. It is not another Claude Code, not a chat interface.</p></div>
-          <div class="item"><div class="no">Not a model router</div><p>Nothing here calls an LLM or picks a provider. The fold is deterministic; the reward is computed.</p></div>
+          <div class="item"><div class="no">Not a model router</div><p>TRAAVIIS does not embed, select, or route a model. The fold is deterministic; the reward is computed. Evaluation runs an agent command supplied by the user.</p></div>
           <div class="item"><div class="no">Not an RL cloud</div><p>Worlds run locally. TRAAVIIS authors environments that export to hosting stacks — it is not the catalog.</p></div>
           <div class="item"><div class="no">Not a game engine</div><p>WallRider worlds are deterministic agent environments, not a rendering or physics engine.</p></div>
           <div class="item"><div class="no">Not the language or engine</div><p>WallRiderLang defines a world; TRVM/Forge lower and fold it. trvs carries no world semantics.</p></div>
@@ -1310,12 +1323,13 @@
         </div>
         <div class="fine">
           TRAAVIIS Holdings — part of the [&amp;] Protocol ecosystem. MIT licensed.
-          TRAAVIIS turns WallRiderLang / TRVM worlds into portable, resettable,
-          reward-bearing, replayable and independently verifiable agent
-          environments. It carries no world semantics: WRL defines the language,
-          TRVM/Forge run the fold, and no model is ever called. Every terminal on
-          this page is verbatim real <span class="inline">trvs</span> output
-          except the one explicitly marked as a planned surface.
+          TRAAVIIS provides evidence-grade environments for evaluating agents;
+          TRVM worlds are its strongest deterministic substrate. It carries no
+          world semantics: WRL defines the language, TRVM/Forge run the fold, and
+          TRAAVIIS does not embed, select, or route a model — the shipped world
+          commands call none. Every terminal on this page is verbatim real
+          <span class="inline">trvs</span> output except the one explicitly marked
+          as a planned surface.
         </div>
       </div>
     </footer>

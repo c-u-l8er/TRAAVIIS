@@ -20,7 +20,12 @@ identity inside the CLI; each is content-addressed (or explicitly not) below it.
 
 ---
 
-## 0. Frozen constraints (unchanged, do not weaken)
+## 0. Frozen constraints — **TRVM substrate** (`trvm.world.v1`), do not weaken
+
+These are the identity constraints of the **TRVM world substrate**. They are
+*substrate constraints*, not global ladder law — a non-TRVM substrate (e.g.
+`residency.repository.v1`) seals its subject differently (a `snap-…`, not a
+`sem-…` + `scen-…`).
 
 - **`sem-…`** = `Hash(IR + policies)`. Presentation never enters it; a rotor
   value or a rewire does.
@@ -37,18 +42,23 @@ identity inside the CLI; each is content-addressed (or explicitly not) below it.
 
 ## 1. The artifact ladder (frozen)
 
-Eight levels, each answering exactly one question:
+The ladder is **substrate-neutral above the subject**. The lowest rung is the
+*substrate subject*, which each substrate seals in its own way; every rung above
+it is shared:
 
-| id          | question                    | identity domain                         |
-| ----------- | --------------------------- | --------------------------------------- |
-| `sem-…`     | same world?                 | `Hash(IR + policies)`                   |
-| `scen-…`    | same initialization?        | run inputs (digest domain)              |
-| `rew-…`     | same scoring rubric?        | canonical reward spec (new, §2)         |
-| `task-…`    | same assignment?            | `{scen-… , rew-… , termination}` (§3)   |
-| `trace-…`   | same behavior?              | observable execution record (TRVM case = `film-…`) |
-| `episode-…` | same evaluated outcome?     | `{substrate_profile, trace-…, rew-…} → receipt` (§4) |
-| `env-…`     | same environment release?   | manifest over world/tasks/rewards/splits (§5) |
-| `bundle-…`  | same distributed package?   | `env-…` + presentation + docs (§5)      |
+| id / rung        | question                    | identity domain                         |
+| ---------------- | --------------------------- | --------------------------------------- |
+| **substrate subject** | same subject?          | TRVM: `sem-…` + `scen-…` · Residency: `snap-…` |
+| `rew-…`          | same scoring rubric?        | canonical reward spec (shared, §2)      |
+| `task-…`         | same assignment?            | `{subject, rew-… , termination}` (shared, §3) |
+| `trace-…`        | same observable behavior?   | observable execution record · TRVM exact-trace subtype = `film-…` |
+| `episode-…`      | same evaluated outcome?     | `{substrate_profile, trace-…, rew-…} → receipt` (shared, §4) |
+| `env-…`          | same closed environment release? | manifest over subject/tasks/rewards/splits (§5) |
+| `bundle-…`       | same distributed package?   | `env-…` + presentation + docs (§5)      |
+
+`sem-…` and `scen-…` are **TRVM substrate identities** (§0), not universal rungs;
+`snap-…` is the Residency subject identity. Everything from `rew-…` up is
+shared across substrates.
 
 ---
 
@@ -66,15 +76,22 @@ a **declared, content-addressed rubric** with its own digest domain, and its
 signals are **bound to a substrate profile** — a rubric is not a "function over a
 film" in general, because a Residency rubric scores evidence, not a fold.
 
-`RewardSpecV1` (`reward_spec_version = "traaviis.reward.v1"`):
+`RewardSpecV1` (`reward_spec_version = "traaviis.reward.v1"`). Signals are a
+**canonical keyed map** — the signal identifier is the key that binds a verifier
+result to a weight, so identifiers are load-bearing and there is no separate
+name array to drift out of sync:
 
 ```json
 { "reward_spec_version": "traaviis.reward.v1",
   "reward_id": "rew-…",              // = rew- + sha256(canonical bytes)
   "substrate_profile": "residency.repository.v1",
-  "signals": [ "citations", "patch", "tests", "identity" ],
-  "weights": { "citations": 0.25, "patch": 0.20, "tests": 0.30,
-               "identity": 0.15, "finding_completeness": 0.10 },
+  "signals": {
+    "citations":            { "verifier": "residency.citations.v1", "weight": 0.25 },
+    "patch":                { "verifier": "residency.patch.v1",     "weight": 0.20 },
+    "tests":                { "verifier": "residency.tests.v1",     "weight": 0.30 },
+    "identity":             { "verifier": "residency.identity.v1",  "weight": 0.15 },
+    "finding_completeness": { "verifier": "residency.finding.v1",   "weight": 0.10 }
+  },
   "floors": [ … ],                   // hard caps (see Evidence Residency §7)
   "aggregation": "terminal" }        // terminal | process (process ships later)
 ```
@@ -84,13 +101,20 @@ The TRVM form binds the other substrate:
 ```json
 { "reward_spec_version": "traaviis.reward.v1",
   "substrate_profile": "trvm.world.v1",
-  "signals": [ "terminal_claim", "film_property" ] }
+  "signals": {
+    "terminal_claim": { "verifier": "trvm.claim.v1",    "weight": 1.0 },
+    "film_property":  { "verifier": "trvm.property.v1",  "weight": 0.0 }
+  } }
 ```
 
 **Mutation laws.**
 
-- `rew-…` is a **pure content hash** of canonical bytes; reordering signals or
-  relabelling them collapses to the same `rew-…` (canonicalization first).
+- `rew-…` is a **pure content hash** of canonical bytes. Reordering a
+  semantically **unordered** signal map does **not** move `rew-…`
+  (canonicalization sorts keys). But **renaming, rebinding, adding, removing, or
+  reweighting** a signal **moves `rew-…`** — a signal identifier selects *which*
+  verifier result is scored, so a relabel is a semantic change, not a cosmetic
+  one.
 - A `rew-…` **does not enter** any `sem-…`, `scen-…`, `snap-…`, or `trace-…`.
   Changing the rubric moves no subject identity and no observable record.
 - Re-scoring the *same* `trace-…` (a `film-…` for TRVM) under a different `rew-…`
@@ -189,18 +213,29 @@ which level a receipt supports:
 - **`replay`** *reapplies a recorded action stream* (a `film-…`) and asserts it
   reproduces byte-for-byte. This is the existing `trvs replay` semantics.
 
-**Episode Kernel (internal, neutral):**
+**Episode Kernel (internal, neutral).** The kernel carries **no substrate
+semantics**; each verb is substrate-defined and may be *unsupported*:
 
 ```text
-start · observe · step · reset · finalize
+start     prepare the frozen substrate subject
+observe   return the substrate-defined agent-visible projection, when supported
+step      apply one canonical action under the substrate profile, when supported
+reset     reconstruct the initial subject state, when supported
+finalize  seal trace + outputs, run the verifier plan, score reward, emit episode
 ```
 
-- `observe` is a **label-free projection** of current claim/world state (the
-  `_digest_domain`), so exposing it leaks nothing into identity.
-- `step` applies one agent action, extending the epoch-input stream by one.
-- Native/oracle agreement is checkable **after the fact** on the recorded film;
-  an interactive, agent-driven run records the film and then verifies it with
-  every applicable verifier.
+A substrate that cannot support a verb declares it **unsupported** rather than
+faking it. **Evidence Residency v1 is one-shot** and implements only
+`start → finalize`; `observe`, `step`, and `reset` are *unsupported*, not
+pretend no-ops.
+
+**TRVM profile note (`trvm.world.v1`).** For the TRVM substrate the kernel binds
+to Forge semantics: `observe` is a **label-free projection** of current
+claim/world state (the `_digest_domain`), so exposing it leaks nothing into
+identity; `step` applies one agent action, extending the epoch-input stream by
+one; `reset` reconstructs `sem-… + scen-…` at epoch 0 with no actions applied;
+`finalize` records the `film-…` and checks `ic_ref == ic32 == oracle` where each
+applies. These are **TRVM profile bindings**, not shared kernel law.
 
 **Mutation laws.**
 
@@ -213,9 +248,14 @@ start · observe · step · reset · finalize
 - The **verification map is total**: every declared verifier reports `pass`,
   `fail`, `not_applicable`, or `error`. Coverage is never silently dropped.
 - Re-scoring moves `episode-…`, never the `trace-…`/`film-…` (restated from §2).
-- **Verifier versions are recorded in the receipt**: changing verifier
-  implementation version moves `episode-…` while the underlying evidence
-  artifacts stay stable (see `RFC_EVIDENCE_RESIDENCY.md` §9).
+- **Verifier versions and canonical execution facts are recorded in the
+  receipt.** Rerunning identical frozen artifacts under the *same* verifier
+  versions **and** the *same* canonical execution facts leaves `episode-…`
+  stable; changing either (a verifier version, or a canonical execution fact —
+  toolchain / exit codes / platform) moves `episode-…` while the underlying
+  evidence artifacts stay stable (see `RFC_EVIDENCE_RESIDENCY.md` §9). The
+  *volatile* execution facts (wall-clock, absolute paths, PIDs) are excluded
+  from the hash.
 
 ## 5. D3 + D5 — `env-…` vs `bundle-…`, and the serve process model (DEFERRED)
 
@@ -252,23 +292,50 @@ whole session lifetime).
 
 **Mutation laws.**
 
-- `env-…` moves iff the manifest (world / tasks / rewards / splits / profiles)
+- `env-…` moves iff the manifest (subject / tasks / rewards / splits / profiles)
   moves. Presentation-only edits move `bundle-…` only.
-- `pack` is **fail-closed**: it re-opens and re-verifies the emitted bundle —
-  the world re-lowers to its declared `sem-…` and every task / reward / scenario
-  reference resolves inside the closure — **before** reporting success.
+- `pack` is **fail-closed** and **substrate-generic**: it re-opens and
+  re-verifies the emitted bundle through the substrate admission interface below
+  — the subject re-derives to its declared identity and every task / reward /
+  subject reference resolves inside the closure — **before** reporting success.
+
+### 5a. Substrate admission interface
+
+`init`, `pack`, and import are written against a **profile-implemented**
+interface, not against `world` verbs:
+
+```text
+validate_subject             the sealed subject is well-formed for the profile
+verify_closure               every task / reward / verifier reference resolves
+recompute_subject_identity   re-derive the subject id from its bytes
+reopen_package               re-open the emitted artifact and re-verify all laws
+```
+
+Each substrate implements it differently:
+
+```text
+trvm.world.v1        re-lower source → sem-…; verify scenarios + Forge bundle closure
+residency.repository.v1
+                     recompute snapshot → snap-…; verify task / reward /
+                     verifier / run-policy closure
+```
 
 ## 6. D6 — `init` templates + `pack` admission
 
 **Ruling.**
 
-- **`init`** is **pure file scaffolding** — a seed world source plus a manifest
-  skeleton. It invents no identity. Templates: `blank-spinner` (minimum), later
-  `courier` / `factory`.
-- **`pack`** must **verify closure + re-lower identity before writing** (reuse
-  `verify_bundle_closure` and the identity re-lower from Forge), then re-open and
-  re-verify the emitted artifact (§5). A bundle that fails any law is rejected
-  loudly, never written half-formed.
+- **`init`** is **pure environment scaffolding** — *not necessarily world
+  scaffolding*. It seeds a subject appropriate to the chosen substrate plus a
+  manifest skeleton, and invents no identity. Templates name a substrate:
+  `trvs init --template golden-spinner` seeds a TRVM world;
+  `trvs init --template evidence-residency` seeds a repository snapshot
+  definition. Different templates scaffold genuinely different subjects.
+- **`pack`** must **verify closure + recompute subject identity before writing**
+  through the §5a admission interface (`validate_subject`, `verify_closure`,
+  `recompute_subject_identity`), then `reopen_package` and re-verify the emitted
+  artifact. A bundle that fails any law is rejected loudly, never written
+  half-formed. For the TRVM profile this reduces to the existing
+  `verify_bundle_closure` + Forge re-lower.
 
 ---
 
@@ -287,8 +354,9 @@ one-shot evaluation of one Residency task (`trvs eval-one`, see
 
 Only after that does the deferred surface become grounded:
 
-- `trvs init` — scaffolding against the `env-…` schema (§5).
-- `trvs pack` — build + closure-verify + identity re-lower + re-open.
+- `trvs init` — substrate-aware scaffolding against the `env-…` schema (§5, §6).
+- `trvs pack` — build + `verify_closure` + `recompute_subject_identity` +
+  `reopen_package` through the §5a admission interface.
 - `trvs serve --ors` / `--mcp` — adapters over the Episode Kernel (§4).
 - `trvs eval` — run an agent over a split, emit an `episode-…` per task, score.
 
