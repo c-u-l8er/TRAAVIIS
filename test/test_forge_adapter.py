@@ -43,16 +43,49 @@ def test_stub_version_is_declared():
     assert F.StubForgeAdapter().version == "forge.identity-adapter.stub.v1"
 
 
-def test_real_adapter_reports_unavailable():
-    # The public forge_api.lower_source is not published in the TRVM tree yet, so
-    # the real adapter must honestly report unavailability, never a false pass.
+def test_real_adapter_binds_or_reports_unavailable():
+    # forge_api.lower_source is now published (LowerResultV1). Where a compatible
+    # engine is reachable the real adapter BINDS and must expose the versioned impl
+    # id + honest data outcomes; where no engine is present (e.g. a bare checkout)
+    # it must raise ForgeUnavailable, never a false pass. Both are correct — only a
+    # silent wrong-binding is a bug.
     try:
-        F.real_adapter()
+        a = F.real_adapter()
     except F.ForgeUnavailable:
         return
-    # If some environment DOES publish forge_api, that's acceptable too — then the
-    # adapter must expose the real version. Only a silent wrong-binding is a bug.
-    raise AssertionError("real_adapter neither raised ForgeUnavailable nor bound")
+    assert a.version.startswith("forge.identity.v1@trvm-")
+    # Ordinary invalid WRL is a data outcome (ok=False), NOT an exception.
+    bad = a.lower_source("profile forge.world.core.v1\n[bogus:x]{}\n")
+    assert bad.ok is False
+    assert bad.semantic_id is None
+    assert bad.error
+
+
+def test_real_adapter_unavailable_is_forge_unavailable(monkeypatch=None):
+    # Deterministic unavailable path (independent of whether THIS environment has an
+    # engine): with the soft loader unable to find a compatible engine, real_adapter
+    # raises ForgeUnavailable so the identity verifier reports `error` (never a false
+    # pass/fail) — the F4 "Forge unavailable → invalid config before agent run" law.
+    from traaviis import engine
+
+    saved_engine = engine._ENGINE
+    saved_search = engine._search_candidates
+    saved_override = os.environ.get("TRVS_FORGE_DIR")
+    try:
+        engine._ENGINE = None
+        engine._search_candidates = lambda: []
+        os.environ.pop("TRVS_FORGE_DIR", None)
+        try:
+            F.real_adapter()
+        except F.ForgeUnavailable:
+            pass
+        else:
+            raise AssertionError("expected ForgeUnavailable when no engine is found")
+    finally:
+        engine._ENGINE = saved_engine
+        engine._search_candidates = saved_search
+        if saved_override is not None:
+            os.environ["TRVS_FORGE_DIR"] = saved_override
 
 
 def _main():

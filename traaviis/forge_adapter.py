@@ -12,15 +12,18 @@ This module freezes the seam:
                               ``verifier_versions.identity``) + ``lower_source``.
   ``StubForgeAdapter``        a deterministic in-repo double for the batteries —
                               ``sem-<sha256(source)>``, no engine dependency.
-  ``real_adapter()``          binds to the public Forge entrypoint if present, else
+  ``real_adapter()``          binds to the public ``forge_api.lower_source``
+                              (LowerResultV1) via the soft engine loader, else
                               raises ``ForgeUnavailable`` (→ identity verifier
                               ``error``, never a false ``pass``/``fail``).
 
-**Remaining real-Forge dependency (flag for GPT-5.6):** ``real_adapter`` looks for
-a public ``forge_api.lower_source``. That public function does not yet exist in the
-TRVM tree (only the private ``spinner_bench`` internals). Until it is published,
-the real path honestly reports ``ForgeUnavailable``; the stub proves the verifier
-law end-to-end.
+The real adapter reads a **LowerResultV1** payload
+(``{result_version, ok, semantic_artifact_id, diagnostics, error, engine_version}``,
+plus a success's presentation superset): ordinary invalid WRL is ``ok=False`` (→
+verifier ``error``), and only an unreachable engine raises ``ForgeUnavailable``. Its
+``.version`` embeds the engine version (``forge.identity.v1@trvm-<engine_version>``)
+so a different Forge build yields a different ``verifier_versions.identity`` and thus
+a different ``episode-…`` id.
 """
 
 import hashlib
@@ -81,30 +84,49 @@ class StubForgeAdapter(ForgeIdentityAdapterV1):
 def real_adapter() -> ForgeIdentityAdapterV1:
     """Return an adapter bound to the public Forge entrypoint, or raise.
 
-    Raises ``ForgeUnavailable`` if ``forge_api.lower_source`` is not importable —
-    which is the current state of the TRVM tree (the public function is not yet
-    published). Callers that require it should catch this and report the identity
-    verifier as ``error``.
+    Uses the soft engine loader (`engine.try_load`) so an absent/incompatible
+    engine is a catchable ``ForgeUnavailable`` -- eval-one runs under
+    ``needs_engine=False``, so the engine is not pre-loaded and must not
+    ``SystemExit`` here. Raises ``ForgeUnavailable`` if the engine cannot be found
+    or exposes no callable ``lower_source``; callers that require identity should
+    catch this and report the verifier as ``error``.
     """
-    try:
-        import forge_api  # type: ignore
-    except ImportError as exc:
-        raise ForgeUnavailable(
-            "public forge_api.lower_source is not published yet"
-        ) from exc
+    from . import engine
 
+    forge_api = engine.try_load()
+    if forge_api is None:
+        raise ForgeUnavailable(
+            "could not locate a compatible Forge engine (set TRVS_FORGE_DIR)"
+        )
     lower = getattr(forge_api, "lower_source", None)
     if not callable(lower):
         raise ForgeUnavailable("forge_api has no callable lower_source")
 
+    # The identity impl version embeds the engine version so a different Forge
+    # build produces a different verifier_versions.identity (and episode id).
+    engine_version = getattr(forge_api, "BENCH_VERSION", None)
+    if engine_version is None:
+        try:
+            engine_version = forge_api.engine_info().get("bench_version")
+        except Exception:
+            engine_version = "unknown"
+    impl_version = "forge.identity.v1@trvm-" + str(engine_version).lstrip("v")
+
     class _RealForgeAdapter(ForgeIdentityAdapterV1):
-        version = "forge.identity-adapter.real.v1"
+        version = impl_version
 
         def lower_source(self, source: str) -> LowerResult:
             try:
-                sem = lower(source)
-            except Exception as exc:  # a lowering/compile failure, not engine-down
-                return LowerResult(semantic_id=None, ok=False, error=str(exc))
-            return LowerResult(semantic_id=str(sem), ok=True)
+                payload = lower(source)
+            except Exception as exc:  # engine/import failure surfaced mid-call
+                raise ForgeUnavailable(str(exc)) from exc
+            if not payload.get("ok"):
+                # Ordinary invalid WRL: a data outcome, not an engine failure.
+                return LowerResult(
+                    semantic_id=None, ok=False, error=payload.get("error")
+                )
+            return LowerResult(
+                semantic_id=payload["semantic_artifact_id"], ok=True
+            )
 
     return _RealForgeAdapter()

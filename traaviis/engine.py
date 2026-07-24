@@ -97,3 +97,35 @@ def load():
              % (REQUIRED_ENGINE_API, found, forge))
     _ENGINE = forge_api
     return forge_api
+
+
+def try_load():
+    """Soft counterpart of `load()`: return the `forge_api` module, or None.
+
+    Unlike `load()` this NEVER exits the process. It is for callers (the identity
+    verifier's `real_adapter`) that run under `needs_engine=False` -- the engine is
+    optional there, so an absent/incompatible engine must be a catchable outcome,
+    not a `SystemExit`. Returns the memoized module if already loaded, else searches
+    the same candidates and returns the module on success or None on any failure
+    (not found / import error / incompatible API).
+    """
+    global _ENGINE
+    if _ENGINE is not None:
+        return _ENGINE
+    override = os.environ.get("TRVS_FORGE_DIR")
+    candidates = [override] if override else []
+    candidates += _search_candidates()
+    for forge in candidates:
+        if not _is_engine_dir(forge):
+            continue
+        if forge not in sys.path:
+            sys.path.insert(0, forge)
+        try:
+            import forge_api
+        except Exception:
+            return None
+        if getattr(forge_api, "ENGINE_API_VERSION", None) != REQUIRED_ENGINE_API:
+            return None
+        _ENGINE = forge_api
+        return forge_api
+    return None
