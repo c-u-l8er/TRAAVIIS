@@ -28,10 +28,10 @@ SPEC = {
         "identity":             {"verifier": "residency.identity.v1",  "weight": 0.15},
         "finding_completeness": {"verifier": "residency.finding.v1",   "weight": 0.10},
     },
-    "floors": [
-        {"when": "patch", "reward_max": 0.25},
-        {"when": "citations", "reward_max": 0.25},
-        {"when": "tests", "reward_max": 0.40},
+    "caps": [  # F1: explicit trigger state, renamed from "floors"
+        {"when": {"signal": "patch", "state": "fail"}, "reward_max": 0.25},
+        {"when": {"signal": "citations", "state": "fail"}, "reward_max": 0.25},
+        {"when": {"signal": "tests", "state": "fail"}, "reward_max": 0.40},
     ],
     "aggregation": "terminal",
 }
@@ -122,8 +122,9 @@ def test_lowest_applicable_floor_wins():
 
 
 def test_floor_only_applies_on_fail_not_on_not_applicable():
-    # A floor keys on FAIL; a non-required N/A signal must not trip a cap.
-    spec = dict(SPEC, floors=[{"when": "finding_completeness", "reward_max": 0.1}])
+    # A cap keys on an explicit FAIL state; a non-required N/A signal must not trip.
+    spec = dict(SPEC, caps=[{"when": {"signal": "finding_completeness",
+                                      "state": "fail"}, "reward_max": 0.1}])
     v = all_pass()
     v["finding_completeness"] = R.NOT_APPLICABLE
     r = R.score(v, spec, REQUIRED)
@@ -147,7 +148,8 @@ def test_error_state_is_null_reward_and_error_status():  # F2
     r = R.score(v, SPEC, REQUIRED)
     assert r["reward"] is None
     assert r["status"] == R.STATUS_ERROR
-    assert r["validity"] == R.VALID
+    # F2 ruling CHANGE: an error episode is not a valid completed evaluation.
+    assert r["validity"] == R.INVALID
 
 
 def test_required_not_applicable_is_invalid_config_null_reward():  # F3

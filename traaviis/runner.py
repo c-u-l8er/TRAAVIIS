@@ -14,45 +14,54 @@ What is frozen and implemented exactly (§10a):
 - ``timeout_seconds`` / ``max_output_bytes`` are hard bounds; exceeding either
   sets ``timed_out`` / ``output_truncated`` and the affected verifier reports
   ``error`` (substrate unavailability), not ``fail``.
-- ``environment`` is a **sealed key→value map**; host values (``PATH``, ``HOME``,
-  ``LANG``…) are **not** inherited — only the sealed keys with their fixed values
-  are exported.
+- ``environment`` is a **sealed key→value map**; host values (``HOME``, ``LANG``…)
+  are **not** inherited — only the sealed keys with their fixed values are
+  exported. A caller-supplied ``PATH`` is **stripped** (R1).
 - ``result_path`` / ``patch_path`` are read after exit; a missing required output
   is a ``fail`` for the corresponding verifier (handled by the orchestrator),
   never an ``error``.
 
-Under-frozen engine edges — implemented defensively and **flagged for GPT-5.6**:
+GPT-5.6 closure rulings implemented here:
 
-  R1  Sandbox ``PATH`` / ``toolchain_profile`` resolution. §10a says the runner
-      constructs ``PATH`` from the ``toolchain_profile`` and never inherits the
-      host ``PATH``. v1 here: if the sealed ``environment`` supplies ``PATH`` it
-      is used verbatim; otherwise ``PATH`` is left unset (the agent must use
-      absolute argv). A real toolchain-profile resolver is deferred.
-  R2  ``network: disabled`` is recorded and passed through but **not** hard-
-      enforced (no namespace/sandbox). Enforcement mechanism is deferred.
-  R3  Writable-path enforcement: a write outside ``writable_paths`` is reported
-      as ``policy_violations`` for the orchestrator to turn into an invalid
-      episode; this module does not itself fail the run.
-  R4  Trace digest construction: ``files_created_digest`` /
-      ``files_modified_digest`` are sha256 over canonical JSON of
-      ``{relpath: content_hash}``; ``result_file_digest`` is sha256 of the raw
-      result bytes. This canonicalization is what enters ``trace-…``.
+  R1  ``PATH`` is owned by the ``toolchain_profile`` resolver, never the caller.
+      The runner strips any caller ``PATH`` and injects only a resolver-supplied
+      one. The prototype resolver returns ``None`` (no ``PATH``), so agents must
+      use absolute argv — a real pinned-toolchain resolver is deferred.
+  R2  The runner does **not** enforce a network sandbox. The honest profile
+      ``residency.trusted-local.v1`` reports ``network: unrestricted`` (see
+      ``execfacts``); it is only safe for a trusted deterministic subject.
+  R3  Writable-path enforcement is **observation**, not blocking: a write outside
+      ``writable_paths`` is recorded in ``policy_violations`` (and its digest in
+      the trace); the orchestrator decides the episode verdict. True filesystem
+      escapes (writes outside the workspace tree) are **not** detected in v1.
+  R4  Trace digests are sha256 over canonical JSON of ``{relpath: content_hash}``
+      for created/modified/deleted maps, ``{relpath: mode}`` for mode changes, and
+      the sorted ``policy_violations`` list; ``result_file_digest`` is sha256 of
+      the raw result bytes. The ``command`` is normalized (absolute argv tokens →
+      basename) so ``trace-…`` is host-independent.
 """
 
 import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from . import identity
+from .paths import safe_join
 
-__all__ = ["run_agent", "RunResult", "TRACE_VERSION"]
+__all__ = ["run_agent", "RunResult", "TRACE_VERSION", "RUNNER_PROFILE"]
 
 TRACE_VERSION = "residency.trace.v1"
+
+# The one honest runner profile: writes are *observed* by rescan (not blocked),
+# network is unrestricted. See ``execfacts.RUNNER_PROFILES``. A caller-supplied
+# ``PATH`` is never trusted (R1) — the toolchain resolver owns ``PATH``.
+RUNNER_PROFILE = "residency.trusted-local.v1"
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -63,17 +72,47 @@ def _sha256_json(obj: Any) -> str:
     return _sha256_bytes(identity.canonical_bytes(obj))
 
 
+def _normalize_command(argv: Sequence[str]) -> List[str]:
+    # Absolute argv tokens (the interpreter path, an absolute script path) are
+    # machine-specific; the canonical trace records only their basename so
+    # ``trace-…`` is host-independent (R4). Relative tokens and flags pass through.
+    return [os.path.basename(str(t)) if os.path.isabs(str(t)) else str(t)
+            for t in argv]
+
+
+def _seal_env(policy: Mapping[str, Any]) -> Dict[str, str]:
+    # R1: seal the caller's environment map but NEVER trust a caller ``PATH`` —
+    # ``PATH`` is resolved from the ``toolchain_profile`` by a trusted resolver.
+    # The prototype has no resolver, so ``PATH`` is simply unset and the agent
+    # must use absolute argv. A real toolchain-profile resolver is deferred.
+    env: Dict[str, str] = {}
+    for k, v in dict(policy.get("environment", {})).items():
+        if str(k) == "PATH":
+            continue
+        env[str(k)] = str(v)
+    resolved = _resolve_toolchain_path(policy.get("toolchain_profile"))
+    if resolved is not None:
+        env["PATH"] = resolved
+    return env
+
+
+def _resolve_toolchain_path(toolchain_profile: Optional[str]) -> Optional[str]:
+    # Deferred: a real resolver maps a toolchain profile to a controlled PATH of
+    # pinned, digest-verified executables. Until it exists, return None (no PATH).
+    return None
+
+
 def _materialize(content: Mapping[str, str], root: str) -> None:
     for rel, text in content.items():
-        path = os.path.join(root, rel.replace("/", os.sep))
+        path = safe_join(root, rel)
         os.makedirs(os.path.dirname(path) or root, exist_ok=True)
         data = text.encode("utf-8") if isinstance(text, str) else text
         with open(path, "wb") as fh:
             fh.write(data)
 
 
-def _scan(root: str) -> Dict[str, str]:
-    out: Dict[str, str] = {}
+def _scan(root: str) -> Dict[str, dict]:
+    out: Dict[str, dict] = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames
                        if not os.path.islink(os.path.join(dirpath, d))]
@@ -83,7 +122,9 @@ def _scan(root: str) -> Dict[str, str]:
                 continue
             rel = os.path.relpath(abspath, root).replace(os.sep, "/")
             with open(abspath, "rb") as fh:
-                out[rel] = _sha256_bytes(fh.read())
+                digest = _sha256_bytes(fh.read())
+            mode = stat.S_IMODE(os.lstat(abspath).st_mode)
+            out[rel] = {"hash": digest, "mode": f"{mode:04o}"}
     return out
 
 
@@ -116,7 +157,7 @@ def run_agent(
     """
     timeout = policy.get("timeout_seconds")
     max_out = int(policy.get("max_output_bytes", 4 * 1024 * 1024))
-    sealed_env = {str(k): str(v) for k, v in dict(policy.get("environment", {})).items()}
+    sealed_env = _seal_env(policy)
     result_path = policy.get("result_path", "result.json")
     patch_path = policy.get("patch_path", "candidate.patch")
     writable = list(policy.get("writable_paths", ["."]))
@@ -146,20 +187,25 @@ def run_agent(
             stdout = exc.stdout or b""
             stderr = exc.stderr or b""
 
-        output_truncated = len(stdout) > max_out or len(stderr) > max_out
+        stdout_truncated = len(stdout) > max_out
+        stderr_truncated = len(stderr) > max_out
+        output_truncated = stdout_truncated or stderr_truncated
         stdout, stderr = stdout[:max_out], stderr[:max_out]
 
         after = _scan(root)
-        created = {p: h for p, h in after.items() if p not in before}
-        modified = {p: h for p, h in after.items()
-                    if p in before and before[p] != h}
+        created = {p: e["hash"] for p, e in after.items() if p not in before}
+        modified = {p: e["hash"] for p, e in after.items()
+                    if p in before and before[p]["hash"] != e["hash"]}
+        deleted = {p: before[p]["hash"] for p in before if p not in after}
+        modes_changed = {p: after[p]["mode"] for p in after
+                         if p in before and before[p]["mode"] != after[p]["mode"]}
         violations = sorted(
-            p for p in list(created) + list(modified)
+            p for p in list(created) + list(modified) + list(deleted)
             if not _writable_ok(p, writable)
         )
 
-        result_obj: Optional[dict] = None
-        rp = os.path.join(root, result_path.replace("/", os.sep))
+        result_obj: Optional[Any] = None
+        rp = safe_join(root, result_path)
         result_bytes = b""
         if os.path.isfile(rp):
             with open(rp, "rb") as fh:
@@ -170,18 +216,18 @@ def run_agent(
                 result_obj = None  # malformed → orchestrator scores as fail
 
         patch_text: Optional[str] = None
-        pp = os.path.join(root, patch_path.replace("/", os.sep))
+        pp = safe_join(root, patch_path)
         if os.path.isfile(pp):
             with open(pp, "rb") as fh:
                 patch_text = fh.read().decode("utf-8", errors="replace")
 
         workspace_after = {}
         for rel in after:
-            with open(os.path.join(root, rel.replace("/", os.sep)), "rb") as fh:
+            with open(safe_join(root, rel), "rb") as fh:
                 workspace_after[rel] = fh.read().decode("utf-8", errors="replace")
 
         event = {
-            "command": list(agent_command),
+            "command": _normalize_command(agent_command),
             "cwd": ".",
             "environment_keys": sorted(sealed_env.keys()),
             "exit_code": exit_code,
@@ -189,7 +235,10 @@ def run_agent(
             "stderr_digest": _sha256_bytes(stderr),
             "files_created_digest": _sha256_json(created),
             "files_modified_digest": _sha256_json(modified),
+            "files_deleted_digest": _sha256_json(deleted),
+            "file_modes_changed_digest": _sha256_json(modes_changed),
             "result_file_digest": _sha256_bytes(result_bytes),
+            "policy_violations_digest": _sha256_json(violations),
         }
         trace = {"trace_version": TRACE_VERSION, "events": [event]}
         trace["trace_id"] = identity.trace_id(trace)
@@ -198,12 +247,16 @@ def run_agent(
             exit_code=exit_code,
             timed_out=timed_out,
             output_truncated=output_truncated,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
             stdout=stdout,
             stderr=stderr,
             result=result_obj,
             patch_text=patch_text,
             files_created=created,
             files_modified=modified,
+            files_deleted=deleted,
+            file_modes_changed=modes_changed,
             policy_violations=violations,
             workspace_after=workspace_after,
             trace=trace,

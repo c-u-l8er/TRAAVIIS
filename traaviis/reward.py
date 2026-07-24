@@ -26,27 +26,26 @@ Frozen and unambiguous (implemented exactly):
   never ``0`` (§6a). Downstream aggregation drops ``None`` rewards; it never
   averages them in as zeros.
 
-Under-frozen edges — decisions made here and **flagged for GPT-5.6** (the RFC
-shows floors as ``[ … ]`` and does not pin these rare interactions):
+Edge rulings from GPT-5.6 (closure), implemented here:
 
-  F1  Floor shape. A floor is ``{"when": <signal_id>, "reward_max": <float>}`` and
-      caps the final reward iff that signal's state is ``fail``; multiple caps
-      take the minimum. This reproduces §7 exactly (patch-fail ≤ 0.25,
-      citations-fail ≤ 0.25, tests-fail ≤ 0.40). The "tampered snapshot → 0"
-      rule is the tamper path, not a floor object.
-  F2  ``error`` episodes are ``validity = valid`` (substrate unavailability is
-      not invalidity); ``status = error``; ``reward = None``.
-  F3  Invalid task configuration (a required signal reporting
-      ``not_applicable``) is ``status = invalid`` / ``validity = invalid`` /
-      ``reward = None`` (scoring is not meaningful) — distinct from a tamper,
-      which is ``reward = 0``.
-  F4  Precedence when several apply: **tamper → error → invalid-config →
-      normal**. (Tamper voids everything; an ``error`` means scoring could not be
-      computed at all, so it dominates a static config problem.)
+  F1  Reward caps are ``{"when": {"signal": <id>, "state": <state>}, "reward_max":
+      <float>}`` under a ``caps`` list (renamed from ``floors``): the trigger state
+      is **explicit**, not implied. A cap applies iff that signal is in that state;
+      multiple caps take the minimum. This reproduces §7 (patch-fail ≤ 0.25,
+      citations-fail ≤ 0.25, tests-fail ≤ 0.40) with the state made explicit.
+  F2  An ``error`` episode is ``status = error`` / ``validity = invalid`` /
+      ``reward = None``. ``error`` is still not ``fail`` — it does not assert the
+      agent was wrong — but it is **not a valid completed evaluation**.
+  F3  A required signal reporting ``not_applicable`` is invalid task configuration:
+      ``status = invalid`` / ``validity = invalid`` / ``reward = None``. Preferably
+      caught by the orchestrator's preflight *before* the agent runs; this is the
+      runtime safety net.
+  F4  Preflight validates configuration and refuses to run if invalid; invalid
+      config therefore never competes in post-run precedence. Post-run precedence
+      when events coexist: **tamper → error → normal scoring**.
 
-Because ``floors`` bytes enter ``rew-…`` (see ``identity.reward_id``), the F1
-floor shape is the load-bearing item for GPT-5.6 to ratify before any real
-``RewardSpecV1`` is authored.
+Because ``caps`` bytes enter ``rew-…`` (see ``identity.reward_id``), the F1 cap
+shape is load-bearing and is now frozen per this ruling.
 """
 
 from typing import Iterable, Mapping, Optional
@@ -97,7 +96,7 @@ def score(
     raises ``ValueError``.
     """
     signals: Mapping[str, Mapping[str, object]] = spec.get("signals", {})  # type: ignore[assignment]
-    floors = spec.get("floors", []) or []
+    caps = spec.get("caps", []) or []
     required = set(required)
 
     for sig, state in verification.items():
@@ -110,12 +109,14 @@ def score(
         if sig not in verification:
             raise ValueError(f"required signal {sig!r} missing from verification map")
 
-    # F4 precedence: tamper → error → invalid-config → normal.
+    # F4 post-run precedence: tamper → error → invalid-config → normal. (Static
+    # config-invalidity is preflighted by the orchestrator and prevents execution;
+    # the required→not_applicable check here is the runtime safety net.)
     if tampered:
         return _result(0.0, STATUS_INVALID, INVALID)
 
     if any(verification[sig] == ERROR for sig in verification):
-        return _result(None, STATUS_ERROR, VALID)  # F2
+        return _result(None, STATUS_ERROR, INVALID)  # F2: error is not a valid eval
 
     if any(verification[sig] == NOT_APPLICABLE for sig in required):
         return _result(None, STATUS_INVALID, INVALID)  # F3
@@ -125,9 +126,11 @@ def score(
         if verification[sig] == PASS:
             reward += float(binding["weight"])  # type: ignore[index]
 
-    for floor in floors:  # F1
-        when = floor["when"]  # type: ignore[index]
-        if when in verification and verification[when] == FAIL:
-            reward = min(reward, float(floor["reward_max"]))  # type: ignore[index]
+    for cap in caps:  # F1: explicit {when: {signal, state}, reward_max}
+        when = cap["when"]  # type: ignore[index]
+        sig = when["signal"]  # type: ignore[index]
+        state = when["state"]  # type: ignore[index]
+        if verification.get(sig) == state:
+            reward = min(reward, float(cap["reward_max"]))  # type: ignore[index]
 
     return _result(reward, STATUS_OK, VALID)

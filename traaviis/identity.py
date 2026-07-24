@@ -113,7 +113,8 @@ def patch_id(patch: Mapping[str, Any]) -> str:
 _TRACE_EVENT_KEYS = (
     "command", "cwd", "environment_keys", "exit_code",
     "stdout_digest", "stderr_digest",
-    "files_created_digest", "files_modified_digest", "result_file_digest",
+    "files_created_digest", "files_modified_digest", "files_deleted_digest",
+    "file_modes_changed_digest", "result_file_digest", "policy_violations_digest",
 )
 
 

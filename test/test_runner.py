@@ -84,11 +84,13 @@ def test_timeout_flags_timed_out():
 
 
 def test_host_env_not_inherited():
-    # A host var absent from the sealed map must not reach the child. The stub
-    # only depends on TRAAVIIS_STUB_MODE + PATH, so we assert the sealed keys.
+    # A host var absent from the sealed map must not reach the child, AND a
+    # caller-supplied PATH is stripped (R1): PATH is owned by the toolchain
+    # resolver, never the caller. The stub runs from an absolute argv so it needs
+    # no PATH, and the only surviving sealed key is TRAAVIIS_STUB_MODE.
     r = _run("ok")
     keys = set(r["trace"]["events"][0]["environment_keys"])
-    assert keys == {"TRAAVIIS_STUB_MODE", "PATH"}
+    assert keys == {"TRAAVIIS_STUB_MODE"}
 
 
 def test_output_cap_truncates():
@@ -117,6 +119,27 @@ def test_writable_path_violation_reported():
     # result.json + candidate.patch are written at root, outside "src/"
     assert "result.json" in r2["policy_violations"]
     assert "candidate.patch" in r2["policy_violations"]
+
+
+def test_deletion_moves_trace():
+    # A run that deletes a sealed file must be observable: the files_deleted digest
+    # enters trace-, so the trace id differs from a no-delete run over the same tree.
+    ok = _run("ok")["trace"]["trace_id"]
+    deleter = [sys.executable, "-c", "import os; os.remove('src/mod.py')"]
+    r = RUN.run_agent(deleter, CONTENT,
+                      _policy(environment={"X": "1"}))
+    assert "src/mod.py" in r["files_deleted"]
+    assert r["trace"]["trace_id"] != ok
+
+
+def test_command_normalized_absolute_executable_not_in_trace():
+    # The absolute interpreter path is machine-specific; the canonical trace must
+    # record only its basename so trace- is host-independent (R4).
+    r = _run("ok")
+    cmd = r["trace"]["events"][0]["command"]
+    assert cmd[0] == os.path.basename(sys.executable)
+    assert sys.executable not in cmd
+    assert not any(os.path.isabs(tok) for tok in cmd)
 
 
 def _main():

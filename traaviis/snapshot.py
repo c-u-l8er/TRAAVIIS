@@ -21,10 +21,11 @@ Canonical evidence rules applied here (§5a):
 
 Under-frozen edge flagged for GPT-5.6:
 
-  S1  How a file is *declared binary* in v1 is not pinned by the RFC. Here it is
-      an explicit ``binary_paths`` input (relative POSIX paths); everything else
-      is treated as text and LF-normalized. No content sniffing — declaration is
-      explicit so identity never depends on a heuristic.
+  S1  A file is *declared binary* by explicit ``binary_paths`` input (relative
+      POSIX paths); everything else is text and LF-normalized. No content sniffing.
+      Per GPT-5.6: the sorted ``binary_paths`` are **sealed into the snapshot**
+      (not merely used transiently by the builder), so the normalization rule that
+      produced each content-hash is itself part of ``snap-…``.
 
   S2  ``base_revision`` and ``visible_config`` are caller-supplied so this module
       stays subprocess-free; the orchestrator resolves the VCS revision.
@@ -105,6 +106,7 @@ def build_snapshot(
         "snapshot_version": SNAPSHOT_VERSION,
         "files": files,
         "exclusions": sorted(exclusions),  # producer owns list order → canonical
+        "binary_paths": sorted(binary),    # S1: sealed, not merely transient
         "file_modes": file_modes,
         "base_revision": base_revision,
         "visible_config": dict(visible_config or {}),

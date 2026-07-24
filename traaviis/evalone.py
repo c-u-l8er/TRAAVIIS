@@ -1,53 +1,85 @@
 """`trvs eval-one` orchestrator — the one-shot Residency evaluation pipeline.
 
-Wires the frozen ten steps of ``RFC_EVIDENCE_RESIDENCY.md`` §10 into a single
-deterministic episode: snapshot the subject → run the agent under policy →
-capture the trace → read the finding + patch → run the verifiers → score the
+Wires the frozen steps of ``RFC_EVIDENCE_RESIDENCY.md`` §10 into a single
+deterministic episode: **admit** the subject (verify declared ids + bind the
+snapshot to the working content) → **preflight** the reward configuration →
+run the agent under policy → capture the trace → read the finding + patch →
+run every verifier through the uniform ``VerifierContextV1`` seam → score the
 reward → emit the ``episode-…`` receipt. Every identity is content-addressed via
 ``traaviis.identity``; scoring is the pure engine in ``traaviis.reward``.
 
-Slice status. The three **substrate-independent** verifiers (``citations``,
-``patch``, ``finding_completeness``) are wired live from ``traaviis.verifiers``.
-The two **substrate** verifiers are injectable and default to deferred:
+GPT-5.6 Eval-One Closure rulings implemented here:
 
-  ``tests``     needs the controlled test-command run — pass a callable
-                ``(patched_content, task) -> state`` via ``extra_verifiers``.
-  ``identity``  needs the Forge re-lower (TRVM) to check that ``must_remain``
-                ``sem-…`` domains did not move — pass a callable
-                ``(run, task) -> state``.
+  * **Admission before execution.** A declared ``reward_id`` / ``task_id`` /
+    ``snapshot_id`` is recomputed and reconciled (``admission.verify_declared_id``);
+    the working ``content`` is proven to be exactly the sealed subject
+    (``admission.admit_subject`` → ``verify_materialization``). Any mismatch, or an
+    absolute / ``..`` path, raises ``AdmissionError`` and no agent runs.
 
-Any signal not resolved by a live or injected verifier defaults to
-``not_applicable``; if the task marks it *required*, the reward engine turns that
-into an invalid task configuration (§6a) — which is the correct, honest result
-until those two verifiers are ratified and wired.
+  * **Config preflight (F4).** If a *required* signal has no live or injected
+    verifier it can never resolve to anything but ``not_applicable`` — an invalid
+    task configuration. That is caught **before** the agent runs and returns an
+    invalid receipt (``status = invalid`` / ``reward = None``), so invalid config
+    never competes in post-run precedence.
 
-Under-frozen edges flagged for GPT-5.6:
+  * **Uniform verifier interface (step 10).** Every verifier — pure or substrate —
+    is called as ``verifier(context) -> VerifierResult``. The three pure verifiers
+    come from ``traaviis.verifiers``; ``tests`` / ``identity`` are injected via
+    ``extra_verifiers`` (see ``traaviis.substrate_verifiers``). Any signal without a
+    resolver defaults to ``not_applicable``.
 
-  E1  ``execution_facts`` canonical schema. Built here as
-      ``{exit_code, platform, timed_out, output_truncated, toolchain}`` — these
-      enter ``episode-…`` (see ``identity._EPISODE_IDENTITY_KEYS``). The exact
-      key set + ``platform`` normalization + resolved-toolchain shape need
-      ratifying.
-  E2  A ``policy_violation`` (write outside ``writable_paths``) is treated as a
-      tampered/invalid episode (``reward = 0``, ``validity = invalid``). Whether a
-      sandbox-escape is ``invalid`` vs ``error`` is a policy call.
+  * **Agent-result validation (blocker 7).** A result file that parses to a JSON
+    list or scalar (not an object) never crashes finding construction — it yields an
+    empty finding, which the verifiers score as ``fail``.
+
+  * **Substrate run failure → error (§6a, exit-code semantics).** A timeout,
+    truncated output, or an exit code outside ``allowed_exit_codes`` (default
+    ``[0]``) is substrate unavailability: the run-dependent signals report ``error``
+    so the episode is ``status = error`` / ``reward = None``, never a false ``fail``.
+
+  * **execution_facts.v1 (E1).** The run-environment facts are the versioned,
+    structured object built by ``traaviis.execfacts`` (honest sandbox labels, R2).
+
+Post-run precedence (F4) is owned by ``reward.score``: tamper → error → normal.
+A write outside ``writable_paths`` is *observed* (R3) and, when present, marks the
+episode tampered (``reward = 0`` / ``validity = invalid``).
 """
 
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
-from . import identity, reward, runner, verifiers
+from . import admission, execfacts, identity, patchapply, reward, runner, verifiers
+from .vcontext import VerifierContextV1, VerifierResult
 
 __all__ = ["eval_one", "EPISODE_VERSION"]
 
 EPISODE_VERSION = "traaviis.episode.v1"
 
-Verifier = Callable[..., str]
+Verifier = Callable[[VerifierContextV1], VerifierResult]
+
+# The three substrate-independent verifiers, wired live through the uniform seam.
+_LIVE_VERIFIERS: Dict[str, Verifier] = {
+    "citations": verifiers.citations_verifier,
+    "patch": verifiers.patch_verifier,
+    "finding_completeness": verifiers.finding_completeness_verifier,
+}
+
+# Non-scored bookkeeping verifiers that always resolve not-applicable here.
+_PSEUDO_SIGNALS = ("native", "oracle")
 
 
-def _finding_artifact(result: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    raw = (result or {}).get("finding") or {}
+def _finding_artifact(result: Any) -> Dict[str, Any]:
+    """Build a ``FindingV1`` from the agent result, tolerating malformed JSON.
+
+    A result that is not a JSON object — a list, a scalar, or ``None`` — yields an
+    empty finding (blocker 7): never a crash, and the verifiers score it ``fail``.
+    """
+    raw = result.get("finding") if isinstance(result, Mapping) else None
+    if not isinstance(raw, Mapping):
+        raw = {}
     summary = raw.get("summary", "")
     citations = raw.get("citations", [])
+    if not isinstance(citations, list):
+        citations = []
     finding = {
         "finding_version": "residency.finding.v1",
         "claims": [{"statement": summary, "citations": citations}],
@@ -64,6 +96,14 @@ def _patch_artifact(patch_text: Optional[str]) -> Optional[Dict[str, Any]]:
     return patch
 
 
+def _resolver_for(sig: str, extra_verifiers: Mapping[str, Verifier]) -> Optional[Verifier]:
+    if sig in _LIVE_VERIFIERS:
+        return _LIVE_VERIFIERS[sig]
+    if sig in extra_verifiers:
+        return extra_verifiers[sig]
+    return None
+
+
 def eval_one(
     task: Mapping[str, Any],
     content: Mapping[str, str],
@@ -73,14 +113,19 @@ def eval_one(
     snapshot: Mapping[str, Any],
     verifier_versions: Mapping[str, str],
     extra_verifiers: Optional[Mapping[str, Verifier]] = None,
-    platform: str = "unknown",
+    platform: Any = "unknown",
     toolchain: Optional[Mapping[str, Any]] = None,
+    runner_profile: str = runner.RUNNER_PROFILE,
 ) -> Dict[str, Any]:
     """Run one Residency episode and return the ``episode-…`` receipt dict.
 
     ``content`` is the normalized (LF) text map of the frozen subject; ``snapshot``
     is its sealed ``SnapshotV1``. ``agent_command`` is an argv vector. The task's
-    ``agent_run_policy`` governs the controlled run.
+    ``agent_run_policy`` governs the controlled run. ``extra_verifiers`` inject the
+    substrate verifiers (``tests`` / ``identity``) as ``(context) -> VerifierResult``.
+
+    Raises ``admission.AdmissionError`` if a declared id is wrong or ``content`` does
+    not bind to ``snapshot`` — the receipt would otherwise lie about its subject.
     """
     extra_verifiers = dict(extra_verifiers or {})
     plan = task.get("verifier_plan", {})
@@ -88,66 +133,116 @@ def eval_one(
     declared_na = list(plan.get("not_applicable", []))
     policy = task.get("agent_run_policy", {})
 
-    # 2-4: controlled run → trace + outputs.
+    # --- Preflight admission: verify declared ids + bind the subject ----------
+    reward_id_v = admission.verify_declared_id(
+        reward_spec, "reward_id", identity.reward_id)
+    task_id_v = admission.verify_declared_id(task, "task_id", identity.task_id)
+    snap_id = admission.admit_subject(
+        snapshot, content, binary_paths=snapshot.get("binary_paths", ()))
+
+    substrate_profile = task.get("substrate_profile", "residency.repository.v1")
+
+    def _receipt(*, trace_id, outputs, verification, score, execution_facts):
+        receipt = {
+            "episode_version": EPISODE_VERSION,
+            "substrate_profile": substrate_profile,
+            "task_id": task_id_v,
+            "reward_id": reward_id_v,
+            "subject": {"snapshot_id": snap_id},
+            "trace_id": trace_id,
+            "outputs": outputs,
+            "verification": verification,
+            "verifier_versions": dict(verifier_versions),
+            "reward": score["reward"],
+            "status": score["status"],
+            "validity": score["validity"],
+            "replayability": "verification",
+            "execution_facts": execution_facts,
+        }
+        receipt["episode_id"] = identity.episode_id(receipt)
+        return receipt
+
+    # --- Config preflight (F4): a required signal with no resolver is invalid --
+    unresolved = [
+        s for s in required
+        if s not in _PSEUDO_SIGNALS and _resolver_for(s, extra_verifiers) is None
+    ]
+    if unresolved:
+        # Invalid task configuration: refuse to run the agent (F4). No trace, no
+        # outputs, no execution — this never competes in post-run precedence.
+        return _receipt(
+            trace_id=None,
+            outputs={"finding_id": None, "patch_id": None},
+            verification={s: reward.NOT_APPLICABLE for s in unresolved},
+            score={"reward": None, "status": reward.STATUS_INVALID,
+                   "validity": reward.INVALID},
+            execution_facts=None,
+        )
+
+    # --- Controlled run → trace + outputs (steps 2-4) -------------------------
     run = runner.run_agent(agent_command, content, policy)
     finding = _finding_artifact(run["result"])
     patch = _patch_artifact(run["patch_text"])
 
-    # Build the total verification map over every declared signal.
+    # Apply the candidate patch to a fresh copy of the sealed content so substrate
+    # verifiers (tests / identity) see the patched tree; a bad diff → no patched
+    # tree, which those verifiers score honestly.
+    patched_content: Optional[Dict[str, str]] = None
+    if patch is not None:
+        try:
+            patched_content = patchapply.apply_unified_diff(content, patch["diff"])
+        except patchapply.PatchError:
+            patched_content = None
+
+    context = VerifierContextV1(
+        task=task,
+        snapshot=snapshot,
+        original_content=content,
+        run=run,
+        finding=finding,
+        patch=patch,
+        patched_content=patched_content,
+    )
+
+    # --- Total verification map over every declared signal (uniform seam) -----
     signal_ids = set(reward_spec.get("signals", {})) | set(required) \
-        | set(declared_na) | {"native", "oracle"}
+        | set(declared_na) | set(_PSEUDO_SIGNALS)
 
     def resolve(sig: str) -> str:
-        if sig in ("native", "oracle"):
+        if sig in _PSEUDO_SIGNALS:
             return reward.NOT_APPLICABLE
-        if sig == "citations":
-            return verifiers.verify_citations(finding, content)
-        if sig == "finding_completeness":
-            return verifiers.verify_finding_completeness(finding)
-        if sig == "patch":
-            return reward.FAIL if patch is None else \
-                verifiers.verify_patch(patch, content)
-        if sig in extra_verifiers:
-            return extra_verifiers[sig](run, task, content)  # tests/identity
-        return reward.NOT_APPLICABLE
+        verifier = _resolver_for(sig, extra_verifiers)
+        if verifier is None:
+            return reward.NOT_APPLICABLE
+        return verifier(context).state
 
     verification = {sig: resolve(sig) for sig in signal_ids}
 
-    # Substrate/policy failures → error / invalid (§6a, §10a, E2).
-    if run["timed_out"] or run["output_truncated"]:
-        for sig in required:
-            verification[sig] = reward.ERROR
-    tampered = bool(run["policy_violations"])  # E2
+    # --- Substrate run failure → error (§6a, exit-code semantics) -------------
+    allowed_exit_codes = list(policy.get("allowed_exit_codes", [0]))
+    bad_exit = (not run["timed_out"]) and run["exit_code"] not in allowed_exit_codes
+    run_error = run["timed_out"] or run["output_truncated"] or bad_exit
+    if run_error:
+        # Every signal here consumes the run's outputs; a substrate-level run
+        # failure is unavailability (error), not evidence of a wrong answer.
+        for sig in verification:
+            if sig not in _PSEUDO_SIGNALS:
+                verification[sig] = reward.ERROR
+
+    tampered = bool(run["policy_violations"])  # R3/E2: observed write escape
 
     score = reward.score(verification, reward_spec, required, tampered=tampered)
 
-    execution_facts = {  # E1 — enters episode identity
-        "exit_code": run["exit_code"],
-        "platform": platform,
-        "timed_out": run["timed_out"],
-        "output_truncated": run["output_truncated"],
-        "toolchain": dict(toolchain or {}),
-    }
+    execution_facts = execfacts.build_execution_facts(
+        run, runner_profile=runner_profile, platform=platform, toolchain=toolchain)
 
-    receipt = {
-        "episode_version": EPISODE_VERSION,
-        "substrate_profile": task.get("substrate_profile", "residency.repository.v1"),
-        "task_id": task.get("task_id") or identity.task_id(task),
-        "reward_id": reward_spec.get("reward_id") or identity.reward_id(reward_spec),
-        "subject": {"snapshot_id": snapshot.get("snapshot_id")
-                    or identity.snapshot_id(snapshot)},
-        "trace_id": run["trace"]["trace_id"],
-        "outputs": {
+    return _receipt(
+        trace_id=run["trace"]["trace_id"],
+        outputs={
             "finding_id": finding["finding_id"],
             "patch_id": patch["patch_id"] if patch else None,
         },
-        "verification": verification,
-        "verifier_versions": dict(verifier_versions),
-        "reward": score["reward"],
-        "status": score["status"],
-        "validity": score["validity"],
-        "replayability": "verification",
-        "execution_facts": execution_facts,
-    }
-    receipt["episode_id"] = identity.episode_id(receipt)
-    return receipt
+        verification=verification,
+        score=score,
+        execution_facts=execution_facts,
+    )

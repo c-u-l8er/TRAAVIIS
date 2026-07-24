@@ -10,15 +10,19 @@ movement.
 Runs with pytest, or standalone: `python3 test/test_evalone.py`.
 """
 
+import hashlib
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from traaviis import admission as ADM  # noqa: E402
 from traaviis import evalone as E  # noqa: E402
 from traaviis import identity as I  # noqa: E402
 from traaviis import reward as R  # noqa: E402
 from traaviis import snapshot as S  # noqa: E402
+from traaviis import substrate_verifiers as SV  # noqa: E402
+from traaviis.vcontext import VerifierResult  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STUB = os.path.join(HERE, "fixtures", "stub_agent.py")
@@ -36,10 +40,10 @@ REWARD_SPEC = {
         "identity":             {"verifier": "residency.identity.v1",  "weight": 0.15},
         "finding_completeness": {"verifier": "residency.finding.v1",   "weight": 0.10},
     },
-    "floors": [
-        {"when": "patch", "reward_max": 0.25},
-        {"when": "citations", "reward_max": 0.25},
-        {"when": "tests", "reward_max": 0.40},
+    "caps": [  # F1: explicit trigger state, renamed from "floors"
+        {"when": {"signal": "patch", "state": "fail"}, "reward_max": 0.25},
+        {"when": {"signal": "citations", "state": "fail"}, "reward_max": 0.25},
+        {"when": {"signal": "tests", "state": "fail"}, "reward_max": 0.40},
     ],
     "aggregation": "terminal",
 }
@@ -47,20 +51,32 @@ REWARD_SPEC = {
 VER_VERSIONS = {"citations": "1", "patch": "1", "tests": "1",
                 "identity": "1", "finding_completeness": "1"}
 
+# A structured toolchain in the shape execution_facts.v1 seals (E1). Changing the
+# resolved python version moves episode- (see test_toolchain_change_moves_episode).
+TOOLCHAIN = {"profile": "cpython-3.11",
+             "resolved": {"python": {"version": "3.11.4"}}}
+
+
+def _content_hash(text):
+    data = text.encode("utf-8").replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
 
 def _snapshot():
-    return {"snapshot_version": S.SNAPSHOT_VERSION,
-            "files": {k: "sha256:x" for k in CONTENT},
-            "exclusions": [], "file_modes": {},
-            "base_revision": None, "visible_config": {},
-            "snapshot_id": "snap-fixture"}
+    # A real sealed subject so admission binds content<->snapshot exactly.
+    snap = {"snapshot_version": S.SNAPSHOT_VERSION,
+            "files": {k: _content_hash(v) for k, v in CONTENT.items()},
+            "exclusions": [], "binary_paths": [], "file_modes": {},
+            "base_revision": None, "visible_config": {}}
+    snap["snapshot_id"] = I.snapshot_id(snap)
+    return snap
 
 
 def _task(required):
     return {
         "task_spec_version": "traaviis.task.v1",
         "substrate_profile": "residency.repository.v1",
-        "subject": {"snapshot_id": "snap-fixture"},
+        "subject": {"snapshot_id": _snapshot()["snapshot_id"]},
         "instructions": {"objective": "demo"},
         "reward_id": I.reward_id(REWARD_SPEC),
         "verifier_plan": {"required": required,
@@ -78,12 +94,12 @@ def _task(required):
     }
 
 
-def _pass_tests(run, task, content):
-    return R.PASS  # injected substrate verifier stand-in
+def _pass_tests(context):
+    return VerifierResult(R.PASS)  # injected substrate verifier stand-in
 
 
-def _pass_identity(run, task, content):
-    return R.PASS
+def _pass_identity(context):
+    return VerifierResult(R.PASS)
 
 
 ALL_PASS = {"tests": _pass_tests, "identity": _pass_identity}
@@ -99,7 +115,7 @@ def _eval(mode, required, extra=ALL_PASS, env=None):
         task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
         snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
         extra_verifiers=extra, platform="linux-x86_64",
-        toolchain={"python": "3.11.4"},
+        toolchain=TOOLCHAIN,
     )
 
 
@@ -156,8 +172,69 @@ def test_toolchain_change_moves_episode():
     b = E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
                    snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
                    extra_verifiers=ALL_PASS, platform="linux-x86_64",
-                   toolchain={"python": "3.11.9"})
+                   toolchain={"profile": "cpython-3.11",
+                              "resolved": {"python": {"version": "3.11.9"}}})
     assert a["episode_id"] != b["episode_id"]
+
+
+def test_nonzero_exit_is_error_and_null_reward():
+    # A non-allowed exit code is substrate failure: error / invalid / null reward,
+    # never a false fail (exit-code semantics ruling).
+    r = _eval("nonzero", ["citations", "patch", "tests", "identity"])
+    assert r["status"] == R.STATUS_ERROR
+    assert r["reward"] is None
+    assert r["validity"] == R.INVALID
+
+
+def test_malformed_json_result_never_crashes():
+    # A result.json that parses to a JSON list (not an object) must not crash the
+    # pipeline (blocker 7): it yields an empty finding scored as fail.
+    r = _eval("listresult", ["citations", "patch"])
+    assert r["status"] == R.STATUS_OK
+    assert r["verification"]["citations"] == R.FAIL
+    assert r["episode_id"].startswith("episode-")
+
+
+def test_patched_tests_regression_hits_040_cap():
+    # Wire the REAL tests verifier: baseline passes the check, the ok patch changes
+    # "return 1" -> "return 2" so the patched tree regresses -> tests fail -> 0.40.
+    check = [sys.executable, "-c",
+             "import sys;sys.exit(0 if open('src/mod.py').read().strip()=="
+             "'return 1' else 1)"]
+    task = _task(["citations", "patch", "tests", "identity"])
+    task["test_plan"] = {"commands": [{"argv": check, "cwd": "."}]}
+    r = E.eval_one(
+        task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+        snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+        extra_verifiers={"tests": SV.tests_verifier, "identity": _pass_identity},
+        platform="linux-x86_64", toolchain=TOOLCHAIN,
+    )
+    assert r["verification"]["tests"] == R.FAIL
+    assert r["status"] == R.STATUS_OK
+    assert abs(r["reward"] - 0.40) < 1e-9  # tests fail cap
+
+
+def test_false_declared_snapshot_id_is_rejected():
+    snap = _snapshot()
+    snap["snapshot_id"] = "snap-fixture"  # a lie
+    try:
+        E.eval_one(_task(["patch"]), CONTENT, [sys.executable, STUB], REWARD_SPEC,
+                   snapshot=snap, verifier_versions=VER_VERSIONS,
+                   extra_verifiers=ALL_PASS)
+    except ADM.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError for a false snapshot_id")
+
+
+def test_content_snapshot_mismatch_is_rejected():
+    tampered = dict(CONTENT, **{"src/mod.py": "return 42\n"})
+    try:
+        E.eval_one(_task(["patch"]), tampered, [sys.executable, STUB], REWARD_SPEC,
+                   snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+                   extra_verifiers=ALL_PASS)
+    except ADM.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError when content != sealed subject")
 
 
 def _main():

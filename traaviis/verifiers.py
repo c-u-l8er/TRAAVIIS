@@ -26,11 +26,21 @@ from typing import Any, Mapping
 
 from . import reward
 from .patchapply import PatchError, apply_unified_diff
+from .vcontext import VerifierContextV1, VerifierResult
 
-__all__ = ["verify_citations", "verify_patch", "verify_finding_completeness"]
+__all__ = [
+    "verify_citations", "verify_patch", "verify_finding_completeness",
+    "citations_verifier", "patch_verifier", "finding_completeness_verifier",
+    "CITATIONS_VERIFIER_VERSION", "PATCH_VERIFIER_VERSION",
+    "FINDING_VERIFIER_VERSION",
+]
 
 PASS = reward.PASS
 FAIL = reward.FAIL
+
+CITATIONS_VERIFIER_VERSION = "residency.citations.v1"
+PATCH_VERIFIER_VERSION = "residency.patch.v1"
+FINDING_VERIFIER_VERSION = "residency.finding.v1"
 
 
 def _content_lines(text: str) -> list:
@@ -128,3 +138,35 @@ def verify_finding_completeness(finding: Mapping[str, Any]) -> str:
             if start < 1 or end < start:
                 return FAIL
     return PASS
+
+
+# --- Context-based wrappers (uniform verifier interface, §closure step 10) -----
+#
+# Every verifier — pure or substrate — is called by the orchestrator as
+# ``verifier(context) -> VerifierResult``. These three adapt the pure functions
+# above to that seam. A missing agent output (``finding``/``patch`` is ``None``)
+# is a ``fail`` (§10a), never an ``error``.
+
+
+def citations_verifier(context: VerifierContextV1) -> VerifierResult:
+    """`citations` over a ``VerifierContextV1`` (finding absent → fail)."""
+    finding = context.finding
+    if finding is None:
+        return VerifierResult(FAIL, {"reason": "no finding"})
+    return VerifierResult(verify_citations(finding, context.original_content))
+
+
+def patch_verifier(context: VerifierContextV1) -> VerifierResult:
+    """`patch` over a ``VerifierContextV1`` (patch absent → fail)."""
+    patch = context.patch
+    if patch is None:
+        return VerifierResult(FAIL, {"reason": "no patch"})
+    return VerifierResult(verify_patch(patch, context.original_content))
+
+
+def finding_completeness_verifier(context: VerifierContextV1) -> VerifierResult:
+    """`finding_completeness` over a ``VerifierContextV1`` (finding absent → fail)."""
+    finding = context.finding
+    if finding is None:
+        return VerifierResult(FAIL, {"reason": "no finding"})
+    return VerifierResult(verify_finding_completeness(finding))
