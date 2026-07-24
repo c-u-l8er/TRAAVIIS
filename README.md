@@ -39,11 +39,13 @@ reference reducer).
 
 ## The command set
 
-Seven commands ship today and fold real worlds over the engine. The
-**environment surface** — published as roadmap, not yet built — turns a subject
-into something an agent can be evaluated against. Its **beachhead is
-`trvs eval-one`**: a one-shot evaluation of a single frozen subject. Packaging
-and serving come after.
+Eight commands ship today and fold real worlds over the engine. The
+**environment surface** turns a subject into something an agent can be evaluated
+against; its **beachhead — `trvs eval-one`** — now ships: a one-shot,
+trusted-local evaluation of a single frozen subject that admits the bundle,
+binds the subject byte-exactly, runs a user-supplied agent, and returns a
+content-addressed `episode-…` receipt. Batch evaluation, packaging and serving
+come after.
 
 | command         | what it does                                             | status         |
 | --------------- | -------------------------------------------------------- | -------------- |
@@ -54,7 +56,7 @@ and serving come after.
 | `trvs verify`   | reference / native / oracle agreement (strict)           | shipped        |
 | `trvs replay`   | re-fold a film and assert it reproduces (`--expect`)     | shipped        |
 | `trvs diff`     | compare two worlds' identity + per-epoch films           | shipped        |
-| `trvs eval-one` | evaluate one agent run over one frozen subject           | **next**       |
+| `trvs eval-one` | evaluate one agent run over one frozen subject           | shipped        |
 | `trvs eval`     | run an agent over a split, score every episode           | after eval-one |
 | `trvs init`     | scaffold a new environment subject from a template       | later          |
 | `trvs pack`     | package a subject + tasks + rewards into an environment   | later          |
@@ -83,6 +85,30 @@ pinned **semantic identity** — a different question (same *meaning*) from `--f
 Exit-code contract for `verify` / `replay` / `diff`: **0** agree/reproduced,
 **1** ran and disagreed/drifted, **2** a verifier was unavailable or the source
 failed to lower. That makes any of them a fail-closed gate in CI or an RL loop.
+
+### Evaluate one agent run (`eval-one`, shipped)
+
+`trvs eval-one` takes an **eval-bundle** directory (a `bundle.json` manifest that
+names the task, reward, snapshot and frozen `subject/`) and a user-supplied agent
+command. It admits the bundle before it runs anything — recomputing every
+declared id, cross-binding the task to *these* reward + snapshot, binding the
+working subject byte-exactly to the sealed snapshot (modes and declared binaries
+included), and rejecting any run policy the trusted-local runner cannot honor —
+then folds one episode into a content-addressed `episode-…` receipt.
+
+```sh
+# the in-repo residency demo, scored against the deterministic stub agent:
+trvs eval-one examples/eval-one/residency-demo \
+    --agent python3 "$PWD/test/fixtures/stub_agent.py" --platform linux-x86_64
+
+# dashed agent flags pass through unchanged after a standalone `--`:
+trvs eval-one examples/eval-one/residency-demo \
+    --platform linux-x86_64 -- my-agent --model foo --temperature 0
+```
+
+Exit codes mirror the receipt's status: **0** a valid episode, **1** an invalid
+one (policy violation / invalid config), **2** admission rejected the bundle
+before execution or a substrate error prevented scoring.
 
 ## The environment surface (roadmap)
 
@@ -195,7 +221,8 @@ The seams are frozen on purpose:
 ## Develop
 
 ```sh
-python -m pytest test/test_cli.py      # CLI tests over the engine
+python3 test/test_cli.py               # world CLI battery over the engine
+python3 test/test_cli_evalone.py       # eval-one admission + episode battery
 python -m traaviis.cli doctor          # run from source
 ```
 

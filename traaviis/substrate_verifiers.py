@@ -143,6 +143,10 @@ def tests_verifier(context: VerifierContextV1) -> VerifierResult:
     return VerifierResult(reward.FAIL, {"reason": "patched tests regressed"})
 
 
+# The wired implementation version (sealed as ``verifier_versions.tests.implementation``).
+tests_verifier.version = TESTS_VERIFIER_VERSION
+
+
 def make_identity_verifier(adapter: ForgeIdentityAdapterV1):
     """Build an ``identity`` verifier bound to a ``ForgeIdentityAdapterV1``."""
 
@@ -185,4 +189,8 @@ def make_identity_verifier(adapter: ForgeIdentityAdapterV1):
             return VerifierResult(reward.FAIL, {"moved": sorted(moved)})
         return VerifierResult(reward.PASS)
 
+    # The identity verifier's implementation version is the adapter's version — the
+    # exact lowering seam that produced each re-lowered id (sealed as
+    # ``verifier_versions.identity.implementation``).
+    identity_verifier.version = getattr(adapter, "version", None)
     return identity_verifier

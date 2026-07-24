@@ -48,9 +48,6 @@ REWARD_SPEC = {
     "aggregation": "terminal",
 }
 
-VER_VERSIONS = {"citations": "1", "patch": "1", "tests": "1",
-                "identity": "1", "finding_completeness": "1"}
-
 # A structured toolchain in the shape execution_facts.v1 seals (E1). Changing the
 # resolved python version moves episode- (see test_toolchain_change_moves_episode).
 TOOLCHAIN = {"profile": "cpython-3.11",
@@ -84,7 +81,7 @@ def _task(required):
         "termination": {"mode": "one_shot"},
         "agent_run_policy": {
             "policy_version": "traaviis.agent-run-policy.v1",
-            "command_mode": "argv", "shell": False, "network": "disabled",
+            "command_mode": "argv", "shell": False, "network": "unrestricted",
             "timeout_seconds": 30, "max_output_bytes": 4194304,
             "environment": {"TRAAVIIS_STUB_MODE": "ok",
                             "PATH": os.environ.get("PATH", "")},
@@ -102,6 +99,12 @@ def _pass_identity(context):
     return VerifierResult(R.PASS)
 
 
+# Required signals now demand a wired verifier with an implementation version;
+# stamp the injected stand-ins so they are admissible config, not a deferred gap.
+_pass_tests.version = "residency.tests.v1"
+_pass_identity.version = "residency.identity.v1"
+
+
 ALL_PASS = {"tests": _pass_tests, "identity": _pass_identity}
 
 
@@ -113,7 +116,7 @@ def _eval(mode, required, extra=ALL_PASS, env=None):
         task["agent_run_policy"]["environment"]["TRAAVIIS_STUB_MODE"] = mode
     return E.eval_one(
         task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
-        snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+        snapshot=_snapshot(),
         extra_verifiers=extra, platform="linux-x86_64",
         toolchain=TOOLCHAIN,
     )
@@ -146,7 +149,7 @@ def test_policy_violation_is_invalid_episode():
     task = _task(["citations", "patch"])
     task["agent_run_policy"]["writable_paths"] = ["src/"]
     r = E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
-                   snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+                   snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS, platform="linux-x86_64")
     assert r["status"] == R.STATUS_INVALID
     assert r["validity"] == R.INVALID
@@ -156,6 +159,18 @@ def test_policy_violation_is_invalid_episode():
 def test_required_deferred_verifier_is_invalid_config():
     # Require identity but do NOT inject it -> defaults not_applicable -> invalid.
     r = _eval("ok", ["citations", "patch", "identity"], extra={})
+    assert r["status"] == R.STATUS_INVALID
+    assert r["reward"] is None
+
+
+def test_required_verifier_without_implementation_version_is_invalid_config():
+    # A required signal whose wired verifier declares no implementation version
+    # (.version) can only ever fall back to not_applicable -> invalid config (F4),
+    # distinct from the unwired case above.
+    def _versionless_tests(context):
+        return VerifierResult(R.PASS)  # deliberately carries no .version
+    r = _eval("ok", ["citations", "patch", "tests"],
+              extra={"tests": _versionless_tests})
     assert r["status"] == R.STATUS_INVALID
     assert r["reward"] is None
 
@@ -170,7 +185,7 @@ def test_toolchain_change_moves_episode():
     a = _eval("ok", ["citations", "patch", "tests", "identity"])
     task = _task(["citations", "patch", "tests", "identity"])
     b = E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
-                   snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+                   snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS, platform="linux-x86_64",
                    toolchain={"profile": "cpython-3.11",
                               "resolved": {"python": {"version": "3.11.9"}}})
@@ -205,7 +220,7 @@ def test_patched_tests_regression_hits_040_cap():
     task["test_plan"] = {"commands": [{"argv": check, "cwd": "."}]}
     r = E.eval_one(
         task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
-        snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+        snapshot=_snapshot(),
         extra_verifiers={"tests": SV.tests_verifier, "identity": _pass_identity},
         platform="linux-x86_64", toolchain=TOOLCHAIN,
     )
@@ -219,7 +234,7 @@ def test_false_declared_snapshot_id_is_rejected():
     snap["snapshot_id"] = "snap-fixture"  # a lie
     try:
         E.eval_one(_task(["patch"]), CONTENT, [sys.executable, STUB], REWARD_SPEC,
-                   snapshot=snap, verifier_versions=VER_VERSIONS,
+                   snapshot=snap,
                    extra_verifiers=ALL_PASS)
     except ADM.AdmissionError:
         return
@@ -230,11 +245,47 @@ def test_content_snapshot_mismatch_is_rejected():
     tampered = dict(CONTENT, **{"src/mod.py": "return 42\n"})
     try:
         E.eval_one(_task(["patch"]), tampered, [sys.executable, STUB], REWARD_SPEC,
-                   snapshot=_snapshot(), verifier_versions=VER_VERSIONS,
+                   snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS)
     except ADM.AdmissionError:
         return
     raise AssertionError("expected AdmissionError when content != sealed subject")
+
+
+def test_task_referencing_wrong_valid_reward_is_rejected():
+    # A task whose reward_id is itself a valid rew-… but names a DIFFERENT reward
+    # than the one supplied must be rejected (cross-bind), never scored against it.
+    other_reward = dict(REWARD_SPEC, aggregation="weighted")  # a different valid spec
+    task = _task(["patch"])
+    task["reward_id"] = I.reward_id(other_reward)  # valid id, wrong reference
+    task["task_id"] = I.task_id(task)
+    try:
+        E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+                   snapshot=_snapshot(),
+                   extra_verifiers=ALL_PASS)
+    except ADM.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError for a mis-referenced reward_id")
+
+
+def test_task_referencing_wrong_valid_snapshot_is_rejected():
+    # A task whose subject.snapshot_id is a valid snap-… for a DIFFERENT subject
+    # than the one supplied must be rejected (cross-bind).
+    other = {"snapshot_version": S.SNAPSHOT_VERSION,
+             "files": {"spec/one.md": _content_hash("different\n")},
+             "exclusions": [], "binary_paths": [], "file_modes": {},
+             "base_revision": None, "visible_config": {}}
+    other["snapshot_id"] = I.snapshot_id(other)
+    task = _task(["patch"])
+    task["subject"] = {"snapshot_id": other["snapshot_id"]}  # valid id, wrong subject
+    task["task_id"] = I.task_id(task)
+    try:
+        E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+                   snapshot=_snapshot(),
+                   extra_verifiers=ALL_PASS)
+    except ADM.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError for a mis-referenced snapshot_id")
 
 
 def _main():

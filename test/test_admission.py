@@ -133,6 +133,41 @@ def test_admit_rejects_false_snapshot_id():
     raise AssertionError("expected AdmissionError for a false snapshot_id")
 
 
+# --- cross-bind: task references the *verified* reward + snapshot ------------
+
+def test_cross_bind_accepts_matching_references():
+    task = {"reward_id": "rew-abc", "subject": {"snapshot_id": "snap-xyz"}}
+    A.cross_bind_task(task, "rew-abc", "snap-xyz")  # returns None, no raise
+
+
+def test_cross_bind_rejects_wrong_reward_reference():
+    # A task pointing at a *different* (even if internally valid) reward id.
+    task = {"reward_id": "rew-000", "subject": {"snapshot_id": "snap-xyz"}}
+    try:
+        A.cross_bind_task(task, "rew-abc", "snap-xyz")
+    except A.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError for a mis-referenced reward_id")
+
+
+def test_cross_bind_rejects_wrong_snapshot_reference():
+    task = {"reward_id": "rew-abc", "subject": {"snapshot_id": "snap-000"}}
+    try:
+        A.cross_bind_task(task, "rew-abc", "snap-xyz")
+    except A.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError for a mis-referenced snapshot_id")
+
+
+def test_cross_bind_rejects_missing_subject():
+    task = {"reward_id": "rew-abc"}
+    try:
+        A.cross_bind_task(task, "rew-abc", "snap-xyz")
+    except A.AdmissionError:
+        return
+    raise AssertionError("expected AdmissionError for an absent subject reference")
+
+
 def _main():
     tests = sorted(
         (name, obj)

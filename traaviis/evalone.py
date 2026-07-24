@@ -13,14 +13,28 @@ GPT-5.6 Eval-One Closure rulings implemented here:
   * **Admission before execution.** A declared ``reward_id`` / ``task_id`` /
     ``snapshot_id`` is recomputed and reconciled (``admission.verify_declared_id``);
     the working ``content`` is proven to be exactly the sealed subject
-    (``admission.admit_subject`` → ``verify_materialization``). Any mismatch, or an
-    absolute / ``..`` path, raises ``AdmissionError`` and no agent runs.
+    (``admission.admit_subject`` → ``verify_materialization``); and the task is
+    cross-bound to the *verified* reward + snapshot it references
+    (``admission.cross_bind_task``) so a fabricated ``rew-…`` / ``snap-…`` can never
+    be scored against unrelated inputs. Any mismatch, or an absolute / ``..`` path,
+    raises ``AdmissionError`` and no agent runs.
 
   * **Config preflight (F4).** If a *required* signal has no live or injected
-    verifier it can never resolve to anything but ``not_applicable`` — an invalid
-    task configuration. That is caught **before** the agent runs and returns an
-    invalid receipt (``status = invalid`` / ``reward = None``), so invalid config
-    never competes in post-run precedence.
+    verifier — or the wired verifier declares no implementation version — it can
+    never resolve to anything but ``not_applicable``, an invalid task configuration.
+    That is caught **before** the agent runs and returns an invalid receipt
+    (``status = invalid`` / ``reward = None``), so invalid config never competes in
+    post-run precedence.
+
+  * **Honest run policy (R2).** The trusted-local runner is not a sandbox; a policy
+    demanding an enforcement it can't deliver (e.g. a network sandbox) is rejected
+    at preflight (``UnsupportedPolicyError``) rather than sealing a false
+    ``execution_facts`` sandbox label.
+
+  * **Verifier versions ``{contract, implementation}``.** Each scored signal seals
+    both the reward's declared verifier *contract* and the *implementation* version
+    (``.version``) of the code actually wired to answer it; the task cannot override
+    the implementation half.
 
   * **Uniform verifier interface (step 10).** Every verifier — pure or substrate —
     is called as ``verifier(context) -> VerifierResult``. The three pure verifiers
@@ -50,11 +64,22 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from . import admission, execfacts, identity, patchapply, reward, runner, verifiers
 from .vcontext import VerifierContextV1, VerifierResult
 
-__all__ = ["eval_one", "EPISODE_VERSION"]
+__all__ = ["eval_one", "EPISODE_VERSION", "UnsupportedPolicyError"]
 
 EPISODE_VERSION = "traaviis.episode.v1"
 
 Verifier = Callable[[VerifierContextV1], VerifierResult]
+
+
+class UnsupportedPolicyError(Exception):
+    """The task's run policy asks for a guarantee the trusted-local runner can't give.
+
+    The runner is a *trusted-local* process runner, not a sandbox: it observes
+    filesystem writes by rescan and applies no network isolation. A task that
+    requests, e.g., ``network:"disabled"`` is demanding an enforcement this runner
+    does not deliver — accepting it would seal a dishonest ``execution_facts``
+    sandbox label. Such a policy is rejected at preflight, before the agent runs.
+    """
 
 # The three substrate-independent verifiers, wired live through the uniform seam.
 _LIVE_VERIFIERS: Dict[str, Verifier] = {
@@ -104,6 +129,79 @@ def _resolver_for(sig: str, extra_verifiers: Mapping[str, Verifier]) -> Optional
     return None
 
 
+def _impl_version(verifier: Optional[Verifier]) -> Optional[str]:
+    """The implementation version the wired verifier declares (``.version``), or None.
+
+    A verifier that is unwired, or wired but carries no ``.version``, has no
+    implementation version — for a *required* signal that is an invalid config.
+    """
+    if verifier is None:
+        return None
+    version = getattr(verifier, "version", None)
+    return version if isinstance(version, str) else None
+
+
+def _verifier_versions_map(
+    reward_spec: Mapping[str, Any], extra_verifiers: Mapping[str, Verifier],
+) -> Dict[str, Dict[str, Optional[str]]]:
+    """Seal each scored signal's ``{contract, implementation}`` version pair.
+
+    ``contract`` is the verifier id the *reward* declares it wants (the ask);
+    ``implementation`` is the ``.version`` of the code actually wired to answer it
+    (the answer), or ``None`` when no implementation is wired. The task can NOT
+    override the implementation's own declared version (GPT-5.6 ruling): the
+    implementation half always comes from the wired verifier, never from the task.
+    """
+    out: Dict[str, Dict[str, Optional[str]]] = {}
+    for sig, spec in reward_spec.get("signals", {}).items():
+        contract = spec.get("verifier") if isinstance(spec, Mapping) else None
+        implementation = _impl_version(_resolver_for(sig, extra_verifiers))
+        out[sig] = {"contract": contract, "implementation": implementation}
+    return out
+
+
+def _required_config_error(
+    sig: str, extra_verifiers: Mapping[str, Verifier],
+) -> Optional[str]:
+    """Why a *required* signal cannot resolve to a real verdict, or ``None`` if fine.
+
+    A required signal is invalid config when no verifier is wired for it, or when
+    the wired verifier declares no implementation version — either way it can only
+    ever fall back to ``not_applicable`` (F4), which a required signal may not be.
+    """
+    if sig in _PSEUDO_SIGNALS:
+        return None
+    verifier = _resolver_for(sig, extra_verifiers)
+    if verifier is None:
+        return "no verifier is wired for this required signal"
+    if _impl_version(verifier) is None:
+        return "wired verifier declares no implementation version"
+    return None
+
+
+def _check_run_policy(policy: Mapping[str, Any], runner_profile: str) -> None:
+    """Reject a run policy the trusted-local runner cannot honestly satisfy.
+
+    The runner profile states the sandbox guarantee it actually delivers (see
+    ``execfacts.RUNNER_PROFILES``). A task may only request the network posture the
+    profile really provides (``unrestricted`` for the trusted-local runner) — or
+    leave it unset. Any stronger request (e.g. ``disabled``) is refused *before*
+    the agent runs, so no episode ever seals a sandbox label it did not enforce.
+    """
+    caps = execfacts.RUNNER_PROFILES.get(runner_profile)
+    if caps is None:
+        raise UnsupportedPolicyError(f"unknown runner profile {runner_profile!r}")
+    requested = policy.get("network")
+    supported = caps["network"]
+    if requested is not None and requested != supported:
+        raise UnsupportedPolicyError(
+            f"runner profile {runner_profile!r} is a trusted-local process runner, "
+            f"not a sandbox: it cannot honor network={requested!r} (it provides only "
+            f"network={supported!r}). Declare network={supported!r} + "
+            f"runner_profile={runner_profile!r} for an honest episode."
+        )
+
+
 def eval_one(
     task: Mapping[str, Any],
     content: Mapping[str, str],
@@ -111,7 +209,6 @@ def eval_one(
     reward_spec: Mapping[str, Any],
     *,
     snapshot: Mapping[str, Any],
-    verifier_versions: Mapping[str, str],
     extra_verifiers: Optional[Mapping[str, Verifier]] = None,
     platform: Any = "unknown",
     toolchain: Optional[Mapping[str, Any]] = None,
@@ -119,13 +216,18 @@ def eval_one(
 ) -> Dict[str, Any]:
     """Run one Residency episode and return the ``episode-…`` receipt dict.
 
-    ``content`` is the normalized (LF) text map of the frozen subject; ``snapshot``
-    is its sealed ``SnapshotV1``. ``agent_command`` is an argv vector. The task's
-    ``agent_run_policy`` governs the controlled run. ``extra_verifiers`` inject the
-    substrate verifiers (``tests`` / ``identity``) as ``(context) -> VerifierResult``.
+    ``content`` is the normalized (LF) text/bytes map of the frozen subject;
+    ``snapshot`` is its sealed ``SnapshotV1``. ``agent_command`` is an argv vector.
+    The task's ``agent_run_policy`` governs the controlled run. ``extra_verifiers``
+    inject the substrate verifiers (``tests`` / ``identity``) as
+    ``(context) -> VerifierResult``; each verifier's ``.version`` becomes the
+    ``implementation`` half of its sealed ``verifier_versions`` entry.
 
-    Raises ``admission.AdmissionError`` if a declared id is wrong or ``content`` does
-    not bind to ``snapshot`` — the receipt would otherwise lie about its subject.
+    Raises ``admission.AdmissionError`` if a declared id is wrong, the task does not
+    reference the supplied reward/snapshot, or ``content`` does not bind to
+    ``snapshot`` — the receipt would otherwise lie about its inputs. Raises
+    ``UnsupportedPolicyError`` if the run policy demands a guarantee the trusted-local
+    runner does not deliver (e.g. a network sandbox).
     """
     extra_verifiers = dict(extra_verifiers or {})
     plan = task.get("verifier_plan", {})
@@ -139,6 +241,17 @@ def eval_one(
     task_id_v = admission.verify_declared_id(task, "task_id", identity.task_id)
     snap_id = admission.admit_subject(
         snapshot, content, binary_paths=snapshot.get("binary_paths", ()))
+    # Each artifact is now internally consistent; prove the task actually references
+    # *these* verified artifacts (never a fabricated rew-…/snap-… against unrelated
+    # inputs) before anything runs.
+    admission.cross_bind_task(task, reward_id_v, snap_id)
+
+    # --- Preflight policy: refuse a run posture the runner can't honestly keep --
+    _check_run_policy(policy, runner_profile)
+
+    # Seal each scored signal's {contract, implementation} version pair from the
+    # reward's ask + the wired verifier's own declared version (never the task's).
+    verifier_versions = _verifier_versions_map(reward_spec, extra_verifiers)
 
     substrate_profile = task.get("substrate_profile", "residency.repository.v1")
 
@@ -162,11 +275,11 @@ def eval_one(
         receipt["episode_id"] = identity.episode_id(receipt)
         return receipt
 
-    # --- Config preflight (F4): a required signal with no resolver is invalid --
-    unresolved = [
-        s for s in required
-        if s not in _PSEUDO_SIGNALS and _resolver_for(s, extra_verifiers) is None
-    ]
+    # --- Config preflight (F4): a required signal that cannot resolve is invalid -
+    # Either no verifier is wired for it, or the wired verifier declares no
+    # implementation version — both leave it stuck at not_applicable, which a
+    # required signal may never be.
+    unresolved = [s for s in required if _required_config_error(s, extra_verifiers)]
     if unresolved:
         # Invalid task configuration: refuse to run the agent (F4). No trace, no
         # outputs, no execution — this never competes in post-run precedence.

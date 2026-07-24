@@ -1,0 +1,44 @@
+{
+  "task_spec_version": "traaviis.task.v1",
+  "substrate_profile": "residency.repository.v1",
+  "subject": {
+    "snapshot_id": "snap-ccc3101862d40e8f99b1d73446e579c4576823a989449b7de346b3aebd79cf8a"
+  },
+  "instructions": {
+    "objective": "cite the spec and patch src/mod.py"
+  },
+  "reward_id": "rew-25c4ce1276a7b70a473548354ae5d14f1c852ba087ffd09bc9b17b550c5c05a5",
+  "verifier_plan": {
+    "required": [
+      "citations",
+      "patch",
+      "finding_completeness"
+    ],
+    "not_applicable": [
+      "native",
+      "oracle",
+      "tests",
+      "identity"
+    ]
+  },
+  "termination": {
+    "mode": "one_shot"
+  },
+  "agent_run_policy": {
+    "policy_version": "traaviis.agent-run-policy.v1",
+    "command_mode": "argv",
+    "shell": false,
+    "network": "unrestricted",
+    "timeout_seconds": 30,
+    "max_output_bytes": 4194304,
+    "environment": {
+      "TRAAVIIS_STUB_MODE": "ok"
+    },
+    "writable_paths": [
+      "."
+    ],
+    "result_path": "result.json",
+    "patch_path": "candidate.patch"
+  },
+  "task_id": "task-ba26a6198cedf843fd12d2338a6f08dbbc3111f917f9d70b5a59d7e04524f4aa"
+}

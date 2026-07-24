@@ -22,6 +22,9 @@ absolute or ``..`` path is rejected too.
 """
 
 import hashlib
+import os
+import stat
+from fnmatch import fnmatch
 from typing import Any, Mapping, Optional
 
 from . import identity
@@ -32,6 +35,8 @@ __all__ = [
     "verify_declared_id",
     "verify_materialization",
     "admit_subject",
+    "cross_bind_task",
+    "verify_subject_tree",
 ]
 
 
@@ -120,6 +125,34 @@ def verify_materialization(
             )
 
 
+def cross_bind_task(
+    task: Mapping[str, Any], reward_id: str, snapshot_id: str,
+) -> None:
+    """Bind the task to the *verified* reward + snapshot it references.
+
+    Verifying each artifact's own declared id (``verify_declared_id``) only proves
+    each is internally consistent — it does NOT prove the ``task`` references *these*
+    artifacts. A task carrying a fabricated ``reward_id`` / ``subject.snapshot_id``
+    (e.g. ``rew-000…`` / ``snap-000…``) would otherwise be accepted against an
+    unrelated reward/snapshot and the receipt would misattribute its scoring and
+    subject. Here we require the task's own references to equal the verified ids and
+    reject before execution otherwise.
+    """
+    declared_reward = task.get("reward_id")
+    if declared_reward != reward_id:
+        raise AdmissionError(
+            f"task.reward_id={declared_reward!r} does not bind the supplied "
+            f"reward spec {reward_id!r}"
+        )
+    subject = task.get("subject")
+    declared_snap = subject.get("snapshot_id") if isinstance(subject, Mapping) else None
+    if declared_snap != snapshot_id:
+        raise AdmissionError(
+            f"task.subject.snapshot_id={declared_snap!r} does not bind the "
+            f"supplied snapshot {snapshot_id!r}"
+        )
+
+
 def admit_subject(
     snapshot: Mapping[str, Any],
     content: Mapping[str, str],
@@ -135,3 +168,93 @@ def admit_subject(
     snap_id = verify_declared_id(snapshot, "snapshot_id", identity.snapshot_id)
     verify_materialization(snapshot, content, binary_paths=binary_paths)
     return snap_id
+
+
+def _excluded(relpath: str, exclusions) -> bool:
+    for pattern in exclusions:
+        if fnmatch(relpath, pattern):
+            return True
+    return False
+
+
+def verify_subject_tree(
+    snapshot: Mapping[str, Any], subject_root: str,
+) -> dict:
+    """Read + admit a subject *directory* on disk against ``snapshot``; return content.
+
+    This is the tree-level admission the bundle loader uses. Beyond the byte binding
+    of ``verify_materialization`` it enforces the full §5a canonical-evidence surface
+    that only exists on disk:
+
+      * **Declared binaries are loaded as bytes**, everything else as UTF-8 text. A
+        non-UTF-8 file that is *not* declared binary is rejected (never silently
+        mangled).
+      * **No symlinks or special files.** v1 seals only regular files; a symlink or
+        device/fifo in the subject tree is rejected, never followed.
+      * **File modes must match** the sealed ``file_modes`` exactly.
+      * **Exclusions are honored** — a path matching a sealed exclusion glob is
+        skipped, not treated as an extra.
+
+    Returns the ``{relpath: text|bytes}`` content map (binaries as ``bytes``) that
+    binds exactly to the snapshot. Raises ``AdmissionError`` on any violation.
+    """
+    files = snapshot.get("files")
+    if not isinstance(files, Mapping):
+        raise AdmissionError("snapshot has no 'files' map")
+    exclusions = list(snapshot.get("exclusions", []))
+    binary = set(snapshot.get("binary_paths", ()))
+    file_modes = snapshot.get("file_modes", {}) or {}
+
+    content: dict = {}
+    modes_on_disk: dict = {}
+
+    for dirpath, dirnames, filenames in os.walk(subject_root, followlinks=False):
+        for d in list(dirnames):
+            if os.path.islink(os.path.join(dirpath, d)):
+                rel = os.path.relpath(
+                    os.path.join(dirpath, d), subject_root).replace(os.sep, "/")
+                raise AdmissionError(f"subject contains a symlinked directory: {rel!r}")
+        for name in filenames:
+            abspath = os.path.join(dirpath, name)
+            rel = os.path.relpath(abspath, subject_root).replace(os.sep, "/")
+            if os.path.islink(abspath):
+                raise AdmissionError(f"subject contains a symlink: {rel!r}")
+            if not os.path.isfile(abspath):
+                raise AdmissionError(f"subject contains a non-regular file: {rel!r}")
+            if _excluded(rel, exclusions):
+                continue
+            try:
+                safe_rel = safe_relposix(rel)
+            except PathError as exc:
+                raise AdmissionError(f"subject path inadmissible: {exc}") from exc
+            with open(abspath, "rb") as fh:
+                data = fh.read()
+            if safe_rel in binary:
+                content[safe_rel] = data
+            else:
+                try:
+                    content[safe_rel] = data.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise AdmissionError(
+                        f"subject file {safe_rel!r} is not UTF-8 text; declare it "
+                        f"binary in the snapshot: {exc}"
+                    ) from exc
+            mode = stat.S_IMODE(os.lstat(abspath).st_mode)
+            modes_on_disk[safe_rel] = f"{mode:04o}"
+
+    # Path set + content-hash binding (also rejects unsafe sealed paths).
+    verify_materialization(snapshot, content, binary_paths=binary)
+
+    # File modes must match the sealed modes exactly.
+    for rel, sealed_mode in file_modes.items():
+        try:
+            norm = safe_relposix(rel)
+        except PathError as exc:
+            raise AdmissionError(f"snapshot mode path inadmissible: {exc}") from exc
+        got = modes_on_disk.get(norm)
+        if got != sealed_mode:
+            raise AdmissionError(
+                f"file mode mismatch for {norm!r}: sealed {sealed_mode}, got {got}"
+            )
+
+    return content

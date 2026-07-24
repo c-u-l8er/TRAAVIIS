@@ -170,3 +170,12 @@ def finding_completeness_verifier(context: VerifierContextV1) -> VerifierResult:
     if finding is None:
         return VerifierResult(FAIL, {"reason": "no finding"})
     return VerifierResult(verify_finding_completeness(finding))
+
+
+# Each wired verifier carries the version of the implementation that produced the
+# state (``.version``). The orchestrator seals this beside the reward's declared
+# contract as ``{contract, implementation}`` — the contract says *which* signal was
+# asked for, ``.version`` says *what code* answered (GPT-5.6 verifier-version ruling).
+citations_verifier.version = CITATIONS_VERIFIER_VERSION
+patch_verifier.version = PATCH_VERIFIER_VERSION
+finding_completeness_verifier.version = FINDING_VERIFIER_VERSION
