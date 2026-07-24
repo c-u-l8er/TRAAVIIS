@@ -448,10 +448,14 @@ output** yields `fail`.
                        "timed_out": false, "output_truncated": false } }
 ```
 
-`status` is `ok | error | invalid`; `validity` is `valid | invalid`. An `error`
-episode carries `reward: null`. `execution_facts` records the actual run
-(exit codes, platform, truncation) and is **excluded** from the `episode_id`
-hash together with wall-clock timestamps, absolute paths, and transient PIDs.
+`status` is `ok | error | invalid`; `validity` is `valid | invalid`. An
+`error` episode carries `reward: null`.
+
+Canonical `execution_facts` — including resolved toolchain versions,
+normalized platform, exit codes, timeout state, and output-truncation state —
+enter the `episode_id` hash. Volatile execution metadata — wall-clock
+timestamps, absolute paths, transient process IDs, and host-specific log
+locations — is excluded.
 
 Same ladder, honest about different execution mechanisms.
 

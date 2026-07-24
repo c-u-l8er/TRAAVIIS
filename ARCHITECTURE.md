@@ -1,10 +1,11 @@
 # TRAAVIIS — Architecture & the road to the environment surface
 
-> **Thesis.** TRAAVIIS is the local-first authoring, evaluation, and
-> verification toolchain for **deterministic agent environments**. Not another
-> coding agent, not a model router, not an RL cloud, not the whole TRVM research
-> workbench. Its value is a single loop: *write the world → run the episode →
-> compute objective rewards → verify → replay, compare, and publish.*
+> **Thesis.** TRAAVIIS is the local-first toolchain for **evidence-grade agent
+> evaluation**. Not another coding agent, not a model router, not an RL cloud,
+> not the whole TRVM research workbench. Its core loop is: *freeze the subject →
+> run the evaluation → score explicit evidence → verify → preserve a
+> re-verifiable receipt.* TRVM supplies the strongest exact-replay substrate
+> under it; Evidence Residency is its first repository-evidence substrate.
 >
 > **Write the wall. Run the world. Keep the proof.**
 
@@ -16,7 +17,7 @@ the environment surface (`serve`/`pack`/`eval`). It supersedes the earlier
 
 ## 1. The product boundary
 
-The seams are frozen on purpose. `trvs` carries **no world semantics**; it
+The seams are frozen on purpose. `trvs` carries **no substrate semantics**; it
 packages capabilities the layers below already provide, for someone who does not
 know the internal history of TRVM.
 
@@ -24,7 +25,8 @@ know the internal history of TRVM.
 | ---------------- | ------------------------------------------------------- |
 | **TRAAVIIS**     | the product — CLI, environment SDK, evaluator, packaging, visual workbench |
 | **trvs**         | the command-line interface                              |
-| **WallRiderLang**| the language for worlds, actors, tasks and rules        |
+| **TaskSpecV1**   | the substrate-neutral assignment and evaluation contract |
+| **WallRiderLang**| the language for TRVM worlds, actors and world rules    |
 | **Forge**        | the compiler, identity and artifact pipeline            |
 | **TRVM**         | the deterministic execution substrate                   |
 | **Spinner Bench**| the reference workbench and conformance laboratory      |
