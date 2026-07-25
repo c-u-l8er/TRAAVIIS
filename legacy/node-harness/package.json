@@ -1,11 +1,12 @@
 {
-  "name": "traaviis",
+  "name": "@traaviis/legacy-node-harness",
+  "private": true,
   "version": "0.1.0",
-  "description": "A minimal terminal harness for the [&] Protocol stack. Pluggable, composable, extensible. Adapt it to your workflow, not the other way around.",
+  "description": "QUARANTINED. The original OS-008 terminal harness for the [&] Protocol stack. Superseded by the Python `traaviis` package declared in pyproject.toml. Kept for history: not published, not shipped in the release packet, not part of the acceptance battery. See README.md.",
   "homepage": "https://traaviis.com",
   "type": "module",
   "bin": {
-    "traaviis": "bin/traaviis.mjs"
+    "traaviis-legacy-harness": "bin/traaviis.mjs"
   },
   "exports": {
     ".": "./src/index.mjs"
@@ -17,18 +18,14 @@
   "engines": {
     "node": ">=18"
   },
-  "files": [
-    "bin",
-    "src",
-    "README.md"
-  ],
   "keywords": [
     "harness",
     "terminal",
     "cli",
     "ampersand",
     "agent",
-    "os-008"
+    "os-008",
+    "legacy"
   ],
   "license": "MIT",
   "author": "TRAAVIIS Holdings",

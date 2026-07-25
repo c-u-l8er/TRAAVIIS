@@ -1,0 +1,18 @@
+{
+  "base_revision": null,
+  "binary_paths": [],
+  "exclusions": [],
+  "file_modes": {
+    "spec/residency.md": "0644",
+    "src/mod.py": "0644",
+    "world/frozen.wrl": "0644"
+  },
+  "files": {
+    "spec/residency.md": "sha256:d9c0c5fb192b2696deab8a0f93121dfa5029279cfbd46360980bf13ab9588d96",
+    "src/mod.py": "sha256:0805bfdc02e872ed322a4a4e440ae985f3a4335f4dd59f3d373dfaf2a68a4a3c",
+    "world/frozen.wrl": "sha256:c72230e1fa72678669f716b8991996a1bb2766c33f0a38f2b13c15b71869373f"
+  },
+  "snapshot_id": "snap-c66198abf3ef6153d4bd6033fa40a0bd0028df3a7699ab645dc947710e51cba4",
+  "snapshot_version": "residency.snapshot.v1",
+  "visible_config": {}
+}

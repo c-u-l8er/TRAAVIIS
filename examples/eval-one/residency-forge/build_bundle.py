@@ -13,10 +13,15 @@ is self-consistent locally (exactly like ``residency-demo`` bakes its ids):
     world lowers to through the published ``forge_api.lower_source`` boundary. If
     the engine is unavailable the identity signal cannot be sealed; run with
     ``TRVS_FORGE_DIR`` pointing at ``TRVM/forge``.
-  * ``test_plan.commands[].argv[0]`` — this interpreter's absolute path. The
-    trusted-local runner exposes no ``PATH`` (R1: the toolchain profile owns it),
-    so the acceptance command must be an absolute argv. task_id therefore depends
-    on the interpreter path and is regenerated per environment.
+
+The ``test_plan`` is a ``TestPlanV2`` (``traaviis.test-plan.v2``): each command
+references its interpreter by a **logical** tool name (``"python3"``) under a
+named ``toolchain_profile`` (``residency.python-host.v1``) rather than baking an
+absolute path into the argv. The logical reference is what enters task identity,
+so ``task_id`` is **host-independent** — the same task recognizes as the same
+task on any machine. The resolved interpreter (its ``--version`` string + binary
+digest) is an execution fact recorded in ``execution_facts.toolchain``, not in
+the task, so this generator no longer depends on ``sys.executable``.
 
     python3 examples/eval-one/residency-forge/build_bundle.py
 
@@ -104,9 +109,14 @@ def main():
             "not_applicable": ["native", "oracle"],
         },
         # The tests signal: a controlled acceptance run on baseline + patched trees.
+        # TestPlanV2 — the command names its interpreter by a portable logical tool
+        # ("python3") under a toolchain_profile; the resolved executable is an
+        # execution fact, not part of task identity, so task_id is host-independent.
         "test_plan": {
+            "test_plan_version": "traaviis.test-plan.v2",
+            "toolchain_profile": "residency.python-host.v1",
             "commands": [
-                {"argv": [sys.executable, "-c", check], "cwd": ".",
+                {"tool": "python3", "args": ["-c", check], "cwd": ".",
                  "timeout_seconds": 30},
             ],
             "baseline": "must_pass",

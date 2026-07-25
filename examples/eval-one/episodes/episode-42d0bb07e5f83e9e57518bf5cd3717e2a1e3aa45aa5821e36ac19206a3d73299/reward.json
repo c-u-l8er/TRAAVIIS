@@ -1,0 +1,51 @@
+{
+  "aggregation": "terminal",
+  "caps": [
+    {
+      "reward_max": 0.25,
+      "when": {
+        "signal": "patch",
+        "state": "fail"
+      }
+    },
+    {
+      "reward_max": 0.25,
+      "when": {
+        "signal": "citations",
+        "state": "fail"
+      }
+    },
+    {
+      "reward_max": 0.4,
+      "when": {
+        "signal": "tests",
+        "state": "fail"
+      }
+    }
+  ],
+  "reward_id": "rew-25c4ce1276a7b70a473548354ae5d14f1c852ba087ffd09bc9b17b550c5c05a5",
+  "reward_spec_version": "traaviis.reward.v1",
+  "signals": {
+    "citations": {
+      "verifier": "residency.citations.v1",
+      "weight": 0.25
+    },
+    "finding_completeness": {
+      "verifier": "residency.finding.v1",
+      "weight": 0.1
+    },
+    "identity": {
+      "verifier": "residency.identity.v1",
+      "weight": 0.15
+    },
+    "patch": {
+      "verifier": "residency.patch.v1",
+      "weight": 0.2
+    },
+    "tests": {
+      "verifier": "residency.tests.v1",
+      "weight": 0.3
+    }
+  },
+  "substrate_profile": "residency.repository.v1"
+}

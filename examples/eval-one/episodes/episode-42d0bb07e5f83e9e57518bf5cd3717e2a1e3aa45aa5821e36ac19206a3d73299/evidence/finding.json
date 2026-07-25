@@ -1,0 +1,17 @@
+{
+  "claims": [
+    {
+      "citations": [
+        {
+          "end_line": 2,
+          "path": "spec/residency.md",
+          "quote": "The module returns a small integer that downstream stages consume.",
+          "start_line": 2
+        }
+      ],
+      "statement": "src/mod.py return value is governed by the residency spec"
+    }
+  ],
+  "finding_id": "finding-45b7d5e6eb6b04746e8cd6678ed7f6c19bdb9582a72678ebea8887682b006d4f",
+  "finding_version": "residency.finding.v1"
+}

@@ -134,8 +134,9 @@ def test_positive_all_five_pass_reward_one():
     for sig in ("citations", "patch", "tests", "identity", "finding_completeness"):
         assert v[sig] == "pass", (sig, v)
     assert v["native"] == "not_applicable" and v["oracle"] == "not_applicable"
-    assert r["verifier_versions"]["identity"]["implementation"].startswith(
-        "forge.identity.v1@trvm-")
+    impl = r["verifier_versions"]["identity"]["implementation"]
+    assert impl.startswith("forge.identity.v1@api-")
+    assert "@lower-" in impl and "@engine-" in impl
 
 
 def test_wrong_citation_fails_and_caps():

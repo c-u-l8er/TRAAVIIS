@@ -10,7 +10,7 @@
     />
     <style>
       /* =========================================================
-         Palette = the CLI's own ANSI roles (src/theme.mjs), so the
+         Palette = the CLI's own ANSI roles (legacy/node-harness/src/theme.mjs), so the
          site and the terminal can never drift. Three shippable
          themes: midnight · phosphor · paper.
          ========================================================= */
@@ -1116,10 +1116,11 @@
           <div class="cmd-row"><span class="nm">trvs verify</span><span class="desc">reference · native · oracle agreement (strict)</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs replay</span><span class="desc">re-fold a film and assert it reproduces</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs diff</span><span class="desc">compare two worlds' identity + per-epoch films</span><span class="st"><span class="badge ship">shipped</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs eval-one</span><span class="desc">evaluate one agent run over one frozen subject</span><span class="st"><span class="badge plan">next</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs eval</span><span class="desc">run an agent over a split, score every episode</span><span class="st"><span class="badge plan">after eval-one</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs init</span><span class="desc">scaffold a new environment subject from a template</span><span class="st"><span class="badge plan">later</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs pack</span><span class="desc">package a subject + tasks + rewards into an environment</span><span class="st"><span class="badge plan">later</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs eval-one</span><span class="desc">evaluate one agent run over one frozen subject</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs verify-episode</span><span class="desc">re-verify a saved episode with no agent process</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs init</span><span class="desc">scaffold an environment for a substrate template</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs pack</span><span class="desc">close a scaffold into a verified, reopened package</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs eval</span><span class="desc">run an agent over a split, score every episode</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row plan"><span class="nm">trvs serve</span><span class="desc">expose an environment to an agent (ORS · MCP)</span><span class="st"><span class="badge plan">later</span></span></div>
         </div>
         <p class="soft" style="margin-top:14px;font-size:13px">
@@ -1212,30 +1213,46 @@
       <!-- EVALUATE -->
       <section class="stage" id="evaluate">
         <span class="node"></span>
-        <div class="kicker">Evaluation before training · planned</div>
+        <div class="kicker">Evaluation before training · shipped</div>
         <h2>Prove the environment before you train in it.</h2>
         <p>
-          The first job is not a trainer, and the first interface is not a batch —
-          it is a one-shot <code>trvs eval-one</code> over a single frozen subject.
-          Batch <code>trvs eval</code> over a split follows once eval-one is
-          boring. Because every episode is verified and content-addressed, the
-          numbers are reproducible and the traces are re-checkable.
+          The first job is not a trainer, and the first interface was not a batch —
+          it was a one-shot <code>trvs eval-one</code> over a single frozen subject.
+          Now that that is boring, <code>trvs eval</code> runs a whole split and
+          emits one <code>episode-…</code> per task. Because every episode is
+          verified and content-addressed, the numbers are reproducible and each
+          trace is re-checkable on its own, with no agent process.
         </p>
 
         <div class="term">
           <div class="term-bar">
             <i class="r"></i><i class="y"></i><i class="g"></i>
             <span>trvs — eval</span>
-            <span class="hint">planned surface · illustrative shape</span>
+            <span class="hint">real output</span>
           </div>
           <div class="term-body">
-            <div class="prompt-line"><span class="p">$ trvs eval</span> warehouse.trvs --agent "python agent.py" --split dev</div>
-            <div class="cast" data-cast="eval"><span class="row">  episodes           100</span><span class="row">  completed           71</span><span class="row">  verified            71</span><span class="row">  invalid actions      8</span><span class="row">  mean reward        0.64</span><span class="row">  median steps         22</span><span class="row">  unique films         94</span><span class="row">  replayable         <span class="ok">100%</span></span></div>
+            <div class="prompt-line"><span class="p">$ trvs eval</span> lab-pkg --split test --output episodes/ --agent python3 agent.py</div>
+            <div class="cast" data-cast="eval"><span class="row">  [1/2] <span class="ok">✓</span> task-082e11c181f3be21aa82e138  ok  reward 1</span><span class="row">  [2/2] <span class="ok">✓</span> task-0cd4992e274e07fc7da0bddd  ok  reward 1</span><span class="row">  environment   env-aa7df5dde4a4999e4ddedff40a9fc2d0de039…</span><span class="row">  split         test (2 tasks)</span><span class="row"> </span><span class="row">  episodes</span><span class="row">  <span class="ok">✓</span> task-082e11c181f3be21aa82e138  ok       reward 1</span><span class="row">      episode-cfef6da48401cdb434c4d05a11715c527f29db19e…</span><span class="row">  <span class="ok">✓</span> task-0cd4992e274e07fc7da0bddd  ok       reward 1</span><span class="row">      episode-01bea141effec36b35d4341516051d918d61a07ab…</span><span class="row"> </span><span class="row">  ok            <span class="ok">2/2</span></span><span class="row">  mean reward   1</span><span class="row">  episodes kept <span class="ok">2/2</span></span><span class="row">  evaluation    episodes/evaluation.json</span></div>
           </div>
         </div>
         <p class="soft" style="margin-top:12px;font-size:12.5px">
-          Illustrative shape of a planned command — not captured output. Every
-          other terminal on this page is verbatim real <code>trvs</code>.
+          Verbatim output, ids truncated to fit. The package is reopened and every
+          <code>task-</code>/<code>rew-</code>/<code>snap-</code> re-derived from
+          the bytes on disk <em>before</em> the first agent process starts, so a
+          tampered package costs zero episodes. <code>eval</code> mints no new id:
+          the ladder stops at <code>env-…</code>, so its
+          <code>evaluation.json</code> is an index over episodes that are each
+          already content-addressed.
+        </p>
+        <p class="soft" style="margin-top:8px;font-size:12.5px">
+          <code>ok</code> and <code>episodes kept</code> are two lines because
+          they answer two questions: what the evaluation <em>found</em>, and
+          whether the evidence you asked for is still on disk. A run can be fully
+          <code>ok</code> and still have failed to retain its own proof — and a
+          score with no retained proof is not a result you can take away. The exit
+          code reads them in precedence: <strong>0</strong> all ok and all kept ·
+          <strong>1</strong> ran and disagreed · <strong>2</strong> could not run,
+          or could not keep what was asked for.
         </p>
       </section>
 
@@ -1363,7 +1380,11 @@
         const btn = document.getElementById("copyBtn");
         btn.addEventListener("click", async () => {
           try {
-            await navigator.clipboard.writeText("npm install -g traaviis");
+            // Must match the string rendered in #install above. It said
+            // `pipx install traaviis` while this copied `npm install -g
+            // traaviis`, so the button handed out an install line for the
+            // quarantined Node harness, not the CLI the page documents.
+            await navigator.clipboard.writeText("pipx install traaviis");
             btn.textContent = "copied";
             setTimeout(() => (btn.textContent = "copy"), 1200);
           } catch {

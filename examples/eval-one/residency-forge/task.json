@@ -22,10 +22,12 @@
     ]
   },
   "test_plan": {
+    "test_plan_version": "traaviis.test-plan.v2",
+    "toolchain_profile": "residency.python-host.v1",
     "commands": [
       {
-        "argv": [
-          "/usr/bin/python3",
+        "tool": "python3",
+        "args": [
           "-c",
           "import sys;sys.exit(0 if open('src/mod.py').read().strip() in ('return 1','return 2') else 1)"
         ],
@@ -67,5 +69,5 @@
     "result_path": "result.json",
     "patch_path": "candidate.patch"
   },
-  "task_id": "task-1547aa55e4a81baa5b495f1604fa4a08e5a9fd4a5e01e22bad6ffda35b665e39"
+  "task_id": "task-52bd629f62a269819ce71ad3c0328795b1b044982acc77a83248cf27f86232c9"
 }

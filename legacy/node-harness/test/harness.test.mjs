@@ -12,6 +12,11 @@ import { main } from '../src/index.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = (f) => join(HERE, 'fixtures', f);
+// fake-claude.sh is shared with the authoritative Python battery, which owns it.
+// This tree reaches up to the live one rather than keeping a second copy that
+// could drift; the dependency points legacy -> live, never the reverse, and it is
+// one more reason this harness is not shipped in the packet.
+const SHARED_FIX = (f) => join(HERE, '..', '..', '..', 'test', 'fixtures', f);
 const SIBLING_GOVERN =
   '/home/travis/ProjectAmp2/AmpersandBoxDesign/box-and-box/bin/govern.mjs';
 // keep env clean between tests. ASYNC-AWARE: it awaits fn before restoring the
@@ -426,7 +431,7 @@ await test('routes command summarizes the cost-ladder seed', async () => {
 
 // ---- Phase B: the claude_code model provider rung ----------------------
 
-const FAKE_CLAUDE = FIX('fake-claude.sh');
+const FAKE_CLAUDE = SHARED_FIX('fake-claude.sh');
 
 await test('provider.claude_code returns a real result + cost (fake claude bin)', async () => {
   await withEnv('TRAAVIIS_CLAUDE_BIN', FAKE_CLAUDE, async () => {

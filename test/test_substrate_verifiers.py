@@ -94,6 +94,86 @@ def test_honest_test_run_policy_is_accepted():
     assert SV.tests_verifier(ctx).state == R.PASS
 
 
+# --- tests verifier, TestPlanV2 (logical toolchain) --------------------------
+
+# A V2 command references its interpreter by the logical tool "python3" under a
+# toolchain_profile instead of an absolute argv[0], so task identity is portable.
+_V2_ARGS = ["-c", "import sys;sys.exit(0 if open('src/mod.py').read().strip()=="
+            "'return 1' else 1)"]
+
+
+def _v2_plan(tool="python3", profile="residency.python-host.v1", run_policy=None):
+    plan = {
+        "test_plan_version": SV.TEST_PLAN_V2,
+        "toolchain_profile": profile,
+        "commands": [{"tool": tool, "args": _V2_ARGS, "cwd": "."}],
+    }
+    if run_policy is not None:
+        plan["run_policy"] = run_policy
+    return plan
+
+
+def test_v2_baseline_and_patched_pass_is_pass():
+    ctx = _tests_ctx(BASELINE, PATCHED_OK, plan=_v2_plan())
+    assert SV.tests_verifier(ctx).state == R.PASS
+
+
+def test_v2_patched_regression_is_fail():
+    ctx = _tests_ctx(BASELINE, PATCHED_BAD, plan=_v2_plan())
+    assert SV.tests_verifier(ctx).state == R.FAIL
+
+
+def test_v2_baseline_failure_is_error():
+    ctx = _tests_ctx(BROKEN_BASELINE, BROKEN_BASELINE, plan=_v2_plan())
+    assert SV.tests_verifier(ctx).state == R.ERROR
+
+
+def test_v2_unknown_tool_is_error():
+    # A tool the profile does not admit is an inadmissible fixture, not a verdict.
+    ctx = _tests_ctx(BASELINE, PATCHED_OK, plan=_v2_plan(tool="rustc"))
+    assert SV.tests_verifier(ctx).state == R.ERROR
+
+
+def test_v2_unknown_profile_is_error():
+    ctx = _tests_ctx(BASELINE, PATCHED_OK,
+                     plan=_v2_plan(profile="no.such.profile.v1"))
+    assert SV.tests_verifier(ctx).state == R.ERROR
+
+
+def test_v2_plan_carries_no_host_path():
+    # The logical plan is what enters task identity; the resolved interpreter
+    # abspath must never appear in the authored plan (that was the V1 defect).
+    from traaviis import identity
+    raw = identity.canonical_bytes(_v2_plan()).decode("utf-8")
+    assert "python3" in raw
+    assert sys.executable not in raw
+
+
+def test_v2_command_id_is_logical():
+    # The V2 command_id hashes the logical tool + args, so it is identical on any
+    # host regardless of where the interpreter is resolved.
+    cmd = {"tool": "python3", "args": _V2_ARGS, "cwd": "."}
+    assert SV._command_id(cmd) == SV._command_id(dict(cmd))
+
+
+def test_v1_plan_has_no_logical_tools():
+    assert SV.test_plan_tools({"commands": [{"argv": _CHECK, "cwd": "."}]}) == []
+
+
+def test_v2_resolved_toolchain_seals_version_and_digest_not_path():
+    # The resolved tool records only {version, executable_digest} — the host
+    # abspath is used to run the command but is deliberately never sealed.
+    from traaviis import toolchain
+    facts, executables = toolchain.resolve_toolchain(
+        "residency.python-host.v1", SV.test_plan_tools(_v2_plan()))
+    assert facts["profile"] == "residency.python-host.v1"
+    resolved = facts["resolved"]["python3"]
+    assert set(resolved) == {"version", "executable_digest"}
+    assert resolved["version"]
+    assert resolved["executable_digest"].startswith("sha256:")
+    assert os.path.isabs(executables["python3"])
+
+
 # --- identity verifier -------------------------------------------------------
 
 def _identity_ctx(patched, must_remain):

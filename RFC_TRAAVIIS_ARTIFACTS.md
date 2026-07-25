@@ -54,7 +54,7 @@ it is shared:
 | `trace-…`        | same observable behavior?   | observable execution record · TRVM exact-trace subtype = `film-…` |
 | `episode-…`      | same evaluated outcome?     | `{substrate_profile, trace-…, rew-…} → receipt` (shared, §4) |
 | `env-…`          | same closed environment release? | manifest over subject/tasks/rewards/splits (§5) |
-| `bundle-…`       | same distributed package?   | `env-…` + presentation + docs (§5)      |
+| `bundle-…`       | same distributed package?   | canonical package tree — `env-…` + every shipped member by path/bytes/mode (§5b) |
 
 `sem-…` and `scen-…` are **TRVM substrate identities** (§0), not universal rungs;
 `snap-…` is the Residency subject identity. Everything from `rew-…` up is
@@ -227,7 +227,8 @@ finalize  seal trace + outputs, run the verifier plan, score reward, emit episod
 A substrate that cannot support a verb declares it **unsupported** rather than
 faking it. **Evidence Residency v1 is one-shot** and implements only
 `start → finalize`; `observe`, `step`, and `reset` are *unsupported*, not
-pretend no-ops.
+pretend no-ops. §4a freezes the built interface, including the two lifecycle
+verbs (`list_tasks`, `close`) this sketch left implicit.
 
 **TRVM profile note (`trvm.world.v1`).** For the TRVM substrate the kernel binds
 to Forge semantics: `observe` is a **label-free projection** of current
@@ -257,12 +258,90 @@ applies. These are **TRVM profile bindings**, not shared kernel law.
   *volatile* execution facts (wall-clock, absolute paths, PIDs) are excluded
   from the hash.
 
-## 5. D3 + D5 — `env-…` vs `bundle-…`, and the serve process model (DEFERRED)
+### 4a. `EpisodeKernelV1` — the extracted kernel (FROZEN)
 
-> **Deferred.** `env-…`, `bundle-…`, `pack`, and `serve` do **not** block the
-> first `eval-one`. They are specified here for continuity but are not built
-> until one real environment runs. An **environment** is a *substrate profile + a
-> closed subject/task/reward set*, generalized over substrates:
+> **Status.** **BUILT** (`traaviis/kernel.py`, battery K1–K18). Not reachable
+> from the command line: it has no `trvs` verb of its own, by ruling — the
+> transport slice comes after the extraction, not with it.
+
+The kernel was extracted **before** any transport exists, which is the only
+order in which the extraction means anything. A kernel written after a server is
+a description of what that server needed; a kernel written before one is a
+statement about what an episode *is*, which the server then has to translate.
+
+**The interface is the ruled seven, and nothing else.**
+
+```text
+EpisodeKernelV1 {
+  list_tasks()                    the closed task set of one admitted environment
+  start(task_id)              →   session_id
+  observe(session_id)
+  step(session_id, action)
+  reset(session_id)
+  finalize(session_id, run_result) → EvaluationRunV1
+  close(session_id)
+}
+```
+
+`kernel_version` is `traaviis.episode-kernel.v1`. Support is a **declaration**
+(`supported_operations`), not an accident of which method a subclass remembered
+to leave alone: the base class implements none of the seven and refuses all of
+them, so a subclass that forgets to override cannot pass for one that meant to.
+`describe()` reports `{kernel_version, substrate_profile, operations}` so a
+client can ask what it is talking to before it asks for anything.
+
+**A `session_id` is not an identity.** It is an ephemeral in-process handle
+(`session-<hex>`, freshly random per `start`), and it is deliberately **not** a
+rung of the §1 ladder: `identity.py` mints nothing for it, no artifact
+references it, and it never reaches an `episode-…` receipt, the canonical bytes
+that are hashed, or any file written into an episode bundle. Two `start` calls
+on the same task return different handles and the same `episode-…`.
+
+**Unsupported means refused.** For `residency.repository.v1` the supported set is
+exactly `list_tasks`, `start`, `finalize`, `close`; `observe`, `step` and `reset`
+raise the typed refusal **`KERNEL_OPERATION_UNSUPPORTED`** and must never
+succeed as no-ops. A one-shot substrate that answered `step` with "applied" would
+tell an agent its action landed when nothing landed, which is a worse failure
+than not offering the verb at all.
+
+This also bounds the transport slice honestly: because `observe` is a refusal, a
+*remote* client cannot read a Residency session at all, so `trvs serve --ors`
+over Residency v1 can expose only `start` + `finalize`. That is a consequence of
+this section, not a limitation of the server.
+
+**The local command runner is an adapter.** `evalone.evaluate` is now
+`kernel.start → runner.run_agent → kernel.finalize` and produces the pre-existing
+receipt **byte for byte** — the extraction moved no byte of any `episode-…`.
+The kernel never learns how an agent is invoked: it hands out `content` +
+`policy` and consumes a `RunResult`. `runner.run_agent` has exactly **one** call
+site in the package, `kernel.run_episode`, which is what makes "the kernel
+launches nothing" a checkable claim rather than a convention.
+
+An invalid *configuration* (a required signal no wired verifier resolves) still
+opens a real session, with `runnable = False`; `finalize(session_id, None)`
+scores it `status = invalid`, `reward = None`, `artifacts = None`. Refusing to
+open it would convert a scored outcome into a crash, which is a different claim
+about the task. `finalize` refuses a missing run result for a runnable session
+(`KERNEL_RUN_RESULT_MISSING`) and an unexpected one for a session that was told
+not to run (`KERNEL_RUN_RESULT_UNEXPECTED`).
+
+**Process model.** One kernel = **one admitted environment**; many ephemeral
+sessions; one shared task/reward registry; one shared engine seam. A split opens
+exactly one kernel and one session per task — a kernel per task would make the
+shared-registry guarantee a claim about N objects that merely happen to agree.
+Sessions are independent and may be open, interleaved and finalized out of
+order; **no lock is held across a session lifetime**, and no lock is held across
+admission, scoring or a subprocess. This is §5's serve process model stated at
+the layer that actually implements it.
+
+## 5. D3 + D5 — `env-…` vs `bundle-…`, and the serve process model
+
+> **Status.** `env-…`, `bundle-…`, and `pack` are **BUILT** (`trvs init`,
+> `trvs pack`, `trvs verify-bundle`, `trvs archive-bundle`; §5b freezes the
+> `bundle-…` rung and §5c the portable-subject-mode and archive-publication
+> laws). `serve` remains **DEFERRED** and is specified here for
+> continuity only. An **environment** is a *substrate profile + a closed
+> subject/task/reward set*, generalized over substrates:
 > - `trvm.world.v1` closure — forge bundle + scenarios + tasks + rewards.
 > - `residency.repository.v1` closure — snapshot definition + tasks + rewards +
 >   verifier/execution profiles.
@@ -320,6 +399,139 @@ residency.repository.v1
                      verifier / run-policy closure
 ```
 
+### 5b. `bundle-…` — the distributed package (FROZEN)
+
+`bundle-…` is the content address of the **complete canonical
+environment-distribution tree** emitted by `trvs pack`: the environment closure
+plus every shipped presentation, documentation and screenshot member, each
+identified by **normalized relative path, bytes and canonical mode**.
+
+It is deliberately **not** the hash of an archive's bytes, not the hash of a
+batch output directory, not the hash of `batch.json`, and not the hash of a set
+of episode results. A package serialized as ZIP and as tar must keep **one**
+identity, so compression, member ordering and archive timestamps are outside it.
+
+**`BundleManifestV1`** ships at the package root as **`TRAAVIIS_BUNDLE.json`** —
+a name kept deliberately distinct from the operational per-episode `bundle.json`
+written by `eval-one`:
+
+```json
+{
+  "bundle_version": "traaviis.bundle.v1",
+  "env_id": "env-<64hex>",
+  "members": [{"path": "environment.json", "sha256": "<64hex>", "mode": "0644"}],
+  "bundle_id": "bundle-<64hex>"
+}
+```
+
+`bundle_id = "bundle-" + sha256(canonical(manifest without bundle_id))`. Unlike
+every other rung nothing else is projected out, because **the manifest is the
+package**: an added field is a changed package.
+
+**Frozen rules.**
+
+- `members` is sorted by normalized relative POSIX path.
+- Path, bytes and **canonical mode** are identity-bearing.
+- **Canonical mode** is `0644` or `0755` — only the executable bit survives
+  distribution, so group/other/umask noise is not a package change. (`pack`
+  still writes each member at its *exact* source mode, because the Residency
+  snapshot seals raw `file_modes` into `snap-…`.)
+- The manifest **excludes itself** from `members`, so no member's hash would
+  have to contain its own hash; `bundle_id` is excluded from its own hash.
+- Directories are implicit. Symlinks are **refused** in v1. Duplicate, absolute
+  and traversing paths are refused.
+- **Closure is checked in both directions**: a missing manifested member and an
+  extra unmanifested file are both failures.
+
+**Mutation laws.**
+
+| change                                                     | `env-…` | `bundle-…` |
+| ---------------------------------------------------------- | ------- | ---------- |
+| subject / task / reward / split / profile                   | moves   | moves      |
+| name / description / README / screenshot / doc path / mode  | —       | moves      |
+| ZIP compression / timestamps / member order                 | —       | —          |
+
+**The `distribution` block.** Source `env.json` carries a presentation-only
+block, excluded from `env-…` by the existing identity allowlist:
+
+```json
+{"entrypoint": "README.md", "documentation": ["README.md"],
+ "screenshots": [], "assets": []}
+```
+
+Reclassifying a document as a screenshot moves `bundle-…` with **no byte
+change**, because the block lives inside `environment.json`, whose bytes are
+themselves a member hash.
+
+**Pack admission order.** Derive `env-…` → verify closure → collect generated
+and presentation members → derive `BundleManifestV1` and `bundle-…` → write the
+entire tree into a **temporary sibling** → reopen the manifest → verify the
+exact member set, hashes and modes → reopen and reverify `env-…` and substrate
+closure → **atomically publish**. *No success may be reported solely from the
+in-memory pre-write computation.*
+
+**Archives are transport.** `trvs archive-bundle` emits a canonical ZIP (fixed
+epoch timestamps, canonical modes, sorted entries) and reports the archive's
+SHA-256 **and** the `bundle-…` as two different claims under two different
+names. The archive checksum answers "did these bytes arrive intact"; the bundle
+id answers "is this the same distributed package". `tools/accept_packet.py`
+remains an unrelated **source-release** gate; `bundle-…` neither supersedes nor
+wraps it.
+
+**Non-membership.** `EvaluationV1`, `ComparisonV1` and `SerialBatchV1` mint no
+bundle identity and carry no `bundle_id`. Distribution identity for batch
+*output* is deferred and needs a separate ruling.
+
+`EvaluationV1.bundle` is a **legacy episode-member field**. It predates the
+`bundle-…` rung, is not identity-bearing, and its frozen meaning is `null` or
+exactly one `episode-<id>` directory name. It is *not* renamed in v1 —
+`batch.py` and the B-battery read it — but every human-facing surface calls it
+**episode evidence**, and a future `EvaluationV2` renames it `episode_member`.
+
+### 5c. Portable subject-mode closure (FROZEN)
+
+`bundle-…` carries the *canonical* mode (`0644` / `0755` — only the executable
+bit is portable), while `residency.repository.v1` seals the **raw** four-digit
+mode of every included file into `snap-…`. Both are individually correct and
+jointly lethal: a subject file at `0664` seals one `snap-…` before transport and
+a different one after, so the package verifies as a package and fails to reopen
+as an environment. Two laws close it.
+
+**Subject-mode admission.** For `residency.repository.v1`, every file whose mode
+enters `SnapshotV1.file_modes` must already be exactly `0644` or `0755`. Any
+other mode — `0600`, `0640`, `0664`, `0775`, and every set-ID mode — is refused
+with the typed code **`SUBJECT_MODE_NONCANONICAL`**:
+
+```json
+{"paths": {"src/tool.py": {"observed": "0664", "required": "0644"}}}
+```
+
+The check runs in one shared helper called from **both**
+`recompute_subject_identity` and `reopen_package`, *before* `env-…` and
+`bundle-…` are reported as packed — so it blocks authoring a nonportable
+package, accepting a hand-built one, and accepting a legacy one whose exact-mode
+identity cannot survive canonical transport. Files the snapshot *excludes* never
+enter `file_modes` and are therefore out of scope by construction. The law is
+substrate-specific: `trvm.world.v1` does **not** inherit it, because a `.wrl`
+source file's Unix mode does not enter `sem-…`.
+
+**Archive publication.** `write_archive` publishes only what it has proved *in
+serialized form*:
+
+```
+verify source tree
+→ write a temporary archive
+→ extract that archive to a temporary directory
+→ verify bundle closure from the extracted bytes
+→ when not package-only, re-derive env- and subject closure too
+→ compare bundle_id and env_id
+→ atomically publish
+```
+
+Verifying the directory and then serializing it proves the directory, which is
+not the artifact anyone receives. A failed round trip raises
+`BUNDLE_ARCHIVE_ROUNDTRIP` and leaves **no** archive at the output path.
+
 ## 6. D6 — `init` templates + `pack` admission
 
 **Ruling.**
@@ -355,10 +567,21 @@ one-shot evaluation of one Residency task (`trvs eval-one`, see
 Only after that does the deferred surface become grounded:
 
 - `trvs init` — substrate-aware scaffolding against the `env-…` schema (§5, §6).
+  **BUILT.**
 - `trvs pack` — build + `verify_closure` + `recompute_subject_identity` +
-  `reopen_package` through the §5a admission interface.
-- `trvs serve --ors` / `--mcp` — adapters over the Episode Kernel (§4).
+  `reopen_package` through the §5a admission interface, then derive `bundle-…`
+  and publish atomically (§5b). **BUILT.**
+- `trvs verify-bundle` / `trvs archive-bundle` — re-verify a package tree or
+  archive against §5b; emit a canonical archive plus its transport checksum.
+  **BUILT.**
 - `trvs eval` — run an agent over a split, emit an `episode-…` per task, score.
+  **BUILT.**
+- `EpisodeKernelV1` — the substrate-neutral episode kernel, extracted and frozen
+  *before* any transport (§4a). **BUILT** (no CLI verb, by ruling).
+- `trvs serve --ors` / `--mcp` — adapters over the Episode Kernel (§4, §4a).
+  Translation layers only: over Residency v1 they can honestly expose `start` +
+  `finalize` and must relay `KERNEL_OPERATION_UNSUPPORTED` for the rest.
+  **DEFERRED.**
 
 Every construct is implemented **with mutation-law tests first** (the laws in
 §2–§6), exactly as the WRL identity spine was built.

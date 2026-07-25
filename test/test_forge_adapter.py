@@ -53,7 +53,11 @@ def test_real_adapter_binds_or_reports_unavailable():
         a = F.real_adapter()
     except F.ForgeUnavailable:
         return
-    assert a.version.startswith("forge.identity.v1@trvm-")
+    # The impl id embeds the whole lowering boundary: engine API, LowerResultV1
+    # contract, and engine build — a drift in any layer moves verifier_versions.
+    assert a.version.startswith("forge.identity.v1@api-")
+    assert "@lower-" in a.version
+    assert "@engine-" in a.version
     # Ordinary invalid WRL is a data outcome (ok=False), NOT an exception.
     bad = a.lower_source("profile forge.world.core.v1\n[bogus:x]{}\n")
     assert bad.ok is False

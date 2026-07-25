@@ -1,0 +1,5 @@
+--- a/src/mod.py
++++ b/src/mod.py
+@@ -1,1 +1,1 @@
+-return 1
++return 2

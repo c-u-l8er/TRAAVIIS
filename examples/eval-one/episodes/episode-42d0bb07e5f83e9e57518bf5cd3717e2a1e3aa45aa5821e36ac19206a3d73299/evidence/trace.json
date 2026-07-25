@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "command": [
+        "python3",
+        "residency_agent.py"
+      ],
+      "cwd": ".",
+      "environment_keys": [
+        "TRAAVIIS_STUB_MODE"
+      ],
+      "exit_code": 0,
+      "file_modes_changed_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "files_created_digest": "sha256:bcafb74dce06340f67c010acf2a18c682247072aa74e8808d29e5118710a92d5",
+      "files_deleted_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "files_modified_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "policy_violations_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "result_file_digest": "sha256:cdb26cfc36673f59a90d6a211eecde5ba97c4f80da47e92c816eab3209bb0645",
+      "stderr_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "trace_id": "trace-71186a9102647fe6501de4bdc187263b0aa78a0bbd2f897dbef0c09a7bfe9f91",
+  "trace_version": "residency.trace.v1"
+}

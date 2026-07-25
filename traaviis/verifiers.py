@@ -33,14 +33,25 @@ __all__ = [
     "citations_verifier", "patch_verifier", "finding_completeness_verifier",
     "CITATIONS_VERIFIER_VERSION", "PATCH_VERIFIER_VERSION",
     "FINDING_VERIFIER_VERSION",
+    "CITATIONS_IMPL_VERSION", "PATCH_IMPL_VERSION",
+    "FINDING_IMPL_VERSION",
 ]
 
 PASS = reward.PASS
 FAIL = reward.FAIL
 
+# Contract versions — the *signal* the reward asks for (sealed as ``contract``).
 CITATIONS_VERIFIER_VERSION = "residency.citations.v1"
 PATCH_VERIFIER_VERSION = "residency.patch.v1"
 FINDING_VERIFIER_VERSION = "residency.finding.v1"
+
+# Implementation versions — the *code* that answered (sealed as ``implementation``
+# via ``.version``). Contract vs implementation are named independently so a
+# reimplementation that keeps the contract still moves ``verifier_versions`` and
+# hence ``episode-`` (GPT-5.6 verifier-version-naming ruling).
+CITATIONS_IMPL_VERSION = "traaviis.citations-impl.v1"
+PATCH_IMPL_VERSION = "traaviis.patch-impl.v1"
+FINDING_IMPL_VERSION = "traaviis.finding-completeness-impl.v1"
 
 
 def _content_lines(text: str) -> list:
@@ -176,6 +187,6 @@ def finding_completeness_verifier(context: VerifierContextV1) -> VerifierResult:
 # state (``.version``). The orchestrator seals this beside the reward's declared
 # contract as ``{contract, implementation}`` — the contract says *which* signal was
 # asked for, ``.version`` says *what code* answered (GPT-5.6 verifier-version ruling).
-citations_verifier.version = CITATIONS_VERIFIER_VERSION
-patch_verifier.version = PATCH_VERIFIER_VERSION
-finding_completeness_verifier.version = FINDING_VERIFIER_VERSION
+citations_verifier.version = CITATIONS_IMPL_VERSION
+patch_verifier.version = PATCH_IMPL_VERSION
+finding_completeness_verifier.version = FINDING_IMPL_VERSION

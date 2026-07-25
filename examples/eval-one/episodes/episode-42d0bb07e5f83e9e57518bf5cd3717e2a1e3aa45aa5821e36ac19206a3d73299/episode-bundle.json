@@ -1,0 +1,29 @@
+{
+  "created_at": "2026-07-24T21:04:01Z",
+  "episode_bundle_version": "traaviis.episode-bundle.v1",
+  "episode_id": "episode-42d0bb07e5f83e9e57518bf5cd3717e2a1e3aa45aa5821e36ac19206a3d73299",
+  "members": {
+    "finding": "evidence/finding.json",
+    "patch": "evidence/candidate.patch",
+    "process": {
+      "policy_violations": "evidence/process/policy-violations.json",
+      "stderr": "evidence/process/stderr.bin",
+      "stderr_truncated": false,
+      "stdout": "evidence/process/stdout.bin",
+      "stdout_truncated": false
+    },
+    "receipt": "receipt.json",
+    "reward": "reward.json",
+    "snapshot": "snapshot.json",
+    "subject": "subject",
+    "task": "task.json",
+    "trace": "evidence/trace.json",
+    "verifiers": {
+      "citations": "evidence/verifiers/citations.json",
+      "finding_completeness": "evidence/verifiers/finding_completeness.json",
+      "identity": "evidence/verifiers/identity.json",
+      "patch": "evidence/verifiers/patch.json",
+      "tests": "evidence/verifiers/tests.json"
+    }
+  }
+}

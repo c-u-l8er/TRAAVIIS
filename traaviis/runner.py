@@ -219,7 +219,15 @@ def run_agent(
         pp = safe_join(root, patch_path)
         if os.path.isfile(pp):
             with open(pp, "rb") as fh:
-                patch_text = fh.read().decode("utf-8", errors="replace")
+                patch_bytes = fh.read()
+            # A candidate patch is a unified diff over UTF-8 text; decode strictly.
+            # Invalid UTF-8 is not a valid diff — reject it (no patch) rather than
+            # lossily replacing bytes, which would seal a patch that never existed
+            # and could not be re-attested on replay (GPT-5.6 strict-decode ruling).
+            try:
+                patch_text = patch_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                patch_text = None
 
         workspace_after = {}
         for rel in after:

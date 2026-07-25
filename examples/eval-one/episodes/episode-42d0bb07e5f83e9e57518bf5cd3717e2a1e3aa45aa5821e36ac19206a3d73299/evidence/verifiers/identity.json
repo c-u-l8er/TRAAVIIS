@@ -1,0 +1,14 @@
+{
+  "detail": {
+    "bindings": {
+      "world": {
+        "after_id": "sem-67e954cfe3115166b49388366df3f062a46572ba2baf53380f1520f4050b60ae",
+        "before_id": "sem-67e954cfe3115166b49388366df3f062a46572ba2baf53380f1520f4050b60ae",
+        "path": "world/frozen.wrl"
+      }
+    }
+  },
+  "evidence_version": "traaviis.verifier-evidence.v1",
+  "signal": "identity",
+  "state": "pass"
+}

@@ -16,7 +16,12 @@ v1 admission law (all enforced):
 - For a modify, the ``a/`` and ``b/`` paths must be the same file — **rename-style
   old≠new is rejected in v1**.
 - Each hunk header ``@@ -o,ol +n,nl @@`` must have ``ol`` = context+removed and
-  ``nl`` = context+added lines — both counts are validated.
+  ``nl`` = context+added lines — both counts are validated, and they are also
+  what **terminates** the hunk body. This matters for multi-file diffs: the next
+  section opens with ``--- a/…`` / ``+++ b/…``, which by leading character alone
+  are a removal and an addition. Only the counts distinguish them, so a body
+  read greedily by first character silently absorbs the following header.
+  Content after a completed hunk must therefore be a new file header.
 - A **delete** (``+++ /dev/null``) must consume every source line exactly and leave
   nothing.
 - A file may appear in **at most one** section (duplicate sections rejected).
@@ -173,6 +178,13 @@ def apply_unified_diff(files: Mapping[str, str], diff: str) -> Dict[str, str]:
                         new_ended_nl = False
                     i += 1
                     continue
+                # The declared counts terminate the hunk, not the leading
+                # character. In a multi-file diff the next section begins
+                # "--- a/..." / "+++ b/...", which are indistinguishable from a
+                # removal and an addition by first character alone; only the
+                # counts say where this hunk stopped.
+                if n_ctx + n_rem >= old_len and n_ctx + n_add >= new_len:
+                    break
                 tag, text = body[0], body[1:]
                 prev_tag = tag
                 if tag == " ":
@@ -209,6 +221,15 @@ def apply_unified_diff(files: Mapping[str, str], diff: str) -> Dict[str, str]:
 
         if not saw_hunk:
             raise PatchError(f"file header for {target!r} carried no hunk")
+
+        # Now that the counts terminate a hunk, whatever follows the last one
+        # must be the next file header or trailing blank lines. Without this,
+        # a body longer than its declared counts would be silently skipped by
+        # the outer scan instead of failing admission.
+        if i < n and lines[i] and not lines[i].startswith("--- "):
+            raise PatchError(
+                f"unexpected content after hunks in {target!r}: {lines[i]!r}"
+            )
 
         out.extend(cur_lines[cursor:])  # tail context after the last hunk
 

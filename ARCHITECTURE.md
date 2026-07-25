@@ -154,6 +154,16 @@ laws (mirroring the existing Forge bundle discipline):
 - **identity** — `pack` re-opens and re-verifies the emitted bundle before
   reporting success.
 
+**Shipped** (`traaviis/substrates.py`, `traaviis/pack.py`, `traaviis/scaffold.py`).
+`init` scaffolds and derives nothing — it emits scaffold-level references
+(`reward_spec`, `snapshot_def`) precisely so it never asserts a hash it did not
+compute — and `pack` replaces them with recomputed ids. `env-…` is derived from
+an explicit identity allowlist (`substrate_profile · subject · tasks · rewards ·
+profiles · splits`), so renaming an environment or rewriting its description
+moves the *package*, never `env-…`. Both substrate profiles are implemented;
+a single-task residency package is emitted as a runnable eval-bundle, closing
+`init → pack → eval-one`.
+
 An episode emits a receipt:
 
 ```json
@@ -175,10 +185,74 @@ from `fail` (the work was wrong).
 
 The first job is not a trainer, and the first interface is not a batch. It is a
 one-shot **`trvs eval-one task.json --agent-command …`** over a single frozen
-subject. Batch `trvs eval` (a split, a comparison view diffing two runs) follows
-once eval-one is boring. Because every episode is verified and content-addressed,
-the numbers are reproducible and the traces are re-checkable. Training frameworks
-drive rollouts *through* the ORS adapter later.
+subject. Batch `trvs eval` follows once eval-one is boring. Because every episode
+is verified and content-addressed, the numbers are reproducible and the traces
+are re-checkable. Training frameworks drive rollouts *through* the ORS adapter
+later.
+
+**Shipped** (`traaviis/evalsplit.py`). `trvs eval PKG --split NAME` runs an agent
+over a split and emits one `episode-…` per task. It adds **no rung to the ladder**
+— §1 stops at `env-…`/`bundle-…`, so a run over a split gets an *index*
+(`traaviis.evaluation.v1`) naming the `env-…`, the split, and the episode ids,
+and carries no id of its own. The admission order mirrors `pack`: reopen the
+package (every id re-derived from the written bytes) → resolve the split → bind
+the subject tree to its snapshot → *only then* launch anything. A task that
+fails is recorded as a failed episode and the split continues; a refusal exits 2
+rather than reporting a score of zero.
+
+*Canonical form.* An environment is a closed **set** of tasks, rewards and split
+members (§3), and a set has exactly one written order — so `pack` sorts tasks and
+rewards by their derived ids and split members by task id, and reordering an
+author's source list moves no identity. Producing that order is not enough:
+`open_package` **re-checks** it, because a hand-built manifest that is internally
+consistent but unsorted would otherwise reopen cleanly and give one environment
+as many identities as its task list has permutations. A noncanonical manifest is
+`MANIFEST_NONCANONICAL`, checked before the `env-…` comparison so the failure
+reads as a malformed *form* rather than a confusing identity mismatch.
+
+*Two outcomes, not one.* Each index entry carries `status`/`reward` — what the
+evaluation found — and a separate `persistence {requested, status, error}` —
+whether the evidence the caller asked to keep was kept. Conflating them once let
+a run report `ok` for an episode whose bundle had failed to write: a score with
+no retained proof, reported as if the proof existed. The totals count both, and
+the exit code reads them in precedence — persistence failure 2, disagreement 1,
+otherwise 0. `OSError` is caught alongside `EpisodeBundleError` deliberately: a
+read-only output directory is the most ordinary way retention fails, and it must
+be a recorded outcome for one task rather than an exception that abandons the
+rest of the split.
+
+### 3c-bis. Verifier wiring — `VerifierRegistryV1`
+
+Three things that are easy to conflate are kept distinct:
+
+| layer                      | function of                | where it lives              |
+| -------------------------- | -------------------------- | --------------------------- |
+| declared plan              | the task alone             | `wiring.declared_signals`   |
+| available implementations  | task + runtime/registry    | `VerifierRegistryV1`        |
+| sealed history             | what actually answered     | `receipt.verifier_versions` |
+
+The registry is built **once per command** from the engine that command selected,
+so every task in a split is answered by the same verifiers bound to the same
+Forge checkout — and `real_adapter(forge_api)` takes that engine explicitly
+rather than independently rediscovering a possibly different one. An
+unreachable engine leaves `identity` declared but unwired, reported as a note; it
+is never silently dropped and never faked into a `pass`. Because the versions are
+sealed into `episode-…`, an engine upgrade honestly moves the episode id instead
+of quietly re-scoring the same one.
+
+### 3c-ter. Test plans — `traaviis.test-plan.v2`
+
+V2 replaced host-specific `argv` with a logical `tool` + `args` under a named
+`toolchain_profile`, so `task-…` is host-independent and the resolved binary is
+an execution fact. It further lets each command declare per-phase
+`allowed_exit_codes`, both defaulting to `[0]` — exactly the V1 rule, so an
+undeclared plan keeps its old meaning. This is what makes a **repair task**
+expressible: under a hardcoded baseline-must-exit-0 rule, a task could not
+require a test that fails before the fix and passes after, which is the ordinary
+shape of a real bug report. The verdict asymmetry is deliberate — the baseline
+judges the *fixture* (a miss is `error`, the task is inadmissible), the patched
+run judges the *candidate* (a miss is `fail`) — and every record states the
+`expected_exit_codes` it was judged by, so the evidence names its own rule.
 
 ### 3d. Later: verified process rewards
 

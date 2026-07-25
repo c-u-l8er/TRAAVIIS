@@ -1,0 +1,101 @@
+{
+  "episode_id": "episode-42d0bb07e5f83e9e57518bf5cd3717e2a1e3aa45aa5821e36ac19206a3d73299",
+  "episode_version": "traaviis.episode.v1",
+  "execution_facts": {
+    "agent_process": {
+      "exit_code": 0,
+      "stderr_truncated": false,
+      "stdout_truncated": false,
+      "termination": "exited"
+    },
+    "execution_facts_version": "residency.execution-facts.v1",
+    "platform": {
+      "arch": "x86_64",
+      "os": "linux"
+    },
+    "runner": {
+      "profile": "residency.trusted-local.v1"
+    },
+    "sandbox": {
+      "filesystem": "observed",
+      "network": "unrestricted"
+    },
+    "toolchain": {
+      "profile": "residency.python-host.v1",
+      "resolved": {
+        "python3": {
+          "executable_digest": "sha256:31abcf5b85d69035d7a533cc3fb537839324dba5a3b124becaf578d6035b16b2",
+          "version": "Python 3.14.2"
+        }
+      }
+    }
+  },
+  "outputs": {
+    "finding_id": "finding-45b7d5e6eb6b04746e8cd6678ed7f6c19bdb9582a72678ebea8887682b006d4f",
+    "patch_id": "patch-2425eb0f6c93c008d0ecac87622e662c5b061bc551c83ecaacb1d6603781ae32"
+  },
+  "replayability": "verification",
+  "reward": 1.0,
+  "reward_id": "rew-25c4ce1276a7b70a473548354ae5d14f1c852ba087ffd09bc9b17b550c5c05a5",
+  "status": "ok",
+  "subject": {
+    "snapshot_id": "snap-c66198abf3ef6153d4bd6033fa40a0bd0028df3a7699ab645dc947710e51cba4"
+  },
+  "substrate_profile": "residency.repository.v1",
+  "task_id": "task-52bd629f62a269819ce71ad3c0328795b1b044982acc77a83248cf27f86232c9",
+  "trace_id": "trace-71186a9102647fe6501de4bdc187263b0aa78a0bbd2f897dbef0c09a7bfe9f91",
+  "validity": "valid",
+  "verification": {
+    "citations": "pass",
+    "finding_completeness": "pass",
+    "identity": "pass",
+    "native": "not_applicable",
+    "oracle": "not_applicable",
+    "patch": "pass",
+    "tests": "pass"
+  },
+  "verification_evidence": {
+    "citations": {
+      "digest": "sha256:8a5eb3ba22fa7632f06f832cdf4a6a3c86bdbffcdefbf83ea34b5cbfd8cf49ed",
+      "format": "traaviis.verifier-evidence.v1"
+    },
+    "finding_completeness": {
+      "digest": "sha256:9105e33e1168450ff82ec53932be80c4f104c31caa9cdb8079de48374881da00",
+      "format": "traaviis.verifier-evidence.v1"
+    },
+    "identity": {
+      "digest": "sha256:40fae19367a72fc751bf20e6686e674576e9d3a47f5985eaec1096291b3e0d5a",
+      "format": "traaviis.verifier-evidence.v1"
+    },
+    "patch": {
+      "digest": "sha256:41860e2b960660ca29677c53bea4f75fe687c5bb7fae1ff93a570a20072837e5",
+      "format": "traaviis.verifier-evidence.v1"
+    },
+    "tests": {
+      "digest": "sha256:0b3846b7a6a2c4f69955aca9074f2fef0903baaec257a1bbeb46528d800e2f9e",
+      "format": "traaviis.verifier-evidence.v1"
+    }
+  },
+  "verifier_versions": {
+    "citations": {
+      "contract": "residency.citations.v1",
+      "implementation": "traaviis.citations-impl.v1"
+    },
+    "finding_completeness": {
+      "contract": "residency.finding.v1",
+      "implementation": "traaviis.finding-completeness-impl.v1"
+    },
+    "identity": {
+      "contract": "residency.identity.v1",
+      "implementation": "forge.identity.v1@api-1@lower-forge.lower-result.v1@engine-0.7.0-alpha.5"
+    },
+    "patch": {
+      "contract": "residency.patch.v1",
+      "implementation": "traaviis.patch-impl.v1"
+    },
+    "tests": {
+      "contract": "residency.tests.v1",
+      "implementation": "traaviis.tests-impl.v1"
+    }
+  }
+}

@@ -27,6 +27,8 @@ their given order** (the producer is responsible for canonical list ordering).
     | reward_id               | `rew-`      | reward_id          | —                                       |
     | task_id                 | `task-`     | task_id            | —                                       |
     | episode_id              | `episode-`  | episode_id         | everything outside the identity allowlist (volatile timing/PID/path) |
+    | environment_id          | `env-`      | env_id             | presentation (name/description/docs) — those move `bundle-` only (§5) |
+    | bundle_id               | `bundle-`   | bundle_id          | nothing — the whole manifest is the package (§5b) |
 """
 
 import hashlib
@@ -42,6 +44,8 @@ __all__ = [
     "canonicalize_reward", "reward_id",
     "canonicalize_task", "task_id",
     "canonicalize_episode", "episode_id",
+    "canonicalize_environment", "environment_id",
+    "canonicalize_bundle", "bundle_id",
 ]
 
 
@@ -168,8 +172,9 @@ def task_id(task: Mapping[str, Any]) -> str:
 # toolchain / platform / exit-code / verifier-version change moves episode-.
 _EPISODE_IDENTITY_KEYS = (
     "episode_version", "substrate_profile", "task_id", "reward_id", "subject",
-    "trace_id", "outputs", "verification", "verifier_versions", "reward",
-    "status", "validity", "replayability", "execution_facts",
+    "trace_id", "outputs", "verification", "verification_evidence",
+    "verifier_versions", "reward", "status", "validity", "replayability",
+    "execution_facts",
 )
 
 
@@ -181,3 +186,48 @@ def canonicalize_episode(receipt: Mapping[str, Any]) -> bytes:
 
 def episode_id(receipt: Mapping[str, Any]) -> str:
     return _id("episode", canonicalize_episode(receipt))
+
+
+# --- EnvironmentV1 → env- (RFC Artifacts §5) ---------------------------------
+# D3: `env-` seals the *manifest* — substrate profile, subject, the task and
+# reward sets, the substrate profiles, and split membership. It does NOT seal
+# presentation: renaming an environment or rewriting its description moves
+# `bundle-` (the distributed package), never `env-`. An explicit allowlist is
+# what makes that law hold by construction rather than by convention.
+_ENVIRONMENT_IDENTITY_KEYS = (
+    "environment_version", "substrate_profile", "subject", "tasks", "rewards",
+    "profiles", "splits",
+)
+
+
+def canonicalize_environment(env: Mapping[str, Any]) -> bytes:
+    return canonical_bytes({
+        k: env[k] for k in _ENVIRONMENT_IDENTITY_KEYS if k in env
+    })
+
+
+def environment_id(env: Mapping[str, Any]) -> str:
+    return _id("env", canonicalize_environment(env))
+
+
+# --- BundleManifestV1 → bundle- (RFC Artifacts §5b) --------------------------
+# `bundle-` is the content address of the **canonical logical file tree** that
+# `trvs pack` emits: `env-` plus every shipped presentation, documentation and
+# screenshot member, identified by normalized relative POSIX path, file bytes
+# and canonical mode. It is deliberately NOT the hash of an archive's bytes —
+# a package serialized as ZIP and as tar must keep one identity, so ZIP
+# compression, ordering and timestamps are outside it. The archive's own
+# SHA-256 is a transport checksum, a different claim (see `bundle.py`).
+#
+# Unlike every other rung, nothing is projected out but the id field itself:
+# the manifest *is* the package, so an added field is a changed package. The
+# self-exclusion is the whole subtlety — `TRAAVIIS_BUNDLE.json` also excludes
+# itself from `members`, so there is no member whose hash would have to contain
+# its own hash.
+
+def canonicalize_bundle(manifest: Mapping[str, Any]) -> bytes:
+    return canonical_bytes(_drop(manifest, "bundle_id"))
+
+
+def bundle_id(manifest: Mapping[str, Any]) -> str:
+    return _id("bundle", canonicalize_bundle(manifest))

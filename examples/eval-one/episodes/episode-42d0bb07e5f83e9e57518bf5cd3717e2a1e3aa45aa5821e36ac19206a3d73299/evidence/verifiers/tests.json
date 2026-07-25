@@ -1,0 +1,29 @@
+{
+  "detail": {
+    "baseline": [
+      {
+        "command_id": "cmd-1ee169aed0cc0054f594504386650c5b491535b04a26c544509f47201bc1e7c0",
+        "exit_code": 0,
+        "expected_exit_codes": [
+          0
+        ],
+        "stderr_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "patched": [
+      {
+        "command_id": "cmd-1ee169aed0cc0054f594504386650c5b491535b04a26c544509f47201bc1e7c0",
+        "exit_code": 0,
+        "expected_exit_codes": [
+          0
+        ],
+        "stderr_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "evidence_version": "traaviis.verifier-evidence.v1",
+  "signal": "tests",
+  "state": "pass"
+}

@@ -1,0 +1,12 @@
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# generated packet artifacts
+dist/
+*.zip
+
+# editors / os
+.DS_Store
+*.swp

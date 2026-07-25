@@ -28,13 +28,14 @@ from fnmatch import fnmatch
 from typing import Any, Mapping, Optional
 
 from . import identity
-from .paths import PathError, safe_relposix
+from .paths import PathError, safe_join, safe_relposix
 
 __all__ = [
     "AdmissionError",
     "verify_declared_id",
     "verify_materialization",
     "admit_subject",
+    "materialize_subject",
     "cross_bind_task",
     "verify_subject_tree",
 ]
@@ -168,6 +169,45 @@ def admit_subject(
     snap_id = verify_declared_id(snapshot, "snapshot_id", identity.snapshot_id)
     verify_materialization(snapshot, content, binary_paths=binary_paths)
     return snap_id
+
+
+def materialize_subject(
+    snapshot: Mapping[str, Any],
+    content: Mapping[str, str],
+    root: str,
+) -> None:
+    """Write ``content`` into ``root`` restoring the snapshot's sealed file modes.
+
+    The write-side twin of ``verify_subject_tree``: the runner's plain
+    ``_materialize`` writes bytes with the process umask, dropping the sealed
+    permission bits, so a ``0755`` executable in the subject would silently come
+    back ``0644`` and fail re-admission. This restores each path's sealed
+    ``file_modes`` entry after writing (defaulting to ``0644`` when a path has no
+    sealed mode), so a materialized-then-re-admitted subject binds exactly.
+
+    ``content`` values are UTF-8 ``str`` (LF-canonical) or ``bytes`` (declared
+    binaries). Raises ``AdmissionError`` on an unsafe relpath.
+    """
+    file_modes = snapshot.get("file_modes", {}) or {}
+    sealed_modes = {}
+    for rel, mode in file_modes.items():
+        try:
+            sealed_modes[safe_relposix(rel)] = mode
+        except PathError as exc:
+            raise AdmissionError(f"snapshot mode path inadmissible: {exc}") from exc
+
+    for rel, text in content.items():
+        try:
+            safe_rel = safe_relposix(rel)
+        except PathError as exc:
+            raise AdmissionError(f"content path inadmissible: {exc}") from exc
+        path = safe_join(root, safe_rel)
+        os.makedirs(os.path.dirname(path) or root, exist_ok=True)
+        data = text.encode("utf-8") if isinstance(text, str) else text
+        with open(path, "wb") as fh:
+            fh.write(data)
+        sealed = sealed_modes.get(safe_rel, "0644")
+        os.chmod(path, int(sealed, 8))
 
 
 def _excluded(relpath: str, exclusions) -> bool:

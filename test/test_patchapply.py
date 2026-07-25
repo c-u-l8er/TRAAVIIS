@@ -123,6 +123,63 @@ def test_malformed_hunk_header_raises():
     raise AssertionError("expected PatchError for malformed hunk header")
 
 
+# --- multi-file sections: the counts, not the leading character, end a hunk ---
+
+def test_two_file_sections_apply_exactly():
+    """The regression that motivated the fix.
+
+    A section header is `--- a/...` / `+++ b/...`, which by first character
+    alone is indistinguishable from a removal followed by an addition. A body
+    loop driven by the leading character swallows the next file's header into
+    the previous hunk; only the declared counts say where a hunk stopped.
+    """
+    files = {"src/mod.py": "return 1\n", "spec/contract.md": "one\ntwo\n"}
+    diff = (
+        "--- a/src/mod.py\n+++ b/src/mod.py\n@@ -1,1 +1,1 @@\n-return 1\n+return 2\n"
+        "--- a/spec/contract.md\n+++ b/spec/contract.md\n"
+        "@@ -1,2 +1,2 @@\n-one\n-two\n+1\n+2\n"
+    )
+    out = P.apply_unified_diff(files, diff)
+    assert out["src/mod.py"] == "return 2\n", out
+    assert out["spec/contract.md"] == "1\n2\n", out
+
+
+def test_a_removal_line_that_looks_like_a_header_is_still_a_removal():
+    """The converse: inside a hunk the counts still admit `--- a/x` as content.
+
+    Deleting a line whose text happens to be a diff header must keep working,
+    or the fix would have traded one ambiguity for another.
+    """
+    files = {"a.txt": "--- a/decoy\nkeep\n"}
+    diff = "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,1 @@\n---- a/decoy\n keep\n"
+    out = P.apply_unified_diff(files, diff)
+    assert out["a.txt"] == "keep\n", out
+
+
+def test_body_longer_than_declared_counts_is_rejected():
+    """Terminating on counts must not silently skip the surplus."""
+    files = {"a.txt": "1\n2\n"}
+    diff = "--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-1\n+one\n+smuggled\n"
+    try:
+        P.apply_unified_diff(files, diff)
+    except P.PatchError:
+        return
+    raise AssertionError("expected PatchError for surplus hunk body")
+
+
+def test_duplicate_section_still_rejected_across_files():
+    files = {"a.txt": "1\n", "b.txt": "1\n"}
+    diff = (
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-1\n+one\n"
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-one\n+two\n"
+    )
+    try:
+        P.apply_unified_diff(files, diff)
+    except P.PatchError:
+        return
+    raise AssertionError("expected PatchError for duplicate file section")
+
+
 def _main():
     tests = sorted(
         (name, obj)
