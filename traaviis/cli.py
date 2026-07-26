@@ -1236,6 +1236,89 @@ def cmd_eval(engine, args):
     raise SystemExit(exit_code)
 
 
+def cmd_serve(engine, args):
+    """Serve one packed environment as an ORS submission endpoint.
+
+    Everything is admitted before the socket is bound, and the banner is printed
+    only once the server is listening — so the last line of output is a true
+    statement about a server that exists, and a failure produces no banner at
+    all rather than a banner followed by a traceback.
+    """
+    from . import ors as _ors
+    from . import ors_server as _ors_server
+    from .substrates import AdmissionError
+
+    if not args.ors:  # pragma: no cover - argparse marks --ors required
+        sys.stderr.write("trvs: serve currently speaks only --ors\n")
+        raise SystemExit(EXIT_UNAVAILABLE)
+    if not os.path.isdir(args.package):
+        sys.stderr.write("trvs: no such package directory: %s\n" % args.package)
+        raise SystemExit(EXIT_UNAVAILABLE)
+
+    toolchain = _load_json(args.toolchain, "toolchain file") if args.toolchain else None
+    engine = engine or _engine.try_load()
+    registry = _registry(engine)
+    seen_notes = set()
+
+    def report_notes(notes):
+        for note in notes:
+            if note not in seen_notes:
+                seen_notes.add(note)
+                sys.stderr.write("  warn %s\n" % note)
+
+    sys.stderr.write("admitting %s ...\n" % args.package)
+    try:
+        server = _ors_server.serve(
+            args.package, args.split, args.output,
+            host=args.host, port=args.port, allow_remote=args.allow_remote,
+            engine=engine, registry=registry, platform=args.platform,
+            toolchain=toolchain, on_wiring_notes=report_notes)
+    except AdmissionError as ex:
+        sys.stderr.write("trvs: %s\n" % ex)
+        for key, value in sorted((getattr(ex, "detail", None) or {}).items()):
+            sys.stderr.write("      %s: %s\n" % (key, value))
+        raise SystemExit(EXIT_UNAVAILABLE)
+    except OSError as ex:
+        sys.stderr.write("trvs: could not bind %s:%s: %s\n"
+                         % (args.host, args.port, ex))
+        raise SystemExit(EXIT_UNAVAILABLE)
+
+    describe = server.adapter.describe()
+    print(_field("environment", describe["env_id"]))
+    print(_field("split", args.split))
+    print(_field("substrate", describe["substrate_profile"]))
+    print(_field("profile", describe["ors_profile_version"]))
+    print(_field("runner", describe["runner_profile"]))
+    print(_field("listening", server.base_url))
+    print(_field("episodes", os.path.abspath(args.output)))
+    print()
+    print("  tools")
+    for tool in describe["tools"]:
+        print("  %s %s" % (CHECK, tool["name"]))
+    unsupported = [op for op, ok in sorted(describe["operations"].items())
+                   if not ok]
+    if unsupported:
+        print()
+        print("  refused by this substrate")
+        for op in unsupported:
+            print("  %s %s" % (CROSS, op))
+    print()
+    if server.host in _ors_server.LOOPBACK_HOSTS:
+        print("  loopback only. ctrl-c to stop.")
+    else:
+        print("  %s reachable beyond loopback (--allow-remote). ctrl-c to stop."
+              % CROSS)
+    sys.stdout.flush()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        sys.stderr.write("\nstopping\n")
+    finally:
+        server.shutdown()
+    raise SystemExit(EXIT_OK)
+
+
 def cmd_batch(engine, args):
     """Run every candidate over one split and compare them pairwise."""
     from . import batch as B
@@ -1497,6 +1580,33 @@ def build_parser():
     bat.add_argument("--json", action="store_true",
                      help="emit the raw SerialBatchV1 report")
     bat.set_defaults(func=cmd_batch, needs_engine=False)
+
+    srv = sub.add_parser(
+        "serve",
+        help="serve a packed environment as a remote submission endpoint")
+    srv.add_argument("package", metavar="PKG",
+                     help="a packed environment directory (contains environment.json)")
+    srv.add_argument("--ors", action="store_true", required=True,
+                     help="serve the Residency Submission ORS Profile v1; the "
+                          "only protocol this verb speaks")
+    srv.add_argument("--split", required=True, metavar="NAME",
+                     help="which split is served (e.g. dev / test)")
+    srv.add_argument("--output", required=True, metavar="DIR",
+                     help="where every accepted submission's episode bundle is "
+                          "published; required, because `finished` is a claim "
+                          "that the evidence reached disk")
+    srv.add_argument("--host", default="127.0.0.1",
+                     help="bind address (default 127.0.0.1; anything else needs "
+                          "--allow-remote)")
+    srv.add_argument("--port", type=int, default=8080,
+                     help="bind port (0 picks a free one and prints it)")
+    srv.add_argument("--allow-remote", action="store_true",
+                     help="permit a non-loopback bind address")
+    srv.add_argument("--platform", default="unknown",
+                     help="platform label sealed into execution_facts")
+    srv.add_argument("--toolchain", metavar="FILE",
+                     help="a JSON toolchain descriptor for execution_facts")
+    srv.set_defaults(func=cmd_serve, needs_engine=False)
     return p
 
 

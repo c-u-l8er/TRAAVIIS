@@ -23,6 +23,14 @@ Sandbox labels are **honest** (GPT-5.6 R2/E2): the current runner *observes*
 filesystem writes by rescan and does **not** enforce a real sandbox, and network
 is unrestricted. The label reflects the actual guarantee, never an aspirational
 one. The sandbox story is owned by the runner profile (see ``RUNNER_PROFILES``).
+
+**Not every profile launches a process.** The ORS submission adapter
+(``traaviis.ors-submission.v1``, GPT-5.6 ruling seven) scores a *submitted*
+finding + patch: no agent command is spawned, so there is no sandbox to describe
+and no exit code to report. Such profiles are listed in
+``NON_EXECUTING_PROFILES`` and seal ``termination:"not_executed"`` with a
+``not_applicable`` sandbox. That is the honest label — *not* a fabricated
+``exited``/``0``, which would claim a process ran.
 """
 
 from typing import Any, Mapping, Optional
@@ -30,6 +38,8 @@ from typing import Any, Mapping, Optional
 __all__ = [
     "EXECUTION_FACTS_VERSION",
     "RUNNER_PROFILES",
+    "NON_EXECUTING_PROFILES",
+    "ORS_RUNNER_PROFILE",
     "UnsupportedPolicyError",
     "validate_run_policy",
     "normalize_platform",
@@ -38,17 +48,39 @@ __all__ = [
 
 EXECUTION_FACTS_VERSION = "residency.execution-facts.v1"
 
+#: The declared adapter profile for remote submissions (GPT-5.6 ruling seven).
+ORS_RUNNER_PROFILE = "traaviis.ors-submission.v1"
+
 # Each runner profile states the sandbox guarantee it actually delivers.
 #   filesystem "observed"  — writes are rescanned + reported, NOT blocked.
 #   network    "unrestricted" — no network isolation is applied.
 # A future hardened profile may raise these to "enforced" once real isolation
 # exists; until then the trusted-local profile is the only honest option.
+#
+# NOTE FOR ANY FUTURE EDIT: ``build_execution_facts`` seals
+# ``sandbox = dict(RUNNER_PROFILES[profile])`` straight into ``episode-…``.
+# Adding a *key* here is additive and moves nothing. Adding a *field to an
+# existing profile's dict* would move every episode identity ever minted under
+# that profile. The ORS profile is therefore a new key, never a new field.
 RUNNER_PROFILES = {
     "residency.trusted-local.v1": {
         "filesystem": "observed",
         "network": "unrestricted",
     },
+    ORS_RUNNER_PROFILE: {
+        "filesystem": "not_applicable",
+        "network": "not_applicable",
+    },
 }
+
+#: Profiles under which **no process is launched at all**.
+#:
+#: Under these the submission arrives already made: the adapter scores a finding
+#: and a patch it was handed. A run policy describing a subprocess is vacuous
+#: (there is no subprocess to constrain), there is no exit code to compare
+#: against ``allowed_exit_codes``, and the sandbox posture is not a weaker
+#: guarantee but an inapplicable question.
+NON_EXECUTING_PROFILES = frozenset({ORS_RUNNER_PROFILE})
 
 class UnsupportedPolicyError(Exception):
     """A run policy asks for a guarantee the runner profile does not deliver.
@@ -76,6 +108,14 @@ def validate_run_policy(policy: Mapping[str, Any], runner_profile: str) -> None:
     caps = RUNNER_PROFILES.get(runner_profile)
     if caps is None:
         raise UnsupportedPolicyError(f"unknown runner profile {runner_profile!r}")
+    if runner_profile in NON_EXECUTING_PROFILES:
+        # Nothing is launched, so there is no command whose posture the policy
+        # could describe. Checking a subprocess policy against a profile that
+        # runs no subprocess would reject honest configurations for a guarantee
+        # that is not merely weaker but inapplicable. (The ``tests`` verifier
+        # still validates *its own* test-plan policy against the local profile
+        # it actually executes under — see substrate_verifiers.)
+        return
     requested_profile = policy.get("runner_profile")
     if requested_profile is not None and requested_profile != runner_profile:
         raise UnsupportedPolicyError(
@@ -142,13 +182,24 @@ def build_execution_facts(
         "resolved": dict(tc.get("resolved", {})),
     }
 
-    termination = "timed_out" if run.get("timed_out") else "exited"
-    agent_process = {
-        "termination": termination,
-        "exit_code": run.get("exit_code"),
-        "stdout_truncated": bool(run.get("stdout_truncated")),
-        "stderr_truncated": bool(run.get("stderr_truncated")),
-    }
+    if runner_profile in NON_EXECUTING_PROFILES:
+        # No process was launched. "exited" + exit_code 0 would be a fabrication:
+        # it asserts a program ran and succeeded. "not_executed" + null says the
+        # true thing, and the replay in episode_bundle reconstructs exactly this.
+        agent_process = {
+            "termination": "not_executed",
+            "exit_code": None,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+    else:
+        termination = "timed_out" if run.get("timed_out") else "exited"
+        agent_process = {
+            "termination": termination,
+            "exit_code": run.get("exit_code"),
+            "stdout_truncated": bool(run.get("stdout_truncated")),
+            "stderr_truncated": bool(run.get("stderr_truncated")),
+        }
 
     return {
         "execution_facts_version": EXECUTION_FACTS_VERSION,

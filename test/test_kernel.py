@@ -30,12 +30,25 @@ become false.
 - a substrate with no episode semantics could get a half-built kernel instead of
   a refusal (K17).
 
+K19-K28 close a defect the first eighteen could not see. `finalize` checked
+`state == "started"` and wrote `"finalized"` in two separate statements with the
+whole verifier plan in between, so two concurrent callers both passed the check
+and both ran the plan -- which for a Residency task means executing a
+candidate's test suite twice. Both received the *same receipt*, so nothing
+downstream looked wrong; the identity did not move and only the work doubled. A
+sequential battery cannot reach it, and a server accepting concurrent requests
+reaches it immediately. These laws force the interleaving instead of hoping for
+it, and assert both directions of the fix: one claimant per session (K19-K21,
+K24), a refusal for the loser and for a close attempted mid-flight (K20, K22), a
+terminal failure state (K23), and -- the part a lock is always tempted to break
+-- that linearizing *one* session did not serialize the kernel (K25, K26).
+
 **On what needs an engine.** The kernel is substrate-neutral and its lifecycle
 laws are proven against the deterministic stub agent with injected verifiers, so
-every law but one needs no Forge checkout -- including K17, whose refusals are
-reached before any substrate is opened. Only K14, which is genuinely a claim
-about a *packed environment*, packs a real template and SKIPs when no engine is
-locatable.
+almost every law needs no Forge checkout -- including K17, whose refusals are
+reached before any substrate is opened. Only K14 and K27, which are genuinely
+claims about a *packed environment*, pack a real template and SKIP when no
+engine is locatable.
 
 Run directly:      python3 test/test_kernel.py
 Run under pytest:  pytest test/test_kernel.py
@@ -51,6 +64,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -91,6 +105,27 @@ def _engine_or_skip():
     if eng is None:
         raise Skip("Forge engine not locatable; set TRVS_FORGE_DIR")
     return eng
+
+
+def _packed_package():
+    """A real packed `residency-repair` package, scaffolded and packed once.
+
+    Two laws are genuinely about a *packed environment* (K14, K27) and packing
+    costs a Forge lower. The tree is read-only for both -- each law evaluates
+    into its own output directory -- so building it once is sharing an input,
+    not sharing state.
+    """
+    if "pkg" not in _TMP:
+        eng = _engine_or_skip()
+        from traaviis import pack as P, scaffold as SC
+        env = os.path.join(_tmp(), "packed-env")
+        out = os.path.join(_tmp(), "packed-pkg")
+        for p in (env, out):
+            shutil.rmtree(p, ignore_errors=True)
+        SC.materialize(TEMPLATE, env)
+        P.pack(env, out, engine=eng)
+        _TMP["pkg"] = out
+    return _TMP["pkg"]
 
 
 CONTENT = {"spec/one.md": "alpha\nbeta\n", "src/mod.py": "return 1\n"}
@@ -166,6 +201,12 @@ _pass_identity.version = "residency.identity.v1"
 
 ALL_PASS = {"tests": _pass, "identity": _pass_identity}
 AGENT = [sys.executable, STUB]
+#: The agent used against a *packed* environment (K14, K27). The stub above
+#: answers the injected one-task kernel; this one produces a real patch against
+#: the `residency-repair` template, and is the same fixture `test_eval_split`
+#: drives, so a divergence here would be a divergence from the shipped path.
+RESIDENCY_AGENT = [sys.executable,
+                   os.path.join(HERE, "fixtures", "residency_agent.py")]
 
 
 def _kernel(task=None, extra=ALL_PASS):
@@ -177,6 +218,34 @@ def _kernel(task=None, extra=ALL_PASS):
 
 def _canonical(obj):
     return I.canonical_bytes(obj)
+
+
+def _kernel_error_codes(source):
+    """Every code a `KernelError(...)` in `source` is actually raised with."""
+    codes = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(source))):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if name != "KernelError":
+            continue
+        first = node.args[0]
+        assert isinstance(first, ast.Constant) and isinstance(first.value, str), \
+            "a KernelError code must be a literal, not a computed value"
+        codes.add(first.value)
+    return sorted(codes)
+
+
+def _law_names():
+    """Every law defined in this module, by name.
+
+    Read from `globals()` rather than from a hand-kept list, so a law that is
+    deleted or renamed makes the completeness checks (K18, K28) fail instead of
+    silently shrinking the battery.
+    """
+    return sorted(k for k, v in globals().items()
+                  if k.startswith("test_k") and callable(v))
 
 
 def _run_agent_calls(source):
@@ -588,15 +657,7 @@ def test_k14_one_kernel_serves_one_admitted_environment():
     the shared-registry, shared-engine guarantee would be a claim about N objects
     that merely happen to agree today.
     """
-    eng = _engine_or_skip()
-    from traaviis import pack as P, scaffold as SC
-
-    env = os.path.join(_tmp(), "k14-env")
-    out = os.path.join(_tmp(), "k14-pkg")
-    for p in (env, out):
-        shutil.rmtree(p, ignore_errors=True)
-    SC.materialize(TEMPLATE, env)
-    P.pack(env, out, engine=eng)
+    out = _packed_package()
 
     built = []
     real_env_kernel = K.environment_kernel
@@ -620,10 +681,7 @@ def test_k14_one_kernel_serves_one_admitted_environment():
     K.environment_kernel = spy
     K.ResidencyKernelV1.start = spy_start
     try:
-        report = ES.eval_split(
-            out, "all",
-            [sys.executable, os.path.join(HERE, "fixtures",
-                                          "residency_agent.py")])
+        report = ES.eval_split(out, "all", RESIDENCY_AGENT)
     finally:
         K.environment_kernel = real_env_kernel
         K.ResidencyKernelV1.start = real_start
@@ -723,10 +781,15 @@ def test_k16_no_process_wide_lock_is_held_over_a_session_lifetime():
     k.close(sid)
     assert _canonical(mine) == _canonical(done["receipt"])
 
-    # Structurally: the lock is only ever taken around session-table operations.
+    # Structurally: the lock is only ever taken around session-table operations
+    # and state transitions -- six blocks, in `open_sessions`, `session`,
+    # `start`, `_claim_finalize`, `_release_finalize` and `close`. None of them
+    # may contain admission, scoring, or a subprocess (K26 proves the same thing
+    # dynamically, by holding the work open and taking the lock from outside).
     source = inspect.getsource(K.ResidencyKernelV1)
-    assert source.count("with self._lock:") == 4, source.count("with self._lock:")
-    for forbidden in ("_admit_episode", "_finish_episode", "run_agent"):
+    assert source.count("with self._lock:") == 6, source.count("with self._lock:")
+    for forbidden in ("_admit_episode", "_finish_episode", "_invalid_config_run",
+                      "run_agent"):
         for block in source.split("with self._lock:")[1:]:
             head = block.split("\n\n")[0]
             assert forbidden not in head, forbidden
@@ -760,21 +823,22 @@ def test_k18_the_ladder_the_cli_and_the_earlier_laws_are_untouched():
     The kernel is an extraction. If it added an identity prefix, a CLI verb, or a
     receipt field, it would be a feature wearing an extraction's name.
     """
-    laws = sorted(k for k in globals()
-                  if k.startswith("test_k") and callable(globals()[k]))
-    numbers = sorted(int(k.split("_")[1][1:]) for k in laws)
-    assert numbers == list(range(1, 19)), numbers
+    numbers = sorted(int(k.split("_")[1][1:]) for k in _law_names())
+    assert numbers == list(range(1, 29)), numbers
 
     # No new rung. `identity.py` gained nothing, and the ladder is unchanged.
     src = inspect.getsource(I)
     assert "session" not in src.lower()
     assert "kernel" not in src.lower()
 
-    # No new CLI verb: the kernel is not reachable from the command line yet, by
-    # ruling -- `trvs serve --ors` is the next slice, not this one.
+    # No CLI verb of its own. `trvs serve --ors` has since shipped, so the
+    # original form of this clause -- "the command line cannot reach the kernel
+    # yet" -- expired the moment a transport existed. What must not expire is
+    # *how* it is reached: the CLI drives an adapter, and the adapter drives the
+    # kernel. A command that constructed a kernel itself would make the CLI a
+    # second transport, and the two would drift.
     from traaviis import cli
     cli_src = inspect.getsource(cli)
-    assert "serve" not in cli_src or "--ors" not in cli_src
     assert "EpisodeKernelV1" not in cli_src
     assert "kernel" not in cli_src.lower()
 
@@ -787,6 +851,466 @@ def test_k18_the_ladder_the_cli_and_the_earlier_laws_are_untouched():
         assert hasattr(E, name), name
 
     # The public surface of `evalone` did not change.
+    assert E.__all__ == [
+        "eval_one", "evaluate", "build_receipt_v1",
+        "EPISODE_VERSION", "EVALUATION_RUN_VERSION", "VERIFIER_EVIDENCE_VERSION",
+        "UnsupportedPolicyError",
+    ]
+
+
+# ------------------------------------------------- K19-K28: linearization
+# The kernel's lock is short by design, but a short lock is not the same as an
+# atomic transition. `finalize` used to read `state == "started"` in one
+# statement and write `"finalized"` in a later one, with the entire verifier
+# plan in between. Two callers could both pass the check before either wrote,
+# and the second was not refused -- it re-ran the plan, which for a Residency
+# task can mean executing a candidate's test suite a second time. Both callers
+# received the *same receipt*, which is precisely why it hides: the identity
+# does not move and the work doubles. Sequential tests cannot see it; a server
+# accepting concurrent requests makes it reachable from outside.
+#
+# These laws force the interleaving rather than hoping for it. `_finish_episode`
+# is held open so a second caller is *guaranteed* to arrive mid-flight, which
+# makes the race deterministic in both directions: it would fail every run
+# against the old code and pass every run against the new.
+
+
+class _HeldScoring(object):
+    """Hold `_finish_episode` open, and count how many callers reach it.
+
+    The counter is the point. "Exactly one finalization succeeded" is a weaker
+    statement than "the scoring work ran once" -- the old code satisfied the
+    first (both callers got the same receipt) while violating the second.
+    """
+
+    def __init__(self, party=1, fail=None):
+        self.calls = []
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+        #: When >1, callers rendezvous *inside* the scoring work, so the law
+        #: fails if the kernel serialized them instead of overlapping them.
+        self.barrier = threading.Barrier(party) if party > 1 else None
+        self.fail = fail
+        self._real = None
+
+    def __enter__(self):
+        self._real = K._finish_episode
+
+        def wrapped(plan, run, **kw):
+            self.calls.append(plan["task_id"])
+            self.entered.release()
+            if self.barrier is not None:
+                self.barrier.wait(60)
+            self.release.wait(60)
+            if self.fail is not None:
+                raise self.fail
+            return self._real(plan, run, **kw)
+
+        K._finish_episode = wrapped
+        return self
+
+    def __exit__(self, *exc):
+        K._finish_episode = self._real
+        self.release.set()
+        return False
+
+    def await_entry(self, timeout=60):
+        assert self.entered.acquire(timeout=timeout), \
+            "no caller reached the scoring work"
+
+
+def _in_thread(fn):
+    """Run `fn` on a thread; return (thread, outcome-dict)."""
+    out = {}
+
+    def body():
+        try:
+            out["value"] = fn()
+        except BaseException as exc:  # pragma: no cover - asserted by callers
+            out["error"] = exc
+
+    t = threading.Thread(target=body)
+    t.daemon = True
+    t.start()
+    return t, out
+
+
+def _await(predicate, what, timeout=60):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    raise AssertionError("timed out waiting for %s" % what)
+
+
+def test_k19_two_simultaneous_finalizations_produce_exactly_one_claimant():
+    """The forced race: two callers, one session, one execution of the plan.
+
+    Both threads pass a barrier and then race into `finalize`. Whoever claims
+    first enters the scoring work and is held there; the other arrives while the
+    session is `finalizing` and must be refused. Against the pre-patch kernel
+    both would enter, both would score, and both would return the same receipt.
+    """
+    k = _kernel()
+    sid = k.start(k.list_tasks()[0])
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    gate = threading.Barrier(2)
+    with _HeldScoring() as held:
+        def contend():
+            gate.wait(30)
+            return k.finalize(sid, run)
+
+        t1, a = _in_thread(contend)
+        t2, b = _in_thread(contend)
+        held.await_entry()
+        _await(lambda: "error" in a or "error" in b, "the losing call to refuse")
+        held.release.set()
+        t1.join(60)
+        t2.join(60)
+
+    assert not t1.is_alive() and not t2.is_alive()
+    assert len(held.calls) == 1, \
+        "the verifier plan ran %d times for one session" % len(held.calls)
+
+    outcomes = [a, b]
+    winners = [o for o in outcomes if "value" in o]
+    losers = [o for o in outcomes if "error" in o]
+    assert len(winners) == 1, outcomes
+    assert len(losers) == 1, outcomes
+    assert winners[0]["value"]["receipt"]["status"] == R.STATUS_OK
+    assert k.session(sid).state == K.SESSION_FINALIZED
+    assert k.session(sid).result is winners[0]["value"]
+    k.close(sid)
+
+
+def test_k20_the_losing_call_is_refused_by_name():
+    """The loser gets a typed refusal, not a second receipt.
+
+    `KERNEL_SESSION_STATE` carrying `state = finalizing` says exactly what
+    happened: the session exists, it is not available, and somebody else has it.
+    The refusal must also stay catchable as the plain `AdmissionError` the split
+    and the CLI already handle, or a busy session would abort a run instead of
+    being recorded as one failed episode.
+    """
+    from traaviis import admission as _adm
+
+    k = _kernel()
+    sid = k.start(k.list_tasks()[0])
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    with _HeldScoring() as held:
+        t, out = _in_thread(lambda: k.finalize(sid, run))
+        held.await_entry()
+
+        assert k.session(sid).state == K.SESSION_FINALIZING
+        ex = _refuses(lambda: k.finalize(sid, run), "KERNEL_SESSION_STATE",
+                      "a session another caller is finalizing")
+        assert ex.detail["state"] == K.SESSION_FINALIZING
+        assert ex.detail["session_id"] == sid
+        assert isinstance(ex, _adm.AdmissionError)
+        assert isinstance(ex, AdmissionError)
+
+        held.release.set()
+        t.join(60)
+
+    assert "error" not in out, out.get("error")
+    assert len(held.calls) == 1
+    k.close(sid)
+
+
+def test_k21_the_scoring_work_runs_at_most_once_per_session():
+    """Across every route to a second finalization, the plan executes once.
+
+    Concurrent, then sequential-after-success, then sequential-after-close:
+    three different ways to ask twice, one execution.
+    """
+    k = _kernel()
+    sid = k.start(k.list_tasks()[0])
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    with _HeldScoring() as held:
+        t, out = _in_thread(lambda: k.finalize(sid, run))
+        held.await_entry()
+        _refuses(lambda: k.finalize(sid, run), "KERNEL_SESSION_STATE",
+                 "mid-flight")
+        held.release.set()
+        t.join(60)
+        assert "error" not in out, out.get("error")
+
+        # After success.
+        _refuses(lambda: k.finalize(sid, run), "KERNEL_SESSION_STATE",
+                 "already finalized")
+        # After close: the handle names nothing at all.
+        assert k.close(sid) is True
+        _refuses(lambda: k.finalize(sid, run), "KERNEL_SESSION_UNKNOWN",
+                 "closed session")
+
+    assert len(held.calls) == 1, held.calls
+
+
+def test_k22_closing_a_finalizing_session_is_refused():
+    """`close` is idempotent, not a way to cancel work already in flight.
+
+    Removing a `finalizing` session from the table would not stop the verifiers
+    -- it would only make the result unattributable, and would let a third
+    caller `start` past a test run still executing. So it is the one state
+    `close` refuses, and the refusal is by name.
+    """
+    k = _kernel()
+    sid = k.start(k.list_tasks()[0])
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    with _HeldScoring() as held:
+        t, out = _in_thread(lambda: k.finalize(sid, run))
+        held.await_entry()
+
+        ex = _refuses(lambda: k.close(sid), "KERNEL_SESSION_BUSY",
+                      "closing a session mid-finalization")
+        assert ex.detail["state"] == K.SESSION_FINALIZING
+        assert k.open_sessions() == [sid], "the refusal must not have removed it"
+
+        held.release.set()
+        t.join(60)
+
+    assert "error" not in out, out.get("error")
+    # Once it is no longer in flight, the same call succeeds.
+    assert k.close(sid) is True
+    assert k.open_sessions() == []
+    assert k.close(sid) is False, "closing an absent handle stays idempotent"
+
+
+def test_k23_a_failed_finalization_leaves_a_terminal_session():
+    """A raise inside scoring is recorded, not swallowed and not rolled back.
+
+    The session stays in the table so a local caller can see *which* session
+    failed, in a state that says so. Rolling it back to `started` would be the
+    dangerous choice: the verifier plan may already have executed a test suite,
+    written files, or launched a process.
+    """
+    k = _kernel()
+    sid = k.start(k.list_tasks()[0])
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    boom = RuntimeError("verifier exploded")
+    with _HeldScoring(fail=boom) as held:
+        held.release.set()
+        try:
+            k.finalize(sid, run)
+        except RuntimeError as exc:
+            assert exc is boom
+        else:
+            raise AssertionError("a failing finalization returned a run")
+
+    assert len(held.calls) == 1
+    assert k.session(sid).state == K.SESSION_FINALIZE_FAILED
+    assert k.session(sid).result is None
+    assert k.open_sessions() == [sid], "a failed session is not auto-released"
+    assert k.session(sid).describe()["state"] == K.SESSION_FINALIZE_FAILED
+    assert k.close(sid) is True
+
+
+def test_k24_a_failed_finalization_cannot_be_retried():
+    """`finalize_failed` is terminal on that session; the recovery is a new one.
+
+    Retrying in place would re-execute effects that may already have happened.
+    Starting again is honest, because a second session is a second episode and
+    says so.
+    """
+    k = _kernel()
+    task_id = k.list_tasks()[0]
+    sid = k.start(task_id)
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    with _HeldScoring(fail=RuntimeError("verifier exploded")) as held:
+        held.release.set()
+        try:
+            k.finalize(sid, run)
+        except RuntimeError:
+            pass
+        ex = _refuses(lambda: k.finalize(sid, run), "KERNEL_SESSION_STATE",
+                      "retrying a failed finalization")
+        assert ex.detail["state"] == K.SESSION_FINALIZE_FAILED
+        assert len(held.calls) == 1, "a retry re-entered the scoring work"
+
+    # The kernel itself is undamaged: a fresh session over the same task scores.
+    sid2 = k.start(task_id)
+    s2 = k.session(sid2)
+    ok = k.finalize(sid2, RUN.run_agent(AGENT, s2.content, s2.policy))
+    assert ok["receipt"]["status"] == R.STATUS_OK
+    assert k.close(sid) is True
+    assert k.close(sid2) is True
+
+
+def test_k25_two_different_sessions_may_finalize_concurrently():
+    """Linearizing one session must not serialize the kernel.
+
+    The rendezvous is *inside* the scoring work: both sessions have to be there
+    at the same time for the barrier to clear. A kernel that took a lock around
+    finalization would deadlock this law rather than merely slow it down.
+    """
+    k = _kernel()
+    task_id = k.list_tasks()[0]
+    a, b = k.start(task_id), k.start(task_id)
+    runs = {sid: RUN.run_agent(AGENT, k.session(sid).content,
+                               k.session(sid).policy) for sid in (a, b)}
+
+    with _HeldScoring(party=2) as held:
+        held.release.set()
+        t1, o1 = _in_thread(lambda: k.finalize(a, runs[a]))
+        t2, o2 = _in_thread(lambda: k.finalize(b, runs[b]))
+        t1.join(90)
+        t2.join(90)
+
+    assert not t1.is_alive() and not t2.is_alive(), \
+        "two sessions could not be finalized at the same time"
+    assert "error" not in o1, o1.get("error")
+    assert "error" not in o2, o2.get("error")
+    assert len(held.calls) == 2
+    assert _canonical(o1["value"]["receipt"]) == _canonical(o2["value"]["receipt"])
+    assert k.session(a).state == K.SESSION_FINALIZED
+    assert k.session(b).state == K.SESSION_FINALIZED
+    k.close(a)
+    k.close(b)
+
+
+def test_k26_no_lock_is_held_while_verifiers_execute():
+    """Proven dynamically, not by reading the source.
+
+    While one session is inside the scoring work, the kernel's lock is free and
+    every table operation still answers: another session can be started, listed,
+    read and finalized to completion. K16 makes the same claim lexically; this
+    one makes it while the claim is actually under load.
+    """
+    k = _kernel()
+    task_id = k.list_tasks()[0]
+    sid = k.start(task_id)
+    session = k.session(sid)
+    run = RUN.run_agent(AGENT, session.content, session.policy)
+
+    with _HeldScoring() as held:
+        t, out = _in_thread(lambda: k.finalize(sid, run))
+        held.await_entry()
+
+        assert k._lock.acquire(blocking=False) is True, \
+            "the lock is held across the verifier plan"
+        k._lock.release()
+        assert k.session(sid).state == K.SESSION_FINALIZING
+        assert sid in k.open_sessions()
+
+        # A whole second episode completes while the first is mid-flight. Its
+        # own scoring is the *real* one -- the hold is per-call, and this call
+        # goes through the same held wrapper, so release it first.
+        held.release.set()
+        other = k.start(task_id)
+        s2 = k.session(other)
+        run2 = k.finalize(other, RUN.run_agent(AGENT, s2.content, s2.policy))
+        assert run2["receipt"]["status"] == R.STATUS_OK
+        k.close(other)
+
+        t.join(60)
+
+    assert "error" not in out, out.get("error")
+    assert _canonical(out["value"]["receipt"]) == _canonical(run2["receipt"])
+    k.close(sid)
+
+
+#: The `episode-…` this fixture minted *before* the linearization patch,
+#: recomputed from the shipped `TRAAVIIS_EPISODE_KERNEL_CLOSURE` packet. Every
+#: input to it is fixture-determined -- the declared toolchain, the platform
+#: string, the stub agent's deterministic output, the injected verifier versions
+#: -- so it is a host-independent constant, and pinning it is the one check that
+#: a *later* slice cannot satisfy by moving both sides of a comparison.
+PRE_LINEARIZATION_EPISODE_ID = (
+    "episode-7265e90a5680080bc0d5f995681b96360a214652f82771d52ff70336fa9e26c5")
+
+
+def test_k27_local_receipts_are_unmoved_by_the_linearization():
+    """A concurrency patch may not move a single byte of a serial result.
+
+    Four independent derivations must agree with each other *and* with the id
+    the pre-patch kernel minted: the adapter, the receipt-only wrapper, a
+    hand-driven session, and -- when an engine is present -- a real `eval_split`
+    over a packed environment, run twice.
+    """
+    task = _task()
+    common = dict(snapshot=_snapshot(), extra_verifiers=ALL_PASS,
+                  platform="linux-x86_64", toolchain=TOOLCHAIN)
+
+    via_evaluate = E.evaluate(task, CONTENT, AGENT, REWARD_SPEC, **common)["receipt"]
+    via_eval_one = E.eval_one(task, CONTENT, AGENT, REWARD_SPEC, **common)
+
+    k = _kernel(task)
+    sid = k.start(k.list_tasks()[0])
+    s = k.session(sid)
+    hand = k.finalize(sid, RUN.run_agent(AGENT, s.content, s.policy))["receipt"]
+    k.close(sid)
+
+    assert _canonical(via_evaluate) == _canonical(via_eval_one) == _canonical(hand)
+    assert via_evaluate["episode_id"] == PRE_LINEARIZATION_EPISODE_ID, (
+        "the linearization moved the episode identity: %s"
+        % via_evaluate["episode_id"])
+
+    # And the split path, which is the one a server will share a kernel with.
+    package = _packed_package()
+    first = ES.eval_split(package, "all", RESIDENCY_AGENT,
+                          output=os.path.join(_tmp(), "k27-a"))
+    second = ES.eval_split(package, "all", RESIDENCY_AGENT,
+                           output=os.path.join(_tmp(), "k27-b"))
+    assert first["episodes"] == second["episodes"]
+    assert first["totals"] == second["totals"]
+    assert first == second
+
+
+def test_k28_the_linearization_added_no_identity_and_no_surface():
+    """Completeness: K1-K28 are all present, and the patch is transport-only.
+
+    A concurrency fix that quietly grew a rung, a CLI verb or a receipt field
+    would be a feature wearing a bug fix's name. The lifecycle is the frozen
+    four states; `closed` is deliberately *not* among them, because a closed
+    session is forgotten rather than retained.
+    """
+    numbers = sorted(int(k.split("_")[1][1:]) for k in _law_names())
+    assert numbers == list(range(1, 29)), numbers
+
+    assert K.SESSION_STATES == ("started", "finalizing", "finalized",
+                                "finalize_failed")
+    assert "closed" not in K.SESSION_STATES
+    assert K.SESSION_CLOSEABLE == ("started", "finalized", "finalize_failed")
+    assert K.SESSION_FINALIZING not in K.SESSION_CLOSEABLE
+    assert K.OPERATIONS == ("list_tasks", "start", "observe", "step", "reset",
+                            "finalize", "close"), "the seven did not change"
+
+    # No new rung, no new CLI surface -- restated because this patch is exactly
+    # the kind that would be tempted to add one.
+    assert "session" not in inspect.getsource(I).lower()
+    from traaviis import cli
+    assert "kernel" not in inspect.getsource(cli).lower()
+
+    # The refusal vocabulary grew by exactly one code, and it is a lifecycle
+    # refusal rather than an admission one. The codes are read from the
+    # `KernelError(...)` constructions themselves rather than from a text scan,
+    # because `KERNEL_VERSION` is a *name* in this module and matches any
+    # plausible `KERNEL_[A-Z_]+` pattern -- the same parse-don't-grep correction
+    # K10, K12 and K18 already needed.
+    codes = _kernel_error_codes(inspect.getsource(K))
+    assert "KERNEL_SESSION_BUSY" in codes
+    assert codes == [
+        "KERNEL_OPERATION_UNSUPPORTED", "KERNEL_REWARD_UNRESOLVED",
+        "KERNEL_RUN_RESULT_MISSING", "KERNEL_RUN_RESULT_UNEXPECTED",
+        "KERNEL_SESSION_BUSY", "KERNEL_SESSION_STATE", "KERNEL_SESSION_UNKNOWN",
+        "KERNEL_SUBSTRATE_UNSUPPORTED", "KERNEL_TASK_UNIDENTIFIED",
+        "KERNEL_TASK_UNKNOWN",
+    ], codes
+
+    # The public surface of `evalone` still did not change.
     assert E.__all__ == [
         "eval_one", "evaluate", "build_receipt_v1",
         "EPISODE_VERSION", "EVALUATION_RUN_VERSION", "VERIFIER_EVIDENCE_VERSION",

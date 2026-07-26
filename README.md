@@ -65,7 +65,8 @@ come after.
 | `trvs batch`    | run several candidates over one split, compare per task  | shipped        |
 | `trvs verify-bundle`  | re-verify a package tree or archive against `bundle-…` | shipped  |
 | `trvs archive-bundle` | emit a canonical archive + its transport checksum  | shipped        |
-| `trvs serve`    | expose an environment to an agent (`--ors`/`--mcp`)      | later          |
+| `trvs serve --ors` | serve a packed environment as a submission endpoint   | shipped        |
+| `trvs serve --mcp` | the same kernel behind the MCP wire vocabulary       | later          |
 
 Every shipped command takes `--json` for CI / agent consumption.
 
@@ -281,6 +282,102 @@ carries no package identity, and its frozen meaning is `null` or exactly one
 evidence*; nothing in v1 ever writes a `bundle-…` there; and a future
 `EvaluationV2` renames it `episode_member`.
 
+### Serve a submission endpoint (`serve --ors`, shipped)
+
+`eval` launches the agent. `serve --ors` is the other direction: the agent lives
+somewhere else and *submits* a candidate, and this host scores it.
+
+```sh
+trvs serve my-env-pkg --ors --split all --output episodes/ --port 8791
+```
+
+```
+  environment   env-a38ec4c04532be258a59663588b0b7e678bf7ad31eee8173e09b35f4229740e2
+  split         all
+  substrate     residency.repository.v1
+  profile       traaviis.ors-profile.v1
+  runner        traaviis.ors-submission.v1
+  listening     http://127.0.0.1:8791/ors/v1
+  episodes      /tmp/orsdemo/episodes
+
+  tools
+  ✓ submit_candidate
+
+  refused by this substrate
+  ✗ observe
+  ✗ reset
+  ✗ step
+
+  loopback only. ctrl-c to stop.
+```
+
+The banner is the profile. `residency.repository.v1` is one-shot, so there is
+**one tool**, and the three interactive routes exist only so they can refuse
+with the substrate's own `KERNEL_OPERATION_UNSUPPORTED` (HTTP 501) rather than a
+404 — a 404 would claim the endpoint is missing, which is a statement about this
+server; the truth is a statement about the substrate, and a client deserves to
+be told which. Nothing is advertised that cannot be done.
+
+A client opens a session and submits, and gets back the reward and the episode
+that proves it:
+
+```sh
+curl -sX POST localhost:8791/ors/v1/sessions -d '{"task_id":"task-3b4b2599…"}'
+curl -sX POST localhost:8791/ors/v1/sessions/session-2ccd00b1…/call_tool \
+     -H 'Idempotency-Key: demo-1' \
+     -d '{"tool":"submit_candidate","arguments":{ … }}'
+```
+
+```json
+{"reward": 1.0, "finished": true,
+ "metadata": {"episode_id": "episode-0a258d6e…", "status": "ok",
+              "validity": "valid", "evidence_member": "episode-0a258d6e…"}}
+```
+
+```sh
+trvs verify-episode episodes/episode-0a258d6e…    # replays it, no agent → closed
+```
+
+Four properties are what make this more than an HTTP wrapper:
+
+* **The client supplies a finding and a patch, and nothing else.**
+  `RemoteSubmissionV1` is validated by **exact key set**, not by a denylist: a
+  denylist answers "is this one of the twelve things we thought of", an exact
+  key set answers "is this the document". A `reward`, a `trace`, an
+  `episode_id`, an `exit_code` — above all a `RunResult`, which is the
+  *server's* record of what it observed — are refused by name, so a client
+  cannot narrate its own execution into a receipt.
+* **`finished: true` is a durability claim, and it is the last thing said.** It
+  is returned only after the episode has been staged, fully re-verified by
+  replay, fsynced, and atomically published. `--output` is therefore mandatory
+  and is proven writable *before the socket binds* — discovering it on the first
+  submission would mean running a candidate's verifiers and then having nowhere
+  to put the proof. A publish failure is reported as a failure, never as a
+  finish.
+* **Admission happens entirely before binding.** The package is reopened, every
+  id re-derived from the bytes on disk, the split resolved, the subject bound,
+  the verifier registry built, and the kernel constructed — *then* the socket is
+  bound and the banner printed. There is no arrangement of failures that yields
+  a listening server over a package that did not admit, and a served catalog is
+  exactly the split (an unlisted task is `KERNEL_TASK_UNKNOWN` at the kernel).
+* **An ORS episode and a local episode honestly differ.** The submission trace
+  carries its own version and the runner profile says `not_executed` with a null
+  exit code, because nothing was executed here. Claiming `exited` + `0` would
+  assert that a program ran and succeeded. So `trace-…` and `episode-…` differ
+  from the local run of the same candidate — two true statements about two
+  different things, rather than one forced collision.
+
+Idempotency is a **transport** header (`Idempotency-Key`), never a submission
+field: a retry with the same key replays the stored answer instead of rescoring,
+a *different* key after a finish is refused by name, and putting it in the
+payload would have made it a client-supplied field that changes server
+behaviour — the exact category the exact key set exists to keep empty.
+
+The default bind is loopback and leaving it takes `--allow-remote`. This server
+holds a candidate's patches and runs verifier commands; the default for a thing
+like that is not "reachable from the network", and it is a flag rather than an
+inference from the address so that exposing it is something a human typed.
+
 ### Comparing two candidates
 
 `compare` answers *"which of these two did better, and where did they differ?"*
@@ -462,7 +559,7 @@ runtime law:
 EpisodeKernelV1  list_tasks · start · observe · step · reset · finalize · close
         ↓                                           (internal, neutral, SHIPPED)
 local runner     trvs eval-one / trvs eval          →  start → run → finalize
-ORS adapter      first / primary public surface     →  trvs serve --ors  (next)
+ORS adapter      first / primary public surface     →  trvs serve --ors (SHIPPED)
 MCP adapter      compatibility (tools/resources/prompts) → trvs serve --mcp
 JSONL adapter    local automation / debugging
 ```
@@ -475,7 +572,7 @@ what an episode is, and the server has to translate. `trvs eval-one` and
 `trvs eval` are already adapters over it — `start → run_agent → finalize` —
 producing the same `episode-…` receipts, byte for byte, as before the split.
 
-Three things about it are worth knowing before writing an adapter:
+Four things about it are worth knowing before writing an adapter:
 
 * **A `session_id` is not an identity.** It is an ephemeral in-process handle,
   never a rung of the ladder below, never written into a receipt or a bundle.
@@ -484,11 +581,21 @@ Three things about it are worth knowing before writing an adapter:
   `reset` with the typed `KERNEL_OPERATION_UNSUPPORTED`. It will not tell an
   agent an action applied when nothing applied. A consequence worth stating up
   front: since a remote client cannot `observe` a Residency session at all,
-  `trvs serve --ors` over Residency can honestly expose only `start` +
-  `finalize`.
+  `trvs serve --ors` over Residency exposes exactly `start` + `finalize` and
+  one tool — see [Serve a submission endpoint](#serve-a-submission-endpoint-serve---ors-shipped).
 * **One kernel = one admitted environment**, many ephemeral sessions, one shared
   registry and engine seam, and no lock held across a session lifetime — so a
   future server is not serialized down to one episode at a time.
+* **A session finalizes exactly once, ever.** `finalize` *claims* the session
+  under the table lock (`started → finalizing`) and only then does the scoring
+  work, outside the lock; a second concurrent caller is refused by name rather
+  than allowed to re-run the plan, and `close` on a session mid-flight is
+  refused with `KERNEL_SESSION_BUSY`. This is not a theoretical hardening: a
+  short lock is not an atomic transition, and two callers who both re-ran a
+  Residency task's test suite would have received the *same receipt* — the
+  identity does not move, only the work doubles. A failed finalization is
+  **terminal** and cannot be retried; verifiers have external effects, so the
+  honest recovery is a new session, which is a new episode and says so.
 
 Keeping the kernel neutral means [Open Reward Standard](https://openreward.ai)
 or MCP protocol evolution never becomes TRVM runtime law. The ORS wire surface

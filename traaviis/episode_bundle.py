@@ -31,6 +31,7 @@ candidate (no agent process), recomputes the reward, and confirms the receipt is
 self-consistent — reporting one line per closure/artifacts/signal/reward/episode-id.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -56,6 +57,11 @@ __all__ = [
 EPISODE_BUNDLE_VERSION = "traaviis.episode-bundle.v1"
 
 _PSEUDO_SIGNALS = ("native", "oracle")
+
+# Renaming a staged bundle onto a directory another writer already published:
+# ENOTEMPTY/EEXIST on POSIX, EACCES on Windows. Not an error — the same episode
+# arrived by another route, and content-addressing makes that a no-op.
+_RACE_ERRNOS = (errno.ENOTEMPTY, errno.EEXIST, errno.EACCES)
 
 # Verification outcomes (map to CLI exit codes): a fully-closed bundle, a bundle
 # whose replay disagrees with the sealed receipt, or a bundle that cannot be
@@ -255,8 +261,9 @@ def write_episode_bundle(
 
     os.makedirs(dest_root, exist_ok=True)
     final = os.path.join(dest_root, episode_id)
-    if os.path.exists(final):
-        # Verify the existing target before reusing it — never trust the name.
+
+    def _accept_existing() -> str:
+        """Reuse an existing target only if it re-verifies as *this* episode."""
         report = _verify(final)
         if report.get("outcome") == OUTCOME_CLOSED \
                 and report.get("episode_id") == episode_id:
@@ -264,6 +271,10 @@ def write_episode_bundle(
         raise EpisodeBundleConflict(
             "target %s exists but does not re-verify as this episode (outcome=%r, "
             "episode_id=%r)" % (final, report.get("outcome"), report.get("episode_id")))
+
+    if os.path.exists(final):
+        # Verify the existing target before reusing it — never trust the name.
+        return _accept_existing()
 
     tmp = tempfile.mkdtemp(prefix=".tmp-episode-", dir=dest_root)
     try:
@@ -275,7 +286,19 @@ def write_episode_bundle(
                 "staged bundle failed verification (outcome=%r): %s"
                 % (report.get("outcome"), report.get("checks")))
         _fsync_tree(tmp)
-        os.rename(tmp, final)  # atomic within dest_root's filesystem
+        try:
+            os.rename(tmp, final)  # atomic within dest_root's filesystem
+        except OSError as exc:
+            # Another writer published this same content-addressed episode
+            # between the existence check and this rename. Renaming a directory
+            # onto a non-empty one fails rather than clobbering, so the loser of
+            # the race still holds a complete staged tree and nothing was lost:
+            # discard it and take the same idempotent-reuse path the check above
+            # would have taken, which verifies the winner before trusting it.
+            if exc.errno not in _RACE_ERRNOS or not os.path.exists(final):
+                raise
+            shutil.rmtree(tmp, ignore_errors=True)
+            return _accept_existing()
         # Best-effort crash durability: fsync the parent so the new directory entry
         # itself survives a crash right after the rename (where the platform
         # supports directory fsync).
@@ -420,18 +443,32 @@ def _reconstruct_execution_facts(stored_ef, event, proc) -> Any:
     facts. A stored ``agent_process`` / ``sandbox`` that lies about the run therefore
     differs from this reconstruction, moving the derived episode id and failing the
     receipt comparison.
+
+    A **non-executing** profile takes the mirrored branch: no process ran, so the
+    reconstruction reproduces ``termination:"not_executed"`` rather than reading a
+    null exit code as a timeout. The symmetry with
+    ``execfacts.build_execution_facts`` is the law — if the two branches ever
+    diverge, replay derives a different ``episode-…`` and the bundle fails.
     """
     if not isinstance(stored_ef, Mapping):
         return stored_ef
     ef = dict(stored_ef)
-    exit_code = event.get("exit_code")
-    ef["agent_process"] = {
-        "termination": "timed_out" if exit_code is None else "exited",
-        "exit_code": exit_code,
-        "stdout_truncated": bool(proc.get("stdout_truncated")),
-        "stderr_truncated": bool(proc.get("stderr_truncated")),
-    }
     profile = (stored_ef.get("runner") or {}).get("profile")
+    if profile in execfacts.NON_EXECUTING_PROFILES:
+        ef["agent_process"] = {
+            "termination": "not_executed",
+            "exit_code": None,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+    else:
+        exit_code = event.get("exit_code")
+        ef["agent_process"] = {
+            "termination": "timed_out" if exit_code is None else "exited",
+            "exit_code": exit_code,
+            "stdout_truncated": bool(proc.get("stdout_truncated")),
+            "stderr_truncated": bool(proc.get("stderr_truncated")),
+        }
     if profile in execfacts.RUNNER_PROFILES:
         ef["sandbox"] = dict(execfacts.RUNNER_PROFILES[profile])
     return ef
@@ -771,13 +808,24 @@ def verify_episode_bundle(
     # Reconstruct the substrate-run-failure override from the SAVED trace + manifest
     # (Req 6): a timeout (exit_code null), a disallowed exit, or a truncated capture
     # turns every run-dependent signal to error — exactly as the live run did.
-    policy = task.get("agent_run_policy") or {}
-    exit_code = event.get("exit_code")
-    timed_out = exit_code is None
-    allowed = list(policy.get("allowed_exit_codes", [0]))
-    bad_exit = (not timed_out) and exit_code not in allowed
-    output_truncated = bool(proc.get("stdout_truncated")) or bool(proc.get("stderr_truncated"))
-    if timed_out or bad_exit or output_truncated:
+    # Under a non-executing runner profile nothing was launched, so there is no
+    # substrate failure to reconstruct — the exact mirror of the live branch in
+    # evalone._finish_episode. Reading a null exit code as a timeout here would
+    # turn every replayed remote submission into an all-ERROR verification map.
+    stored_profile = ((receipt.get("execution_facts") or {}).get("runner")
+                      or {}).get("profile")
+    if stored_profile in execfacts.NON_EXECUTING_PROFILES:
+        run_error = False
+    else:
+        policy = task.get("agent_run_policy") or {}
+        exit_code = event.get("exit_code")
+        timed_out = exit_code is None
+        allowed = list(policy.get("allowed_exit_codes", [0]))
+        bad_exit = (not timed_out) and exit_code not in allowed
+        output_truncated = (bool(proc.get("stdout_truncated"))
+                            or bool(proc.get("stderr_truncated")))
+        run_error = timed_out or bad_exit or output_truncated
+    if run_error:
         for sig in replay_state:
             if sig not in _PSEUDO_SIGNALS:
                 replay_state[sig] = _reward.ERROR

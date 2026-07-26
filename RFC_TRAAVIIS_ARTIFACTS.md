@@ -260,7 +260,7 @@ applies. These are **TRVM profile bindings**, not shared kernel law.
 
 ### 4a. `EpisodeKernelV1` — the extracted kernel (FROZEN)
 
-> **Status.** **BUILT** (`traaviis/kernel.py`, battery K1–K18). Not reachable
+> **Status.** **BUILT** (`traaviis/kernel.py`, battery K1–K28). Not reachable
 > from the command line: it has no `trvs` verb of its own, by ruling — the
 > transport slice comes after the extraction, not with it.
 
@@ -306,8 +306,8 @@ than not offering the verb at all.
 
 This also bounds the transport slice honestly: because `observe` is a refusal, a
 *remote* client cannot read a Residency session at all, so `trvs serve --ors`
-over Residency v1 can expose only `start` + `finalize`. That is a consequence of
-this section, not a limitation of the server.
+over Residency v1 exposes only `start` + `finalize` (§4b). That is a consequence
+of this section, not a limitation of the server.
 
 **The local command runner is an adapter.** `evalone.evaluate` is now
 `kernel.start → runner.run_agent → kernel.finalize` and produces the pre-existing
@@ -333,6 +333,126 @@ Sessions are independent and may be open, interleaved and finalized out of
 order; **no lock is held across a session lifetime**, and no lock is held across
 admission, scoring or a subprocess. This is §5's serve process model stated at
 the layer that actually implements it.
+
+**`finalize` is linearizable (FROZEN).** The session lifecycle is exactly four
+states, and `closed` is not among them — a closed session is *forgotten*, not
+retained:
+
+```text
+started ──claim──► finalizing ──► finalized
+                              └──► finalize_failed
+
+started / finalized / finalize_failed ──close──► forgotten
+finalizing ────────────────────────────close──► KERNEL_SESSION_BUSY
+```
+
+A short lock is **not** the same as an atomic transition. Reading
+`state == started` in one statement and writing `finalized` in a later one, with
+the verifier plan in between, lets two concurrent callers both pass the check
+and both run the plan — which for a Residency task means executing a candidate's
+test suite twice. Both callers receive the *same receipt*, which is precisely
+why it hides: the identity does not move and only the work doubles.
+
+The transition is therefore a **claim**: under the table lock, look the session
+up, require `state == started`, validate the run result against `runnable`, and
+set `finalizing`. The expensive work then runs **outside** the lock, and the
+lock is re-taken only to record `finalized` + result, or `finalize_failed`.
+Exactly one caller may claim a session; every other caller is refused by name
+(`KERNEL_SESSION_STATE`, or `KERNEL_SESSION_BUSY` for a `close` attempted
+mid-flight). Refusing a `close` matters because removing the entry would not
+stop the work — it would only make the result unattributable and let a third
+caller `start` past a test suite that is still executing.
+
+The two run-result refusals (`KERNEL_RUN_RESULT_MISSING`,
+`KERNEL_RUN_RESULT_UNEXPECTED`) deliberately leave the session `started`: a
+caller error that ran nothing must not consume the session's one shot.
+
+**A failed finalization is terminal.** `finalize_failed` cannot be retried.
+Verifiers and test commands have external side effects, so a retry would be a
+second execution wearing the first one's name; the honest recovery is a **new
+session**, which is a new episode and says so.
+
+Linearizing one session must not serialize the kernel: two *different* sessions
+may be inside the scoring work at the same time, and while one is, the table
+still answers `start`, `session`, `open_sessions`, `close` and another session's
+`finalize` (K25, K26 prove this under a forced rendezvous, not by reading the
+source).
+
+### 4b. `Residency Submission ORS Profile v1` — the first transport (FROZEN)
+
+> **Status. BUILT** (`trvs serve --ors`, `traaviis/ors.py` + `ors_server.py`,
+> battery O1–O30). This is the first adapter over §4a written by anyone other
+> than the local runner, and it adds **no rung**: an ORS session id is the
+> kernel's own `session-…` (randomness, not content) and the idempotency key is a
+> transport header that never enters a canonical byte string.
+
+**One tool, because the substrate has one.** `residency.repository.v1` is
+one-shot, so the profile exposes exactly `submit_candidate`. The three
+interactive routes exist on the transport **only so they can refuse in the
+substrate's words** and relay `KERNEL_OPERATION_UNSUPPORTED` (501). A 404 would
+be a claim about this server; the truth is a claim about the substrate.
+
+**The trust boundary is an exact key set.** `RemoteSubmissionV1`
+(`traaviis.remote-submission.v1`) has exactly the fields
+`{submission_version, finding, patch}` — validated as *the* key set, not against
+a denylist. A denylist answers "is this one of the twelve things we thought of";
+an exact key set answers "is this the document". Named diagnostics for the
+forbidden fields (`reward`, `trace`, `episode_id`, `exit_code`,
+`execution_facts`, `run_result`, …) still exist, because "unknown field
+`reward`" and "unknown field `rewrad`" deserve different help. Above all a
+`runner.RunResult` is refused: it is the *server's* record of what it observed,
+and accepting one from the wire would let a client narrate its own execution
+into a receipt. The adapter constructs the `RunResult` itself.
+
+**Nothing was executed, and the receipt says so.** The declared runner profile
+is `traaviis.ors-submission.v1` — filesystem `not_applicable`, network
+`not_applicable`, termination `not_executed`, exit code `null`. The sandbox
+posture is not *weaker* here; it is an inapplicable question, and
+`not_applicable` is the only honest answer. Claiming `exited` + `0` would assert
+that a program ran and succeeded.
+
+**An ORS episode and a local episode over the same candidate honestly differ,
+and must not be forced to agree.** The submission trace carries its own version
+(`traaviis.submission-trace.v1`), so `trace-…` differs *by construction* rather
+than by accident, and the runner profile differs, so `episode-…` differs too.
+Both are true statements about two different things that happened. Forcing a
+collision would require pretending a submission was a process.
+
+**`finished: true` is a durability claim and is the last thing said.** It is
+returned only after the episode has been staged, fully re-verified by replay,
+fsynced and atomically published by `write_episode_bundle`. `--output` is
+therefore **mandatory** and proven writable *before the socket binds*: finding
+it unwritable on the first submission would mean running a candidate's verifiers
+and then having nowhere to put the proof. A publish failure is reported as a
+failure, never as a finish.
+
+**Admission precedes binding, entirely.** `open_adapter` reopens the package
+through §5a (every `task-`/`rew-`/`snap-`/`env-…` re-derived from the bytes on
+disk), resolves the split, binds the subject tree, builds one verifier registry
+and one kernel, and verifies the output root — and only then may a caller bind
+and listen. There is no arrangement of failures that produces a listening server
+over a package that did not admit. The served catalog is **restricted to the
+split at the kernel**, so an unlisted task is `KERNEL_TASK_UNKNOWN` from the
+object that owns task identity, not from a check a later endpoint might forget.
+
+**Concurrency is the §4a lifecycle, exercised.** Two submissions to one session
+race into `finalize`; exactly one takes the claim and the loser is refused by
+name. Two submissions to *different* sessions proceed in parallel, because no
+lock is held across the scoring work at either layer. Publication is
+content-addressed and therefore idempotent: two writers that produce the same
+episode do not fight, the loser of the rename verifies the winner's tree and
+reuses it.
+
+**Idempotency is a transport concern.** The key is the `Idempotency-Key` header:
+a repeat replays the stored answer instead of rescoring, and a *different* key
+after a finish is refused by name. In the payload it would have been a
+client-supplied field that changes server behaviour — the exact category the
+exact key set exists to keep empty.
+
+**The default bind is loopback**, and leaving it requires `--allow-remote` — a
+flag rather than an inference from the address, so that exposing a server which
+holds a candidate's patches and runs verifier commands is something a human
+typed.
 
 ## 5. D3 + D5 — `env-…` vs `bundle-…`, and the serve process model
 
@@ -577,11 +697,15 @@ Only after that does the deferred surface become grounded:
 - `trvs eval` — run an agent over a split, emit an `episode-…` per task, score.
   **BUILT.**
 - `EpisodeKernelV1` — the substrate-neutral episode kernel, extracted and frozen
-  *before* any transport (§4a). **BUILT** (no CLI verb, by ruling).
-- `trvs serve --ors` / `--mcp` — adapters over the Episode Kernel (§4, §4a).
-  Translation layers only: over Residency v1 they can honestly expose `start` +
-  `finalize` and must relay `KERNEL_OPERATION_UNSUPPORTED` for the rest.
-  **DEFERRED.**
+  *before* any transport (§4a), with `finalize` **linearizable** so a concurrent
+  transport cannot double-execute one session. **BUILT** (no CLI verb, by
+  ruling).
+- `trvs serve --ors` — the Residency Submission ORS Profile v1 over the Episode
+  Kernel (§4, §4a, §4b). A translation layer only: it exposes `start` +
+  `finalize` and one tool, and relays `KERNEL_OPERATION_UNSUPPORTED` for the
+  rest. **BUILT.**
+- `trvs serve --mcp` — the same kernel behind the MCP wire vocabulary
+  (tools / resources / prompts). **DEFERRED.**
 
 Every construct is implemented **with mutation-law tests first** (the laws in
 §2–§6), exactly as the WRL identity spine was built.

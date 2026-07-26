@@ -543,9 +543,18 @@ def _finish_episode(
     verification = {sig: res.state for sig, res in results.items()}
 
     # --- Substrate run failure → error (§6a, exit-code semantics) -------------
-    allowed_exit_codes = list(policy.get("allowed_exit_codes", [0]))
-    bad_exit = (not run["timed_out"]) and run["exit_code"] not in allowed_exit_codes
-    run_error = run["timed_out"] or run["output_truncated"] or bad_exit
+    # Under a non-executing profile no process was launched, so there is no exit
+    # code to compare and no output that could have been truncated: the whole
+    # notion of a *substrate* run failure is inapplicable. Evaluating it anyway
+    # would read exit_code=None, find it absent from allowed_exit_codes=[0], and
+    # force every signal to ERROR — declaring every remote submission a substrate
+    # failure. The replay in episode_bundle mirrors this branch exactly.
+    if runner_profile in execfacts.NON_EXECUTING_PROFILES:
+        run_error = False
+    else:
+        allowed_exit_codes = list(policy.get("allowed_exit_codes", [0]))
+        bad_exit = (not run["timed_out"]) and run["exit_code"] not in allowed_exit_codes
+        run_error = run["timed_out"] or run["output_truncated"] or bad_exit
     if run_error:
         # Every signal here consumes the run's outputs; a substrate-level run
         # failure is unavailability (error), not evidence of a wrong answer.

@@ -8,6 +8,13 @@
 a real template — see §3). Whole tree: **492 passed / 0 skipped / 0 failed**
 across 27 files, up from 474/26.
 
+> **Superseded in one place.** The seventh GPT-5.6 ruling accepted these
+> semantics but found that `finalize` was not *linearizable*: two concurrent
+> callers could both run the verifier plan for one session. That is closed by
+> the follow-on slice — see **`TRAAVIIS_FINALIZE_LINEARIZATION_MEMO.md`** and
+> laws K19–K28. Everything below still holds; the session lifecycle described
+> here now has four states rather than two.
+
 Ruled by the sixth GPT-5.6 ruling, second half:
 
 ```
@@ -156,21 +163,33 @@ bookkeeping, none around admission, scoring, or a subprocess.
 
 ## 4. A defect this slice created and then closed
 
-Three of the K-laws were written as **textual** source scans, and two of them
-were wrong for the same reason: a module is allowed to *name* a seam it
-deliberately does not cross. `evalone.evaluate`'s docstring says it drives
-`runner.run_agent`, and `kernel.py`'s docstring says a receipt is built by
-exactly one piece of code, `build_receipt_v1`. Both sentences are the statement
-of the boundary. A `"run_agent" not in source` test called them crossings.
+Three K-laws about *where code may appear* were first written as **textual**
+source scans, and all three were wrong for one reason: a module is allowed to
+**name** a seam it deliberately does not cross. `evalone.evaluate`'s docstring
+says it drives `runner.run_agent`; `kernel.py`'s docstring says a receipt is
+built by exactly one piece of code, `build_receipt_v1`. Those sentences *are*
+the statement of the boundary. A `"run_agent" not in source` test called them
+crossings, so K10, K12 and K18 all failed against code that was correct.
 
-Closed by parsing instead of grepping: `_run_agent_calls` walks the AST and
+Closed by parsing rather than grepping. `_run_agent_calls` walks the AST and
 reports `ast.Call` nodes only; `_identifiers` collects the names a module
-actually *references*. Both laws now say what they meant — and are strictly
-stronger, since a call spelled across two lines would have slipped past the
-line-oriented scan that "passed".
+actually references. The rewritten laws say what they meant, and are strictly
+*stronger* than the scans they replace: a call spelled across two lines, or
+reached through an alias, would have walked straight past a line-oriented
+`"run_agent(" in line` test that reported itself green.
 
-This is the same shape as the two previous slices' defects: a claim that was
-checked against a rendering of the code rather than against the code.
+Some textual checks survive on purpose, because for them the text *is* the
+subject. K4 and K18 assert that the strings `session-`, `session` and `kernel`
+appear nowhere in `identity.py`, and that `kernel` appears nowhere in `cli.py` —
+the point is precisely that the ladder module and the command surface must not
+so much as *mention* the new construct, including in a comment somebody later
+uncomments. K16 counts `with self._lock:` blocks and reads the head of each,
+which is a statement about lexical scope and has no behavioral phrasing.
+
+This is the same shape as the two previous slices' defects: a claim checked
+against a rendering of the code rather than against the code. One unrelated
+harness error was fixed alongside — K14 asked the scaffolded template for a
+`train` split, which it does not declare; the template declares `all`.
 
 ## 5. Autonomous decisions (flagged for review)
 

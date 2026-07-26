@@ -193,31 +193,44 @@
       }
       .nav-right a {
         color: var(--fg-soft);
+        white-space: nowrap;
       }
       .nav-right a:hover {
         color: var(--fg);
       }
-      /* theme segmented control */
+      /* theme swatches — each button is its own palette, so no labels needed */
       .themes {
         display: inline-flex;
-        border: 1px solid var(--border);
-        border-radius: 5px;
-        overflow: hidden;
+        gap: 7px;
+        align-items: center;
       }
       .themes button {
-        font-family: var(--mono);
-        font-size: 11px;
-        letter-spacing: 0.6px;
-        text-transform: uppercase;
-        background: none;
-        border: none;
-        color: var(--fg-faint);
-        padding: 5px 9px;
+        width: 15px;
+        height: 15px;
+        padding: 0;
+        border-radius: 50%;
+        border: 1px solid var(--border);
         cursor: pointer;
+        background: linear-gradient(
+          135deg,
+          var(--sw-bg) 50%,
+          var(--sw-accent) 50%
+        );
+      }
+      .themes button[data-theme="midnight"] {
+        --sw-bg: #0c0d0e;
+        --sw-accent: #e8a33d;
+      }
+      .themes button[data-theme="phosphor"] {
+        --sw-bg: #04100a;
+        --sw-accent: #6df0a0;
+      }
+      .themes button[data-theme="paper"] {
+        --sw-bg: #f4f1e9;
+        --sw-accent: #b97816;
       }
       .themes button[aria-pressed="true"] {
-        color: var(--bg);
-        background: var(--amber);
+        box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--amber);
       }
       @media (max-width: 900px) {
         .nav-links { display: none; }
@@ -870,10 +883,12 @@
         </ul>
         <div class="nav-right">
           <div class="themes" id="themes" role="group" aria-label="theme">
-            <button data-theme="midnight" aria-pressed="true">midnight</button>
-            <button data-theme="phosphor" aria-pressed="false">phosphor</button>
-            <button data-theme="paper" aria-pressed="false">paper</button>
+            <button data-theme="midnight" aria-pressed="true" aria-label="midnight theme" title="midnight"></button>
+            <button data-theme="phosphor" aria-pressed="false" aria-label="phosphor theme" title="phosphor"></button>
+            <button data-theme="paper" aria-pressed="false" aria-label="paper theme" title="paper"></button>
           </div>
+          <a href="https://wrl.traaviis.com">WRL &#8599;</a>
+          <a href="https://trvm.traaviis.com">TRVM &#8599;</a>
           <a href="https://github.com/c-u-l8er/TRAAVIIS">GitHub</a>
           <a href="#install">install</a>
         </div>
@@ -1121,7 +1136,12 @@
           <div class="cmd-row"><span class="nm">trvs init</span><span class="desc">scaffold an environment for a substrate template</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs pack</span><span class="desc">close a scaffold into a verified, reopened package</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs eval</span><span class="desc">run an agent over a split, score every episode</span><span class="st"><span class="badge ship">shipped</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs serve</span><span class="desc">expose an environment to an agent (ORS · MCP)</span><span class="st"><span class="badge plan">later</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs compare</span><span class="desc">rank two closed episodes answering one task</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs batch</span><span class="desc">run several candidates over one split, compare per task</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs verify-bundle</span><span class="desc">re-verify a package tree or archive against bundle-…</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs archive-bundle</span><span class="desc">emit a canonical archive + its transport checksum</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs serve --ors</span><span class="desc">serve a packed environment as a submission endpoint</span><span class="st"><span class="badge ship">shipped</span></span></div>
+          <div class="cmd-row plan"><span class="nm">trvs serve --mcp</span><span class="desc">the same kernel behind the MCP wire vocabulary</span><span class="st"><span class="badge plan">later</span></span></div>
         </div>
         <p class="soft" style="margin-top:14px;font-size:13px">
           <span class="badge ship">shipped</span> commands are real over the
@@ -1134,7 +1154,7 @@
       <!-- ENVIRONMENT CONTRACT (ORS first) -->
       <section class="stage" id="environment">
         <span class="node"></span>
-        <div class="kicker">The environment surface · planned</div>
+        <div class="kicker">The environment surface · kernel + ORS shipped</div>
         <h2>A neutral kernel. Protocols are adapters.</h2>
         <p>
           A tool list tells an agent what it <em>can</em> call. It does not define
@@ -1162,21 +1182,48 @@
 
         <div class="caps">
           <div class="cap-card">
-            <div class="ttl">primary adapter — <code>trvs serve world.trvs --ors</code></div>
+            <div class="ttl">primary adapter — <code>trvs serve pkg --ors --split all --output episodes/</code></div>
             <div class="resolved">
               The Open Reward wire surface — <code>list_tasks · session ·
-              call_tool → reward · finished</code> — over the neutral kernel. Runs
-              locally; exportable to training stacks. <span class="miss">not yet built</span>
+              call_tool → reward · finished</code> — over the neutral kernel.
+              Over Residency v1 that is exactly one tool,
+              <code>submit_candidate</code>: the client sends a finding and a
+              patch and <em>nothing else</em>, and <code>finished: true</code> is
+              returned only after the episode is staged, replayed, fsynced and
+              published. <span class="badge ship">shipped</span>
             </div>
           </div>
           <div class="cap-card">
-            <div class="ttl">compatibility adapter — <code>trvs serve world.trvs --mcp</code></div>
+            <div class="ttl">compatibility adapter — <code>trvs serve pkg --mcp</code></div>
             <div class="resolved">
               The same world as MCP tools / resources / prompts, wrapping the
               kernel — never the source of truth. <span class="miss">not yet built</span>
             </div>
           </div>
         </div>
+
+        <div class="term" style="margin-top:18px">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — serve --ors</span>
+            <span class="hint">real output</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs serve</span> pkg --ors --split all --output episodes/ --port 8791</div>
+            <div class="cast"><span class="row">  environment   env-a38ec4c04532be258a59663588b0b7e678bf7ad31…</span><span class="row">  split         all</span><span class="row">  substrate     residency.repository.v1</span><span class="row">  profile       traaviis.ors-profile.v1</span><span class="row">  runner        traaviis.ors-submission.v1</span><span class="row">  listening     http://127.0.0.1:8791/ors/v1</span><span class="row">  episodes      /tmp/orsdemo/episodes</span><span class="row"> </span><span class="row">  tools</span><span class="row">  <span class="ok">✓</span> submit_candidate</span><span class="row"> </span><span class="row">  refused by this substrate</span><span class="row">  <span class="no">✗</span> observe</span><span class="row">  <span class="no">✗</span> reset</span><span class="row">  <span class="no">✗</span> step</span><span class="row"> </span><span class="row">  loopback only. ctrl-c to stop.</span></div>
+          </div>
+        </div>
+        <p class="soft" style="margin-top:12px;font-size:12.5px">
+          Verbatim output, ids truncated to fit. The banner is the profile:
+          nothing is advertised that cannot be done, and the three interactive
+          routes exist only so they can refuse in the <em>substrate's</em> words
+          (<code>KERNEL_OPERATION_UNSUPPORTED</code>, HTTP 501) rather than as a
+          404 — a 404 would claim the endpoint is missing, which is a statement
+          about this server, not about the substrate. Everything is admitted
+          before the socket binds, so there is no arrangement of failures that
+          produces a listening server over a package that did not admit. The
+          default bind is loopback; leaving it takes <code>--allow-remote</code>.
+        </p>
 
         <p class="soft" style="margin-top:16px;font-size:13px">
           Strategy: <b>do not compete with hosting catalogs.</b> TRAAVIIS aims to
@@ -1303,9 +1350,9 @@
           <div class="lvl"><span class="nm">TRAAVIIS</span><span class="ds">the product — CLI, environment surface, evaluator, packaging</span></div>
           <div class="lvl"><span class="nm">trvs</span><span class="ds">the command-line interface</span></div>
           <div class="lvl"><span class="nm">TaskSpecV1</span><span class="ds">the substrate-neutral assignment + evaluation contract</span></div>
-          <div class="lvl"><span class="nm">WallRiderLang</span><span class="ds">the language for TRVM worlds, actors and world rules</span></div>
+          <div class="lvl"><span class="nm"><a href="https://wrl.traaviis.com">WallRiderLang &#8599;</a></span><span class="ds">the language for TRVM worlds, actors and world rules — <a href="https://wrl.traaviis.com" style="color: var(--teal)">wrl.traaviis.com</a></span></div>
           <div class="lvl"><span class="nm">Forge</span><span class="ds">the compiler, identity and artifact pipeline</span></div>
-          <div class="lvl"><span class="nm">TRVM</span><span class="ds">the deterministic execution substrate</span></div>
+          <div class="lvl"><span class="nm"><a href="https://trvm.traaviis.com">TRVM &#8599;</a></span><span class="ds">the deterministic execution substrate — <a href="https://trvm.traaviis.com" style="color: var(--teal)">trvm.traaviis.com</a></span></div>
           <div class="lvl"><span class="nm">Spinner Bench</span><span class="ds">the reference workbench and conformance laboratory</span></div>
         </div>
       </section>
@@ -1333,6 +1380,8 @@
     <footer>
       <div class="wrap">
         <div class="cols">
+          <a href="https://trvm.traaviis.com">TRVM</a>
+          <a href="https://wrl.traaviis.com">WallRiderLang</a>
           <a href="https://github.com/c-u-l8er/TRAAVIIS/issues">Issues</a>
           <a href="https://github.com/c-u-l8er/TRAAVIIS">Source</a>
           <a href="https://www.npmjs.com/package/traaviis">npm</a>
@@ -1345,8 +1394,7 @@
           world semantics: WRL defines the language, TRVM/Forge run the fold, and
           TRAAVIIS does not embed, select, or route a model — the shipped world
           commands call none. Every terminal on this page is verbatim real
-          <span class="inline">trvs</span> output except the one explicitly marked
-          as a planned surface.
+          <span class="inline">trvs</span> output, with long ids truncated to fit.
         </div>
       </div>
     </footer>

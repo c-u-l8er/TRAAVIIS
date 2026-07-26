@@ -83,11 +83,35 @@ Process model
 
 One kernel = one admitted environment. Many ephemeral sessions may be open
 against it at once, over one shared verifier registry and one shared engine seam.
-The kernel's lock is held only for the dict operations that register, look up and
-release a session — **never** across a session's lifetime, and never across a
-subprocess. A kernel that locked for the duration of a run would serialize a
-server down to one episode at a time and would deadlock the moment a session
-outlived a request.
+The kernel's lock is held only for the dict operations that register, look up,
+transition and release a session — **never** across a session's lifetime, never
+across scoring, and never across a subprocess. A kernel that locked for the
+duration of a run would serialize a server down to one episode at a time and
+would deadlock the moment a session outlived a request.
+
+But a lock that is *only* short is not enough, and the gap is worth naming
+because it is the kind that hides. Finalization is a **one-shot** transition,
+and reading `state == "started"` in one statement and writing `"finalized"` in a
+later one is not one. Two callers can both pass the check before either writes,
+and the second is not refused — it re-runs the verifier plan, which for a
+Residency task may mean executing a candidate's test suite a second time. Both
+callers get the *same receipt*, which is exactly why nobody notices: the
+identity is unmoved and the work is doubled. Sequentially it cannot happen;
+under a server accepting concurrent requests it is reachable from outside.
+
+So the lifecycle carries an explicit in-flight state and the claim is atomic::
+
+    started ──claim (under the lock)──▶ finalizing ──▶ finalized
+                                                   └──▶ finalize_failed
+
+`finalize` takes the lock only to move `started → finalizing`, does the whole
+expensive part outside it, then takes it again to record the outcome. A caller
+arriving mid-flight loses the claim and is refused by name. `close` refuses a
+`finalizing` session (`KERNEL_SESSION_BUSY`) — removing it from the table would
+not stop the work, only make it unattributable. A failed finalization is
+terminal rather than retryable, because verifiers and test commands have
+external effects and "run it again" is not a safe default; the honest recovery
+is a new session over the same task.
 """
 
 import threading
@@ -107,6 +131,12 @@ __all__ = [
     "OPERATIONS",
     "INTERACTIVE_OPERATIONS",
     "SESSION_PREFIX",
+    "SESSION_STARTED",
+    "SESSION_FINALIZING",
+    "SESSION_FINALIZED",
+    "SESSION_FINALIZE_FAILED",
+    "SESSION_STATES",
+    "SESSION_CLOSEABLE",
     "KernelError",
     "TaskEntryV1",
     "SessionV1",
@@ -134,9 +164,34 @@ INTERACTIVE_OPERATIONS = ("observe", "step", "reset")
 #: randomness and derives from nothing.
 SESSION_PREFIX = "session-"
 
-#: A session's lifecycle. `closed` sessions are forgotten, not retained.
+#: A session's lifecycle::
+#:
+#:     started → finalizing → finalized
+#:                          → finalize_failed
+#:
+#: `started`, `finalized` and `finalize_failed` may be closed; `finalizing` may
+#: not, because another caller is inside the scoring work at that moment.
+#: **Closed is not a state** — a closed session is forgotten, not retained, so
+#: "closed" is spelled by the session's absence from the table.
+#:
+#: `finalizing` is what makes finalization *linearizable*. Without it two
+#: callers can both read `started` before either writes `finalized`, and the
+#: second one is not refused — it re-runs the verifiers. The receipt would be
+#: identical (that is what makes it hard to notice), but the verifier plan may
+#: execute a test suite, so "the same answer twice" is not the same thing as
+#: "the work happened once".
 SESSION_STARTED = "started"
+SESSION_FINALIZING = "finalizing"
 SESSION_FINALIZED = "finalized"
+SESSION_FINALIZE_FAILED = "finalize_failed"
+
+#: Every state a live session can be in, in lifecycle order.
+SESSION_STATES = (SESSION_STARTED, SESSION_FINALIZING, SESSION_FINALIZED,
+                  SESSION_FINALIZE_FAILED)
+
+#: The states from which a session may be closed. `finalizing` is excluded.
+SESSION_CLOSEABLE = (SESSION_STARTED, SESSION_FINALIZED,
+                     SESSION_FINALIZE_FAILED)
 
 
 class KernelError(_substrates.AdmissionError, _admission.AdmissionError):
@@ -195,7 +250,7 @@ class SessionV1(object):
     """
 
     __slots__ = ("session_id", "task_id", "kernel_version", "substrate_profile",
-                 "state", "_plan")
+                 "state", "result", "_plan")
 
     def __init__(self, session_id, task_id, plan, *, kernel_version,
                  substrate_profile):
@@ -204,6 +259,11 @@ class SessionV1(object):
         self.kernel_version = kernel_version
         self.substrate_profile = substrate_profile
         self.state = SESSION_STARTED
+        #: The `EvaluationRunV1` this session produced, once it has one. Held so
+        #: a caller that reaches the session after a successful `finalize` reads
+        #: the result rather than being tempted to compute it a second time.
+        #: `None` in every other state.
+        self.result = None
         self._plan = plan
 
     @property
@@ -397,8 +457,58 @@ class ResidencyKernelV1(EpisodeKernelV1):
             self._sessions[session_id] = session
         return session_id
 
+    def _claim_finalize(self, session_id, run_result):
+        """Atomically take the session's one finalization, or refuse.
+
+        The whole transition — look the session up, check it is still
+        `started`, check the run result matches what the preflight decided, and
+        mark it `finalizing` — happens under the table lock, so exactly one
+        caller can ever leave this method holding the claim. Everything
+        expensive stays outside.
+
+        The two run-result refusals deliberately leave the session `started`:
+        passing the wrong argument is a caller error that ran nothing, so it
+        must not consume the session's single chance to be scored. Only
+        entering the scoring work does that.
+        """
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise KernelError(
+                    "KERNEL_SESSION_UNKNOWN",
+                    "no open session %r" % session_id,
+                    {"session_id": session_id})
+            if session.state != SESSION_STARTED:
+                raise KernelError(
+                    "KERNEL_SESSION_STATE",
+                    "session %r is %s and cannot be finalized%s"
+                    % (session_id, session.state,
+                       " while another caller is finalizing it"
+                       if session.state == SESSION_FINALIZING else " again"),
+                    {"session_id": session_id, "state": session.state})
+            if session.runnable and run_result is None:
+                raise KernelError(
+                    "KERNEL_RUN_RESULT_MISSING",
+                    "session %r is runnable; finalize needs the RunResult the "
+                    "agent produced" % session_id,
+                    {"session_id": session_id, "task_id": session.task_id})
+            if not session.runnable and run_result is not None:
+                raise KernelError(
+                    "KERNEL_RUN_RESULT_UNEXPECTED",
+                    "session %r has an invalid task configuration and was not "
+                    "runnable; no agent should have run" % session_id,
+                    {"session_id": session_id, "task_id": session.task_id})
+            session.state = SESSION_FINALIZING
+            return session
+
+    def _release_finalize(self, session, state, result=None):
+        """Record the outcome of a claimed finalization, under the lock."""
+        with self._lock:
+            session.state = state
+            session.result = result
+
     def finalize(self, session_id, run_result):
-        """Score the session and return its complete `EvaluationRunV1`.
+        """Score the session **exactly once** and return its `EvaluationRunV1`.
 
         `run_result` is the `runner.RunResult` the adapter produced, or `None`
         for a session the config preflight already ruled invalid. Supplying the
@@ -406,47 +516,61 @@ class ResidencyKernelV1(EpisodeKernelV1):
         session that was never allowed to run means the caller ran an agent it
         was told not to, and scoring it anyway would seal evidence the receipt's
         own preflight says does not exist.
-        """
-        session = self.session(session_id)
-        if session.state != SESSION_STARTED:
-            raise KernelError(
-                "KERNEL_SESSION_STATE",
-                "session %r is %s and cannot be finalized again"
-                % (session_id, session.state),
-                {"session_id": session_id, "state": session.state})
-        if session.runnable and run_result is None:
-            raise KernelError(
-                "KERNEL_RUN_RESULT_MISSING",
-                "session %r is runnable; finalize needs the RunResult the agent "
-                "produced" % session_id,
-                {"session_id": session_id, "task_id": session.task_id})
-        if not session.runnable and run_result is not None:
-            raise KernelError(
-                "KERNEL_RUN_RESULT_UNEXPECTED",
-                "session %r has an invalid task configuration and was not "
-                "runnable; no agent should have run" % session_id,
-                {"session_id": session_id, "task_id": session.task_id})
 
-        plan = session._plan
-        if not session.runnable:
-            run = _invalid_config_run(plan)
-        else:
-            run = _finish_episode(
-                plan, run_result, platform=self._platform,
-                toolchain=self._toolchain, runner_profile=self._runner_profile)
-        session.state = SESSION_FINALIZED
+        **One shot, and the shot is claimed atomically.** Scoring is not a pure
+        read: the verifier plan may execute a candidate's test suite. Two
+        callers that both observed `started` would both run it. So the state
+        transition is serialized under the table lock while the work itself —
+        verification, scoring, evidence — runs outside it, and a second caller
+        arriving mid-flight is refused with `KERNEL_SESSION_STATE` rather than
+        quietly handed a second execution whose receipt happens to match.
+
+        A finalization that *raises* is terminal: the session becomes
+        `finalize_failed` and cannot be finalized again. Verifiers and test
+        commands have external effects, so a silent retry is not generally safe
+        — the honest recovery is a new session over the same task.
+        """
+        session = self._claim_finalize(session_id, run_result)
+        try:
+            plan = session._plan
+            if not session.runnable:
+                run = _invalid_config_run(plan)
+            else:
+                run = _finish_episode(
+                    plan, run_result, platform=self._platform,
+                    toolchain=self._toolchain,
+                    runner_profile=self._runner_profile)
+        except BaseException:
+            self._release_finalize(session, SESSION_FINALIZE_FAILED)
+            raise
+        self._release_finalize(session, SESSION_FINALIZED, run)
         return run
 
     def close(self, session_id):
         """Release the session. Returns True if one was open.
 
-        Idempotent by design. Closing is releasing a process handle, not freeing
-        a resource that can be double-freed, and an adapter's `finally: close()`
-        must not be able to raise over an already-released id and mask the real
-        error on its way out.
+        Idempotent for an id that names nothing: closing is releasing a process
+        handle, not freeing a resource that can be double-freed, and an
+        adapter's `finally: close()` must not raise over an already-released id
+        and mask the real error on its way out.
+
+        The one refusal is `KERNEL_SESSION_BUSY`, for a session another caller
+        is actively finalizing. Removing it from the table there would not stop
+        the work — it would only make the result unattributable, and let a third
+        caller `start` past a verifier run still in flight.
         """
         with self._lock:
-            return self._sessions.pop(session_id, None) is not None
+            session = self._sessions.get(session_id)
+            if session is None:
+                return False
+            if session.state == SESSION_FINALIZING:
+                raise KernelError(
+                    "KERNEL_SESSION_BUSY",
+                    "session %r is being finalized and cannot be closed"
+                    % session_id,
+                    {"session_id": session_id, "state": session.state})
+            del self._sessions[session_id]
+            return True
 
 
 def local_kernel(task, content, reward_spec, *, snapshot, extra_verifiers=None,
