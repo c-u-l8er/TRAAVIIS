@@ -1053,6 +1053,17 @@ def test_c28_the_refusal_is_byte_identical_over_the_whole_shipped_corpus():
     The counted-corpus assertions matter as much as the equality. A walker that
     silently found nothing would pass this law while proving nothing at all, so
     the document count and the presence of the live receipt are asserted too.
+
+    Those guards were first written against the development tree, and demanding
+    `dist/` unconditionally made this law fail inside the release packet — which
+    is where it matters most. `tools/build_packet.py` deliberately omits `dist/`
+    (a packet does not carry older packets), so the strong form asserted the
+    shape of one checkout rather than the property under test. The property is
+    "every document that exists *here* is unchanged", so the corpus floor is now
+    what a standalone packet actually ships, and the `dist/` clause applies only
+    when this checkout has published packets to walk. In the source tree that is
+    still the full 73-document corpus; in an extracted packet it is the ~21 that
+    ship, and both are honest about what they measured.
     """
     checked = 0
     labels = []
@@ -1062,11 +1073,19 @@ def test_c28_the_refusal_is_byte_identical_over_the_whole_shipped_corpus():
         labels.append(label)
     if checked == 0:
         raise Skip("no JSON artifacts in this checkout")
-    assert checked >= 70, checked
+    assert checked >= 20, checked
     assert any(l.endswith("receipt.json") for l in labels), "no receipt walked"
-    assert any(l.startswith("dist/") and ".zip!" in l for l in labels), \
-        "the published packets were not walked; they hold ids too"
     assert any(l.startswith("examples/") for l in labels), labels[:5]
+
+    # Published packets hold ids other people already have, so when this
+    # checkout has any, walking them is not optional.
+    published = [n for n in os.listdir(os.path.join(REPO, "dist"))
+                 if n.endswith(".zip")] if os.path.isdir(
+                     os.path.join(REPO, "dist")) else []
+    if published:
+        assert any(l.startswith("dist/") and ".zip!" in l for l in labels), \
+            "this checkout ships %d packet(s) and none was walked" % len(published)
+        assert checked >= 70, checked
 
 
 def test_c29_no_id_in_the_corpus_moved():
