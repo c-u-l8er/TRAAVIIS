@@ -1237,7 +1237,47 @@ def cmd_eval(engine, args):
 
 
 def cmd_serve(engine, args):
-    """Serve one packed environment as an ORS submission endpoint.
+    """Serve one packed environment over one protocol, chosen explicitly.
+
+    Two transports, one admitted environment, and no shared state between them
+    beyond that. Each `_serve_*` below drives its own protocol adapter, and the
+    adapter drives the substrate — this command constructs neither the substrate
+    nor an episode, which is what keeps a CLI verb from becoming a third
+    transport that could drift from the two real ones.
+    """
+    if not os.path.isdir(args.package):
+        sys.stderr.write("trvs: no such package directory: %s\n" % args.package)
+        raise SystemExit(EXIT_UNAVAILABLE)
+    if args.mcp:
+        return _serve_mcp(engine, args)
+    return _serve_ors(engine, args)
+
+
+def _admission_inputs(engine, args, *, notes_to_stderr=True):
+    """The three things both transports need, resolved the same way for each.
+
+    `on_wiring_notes` is a per-transport decision rather than a shared one: over
+    HTTP a warning belongs on stderr, and over stdio stderr is the *only* place
+    it may go, because stdout carries protocol messages exclusively.
+    """
+    toolchain = (_load_json(args.toolchain, "toolchain file")
+                 if args.toolchain else None)
+    engine = engine or _engine.try_load()
+    registry = _registry(engine)
+    seen_notes = set()
+
+    def report_notes(notes):
+        for note in notes:
+            if note not in seen_notes:
+                seen_notes.add(note)
+                if notes_to_stderr:
+                    sys.stderr.write("  warn %s\n" % note)
+
+    return engine, registry, toolchain, report_notes
+
+
+def _serve_ors(engine, args):
+    """Serve the ORS submission endpoint over HTTP.
 
     Everything is admitted before the socket is bound, and the banner is printed
     only once the server is listening — so the last line of output is a true
@@ -1248,29 +1288,14 @@ def cmd_serve(engine, args):
     from . import ors_server as _ors_server
     from .substrates import AdmissionError
 
-    if not args.ors:  # pragma: no cover - argparse marks --ors required
-        sys.stderr.write("trvs: serve currently speaks only --ors\n")
-        raise SystemExit(EXIT_UNAVAILABLE)
-    if not os.path.isdir(args.package):
-        sys.stderr.write("trvs: no such package directory: %s\n" % args.package)
-        raise SystemExit(EXIT_UNAVAILABLE)
-
-    toolchain = _load_json(args.toolchain, "toolchain file") if args.toolchain else None
-    engine = engine or _engine.try_load()
-    registry = _registry(engine)
-    seen_notes = set()
-
-    def report_notes(notes):
-        for note in notes:
-            if note not in seen_notes:
-                seen_notes.add(note)
-                sys.stderr.write("  warn %s\n" % note)
+    host, port = args.host, args.port
+    engine, registry, toolchain, report_notes = _admission_inputs(engine, args)
 
     sys.stderr.write("admitting %s ...\n" % args.package)
     try:
         server = _ors_server.serve(
             args.package, args.split, args.output,
-            host=args.host, port=args.port, allow_remote=args.allow_remote,
+            host=host, port=port, allow_remote=args.allow_remote,
             engine=engine, registry=registry, platform=args.platform,
             toolchain=toolchain, on_wiring_notes=report_notes)
     except AdmissionError as ex:
@@ -1280,7 +1305,7 @@ def cmd_serve(engine, args):
         raise SystemExit(EXIT_UNAVAILABLE)
     except OSError as ex:
         sys.stderr.write("trvs: could not bind %s:%s: %s\n"
-                         % (args.host, args.port, ex))
+                         % (host, port, ex))
         raise SystemExit(EXIT_UNAVAILABLE)
 
     describe = server.adapter.describe()
@@ -1316,6 +1341,85 @@ def cmd_serve(engine, args):
         sys.stderr.write("\nstopping\n")
     finally:
         server.shutdown()
+    raise SystemExit(EXIT_OK)
+
+
+def _serve_mcp(engine, args):
+    """Serve the Model Context Protocol profile over stdio.
+
+    The banner goes to **stderr**, every line of it. Over HTTP the banner is
+    output; here stdout is the wire, and a single decorative line on it is not a
+    cosmetic problem — it is a malformed message from a server the client
+    otherwise trusts. The spec permits any UTF-8 on stderr and permits nothing
+    but protocol messages on stdout, so the split is not a preference.
+
+    Everything is admitted before the first message is read, which matters more
+    here than over HTTP: the client launched this process and will read "it
+    started" as "it is serving". A package that does not admit exits non-zero
+    having answered nothing.
+    """
+    from . import mcp_server as _mcp_server
+    from .substrates import AdmissionError
+
+    # Flags that belong to the other transport are refused, not ignored. Silently
+    # accepting `--port 9000` on a server with no socket is how somebody comes to
+    # believe there is something listening on 9000.
+    explicit = getattr(args, "explicit_options", None) or set()
+    misplaced = [name for name, given in (
+        ("--host", "host" in explicit),
+        ("--port", "port" in explicit),
+        ("--allow-remote", bool(args.allow_remote)),
+    ) if given]
+    if misplaced:
+        sys.stderr.write(
+            "trvs: %s %s meaningless with --mcp: stdio has no bind address and "
+            "no network surface at all\n"
+            % (", ".join(misplaced), "are" if len(misplaced) > 1 else "is"))
+        raise SystemExit(EXIT_UNAVAILABLE)
+
+    engine, registry, toolchain, report_notes = _admission_inputs(engine, args)
+
+    sys.stderr.write("admitting %s ...\n" % args.package)
+    try:
+        server = _mcp_server.serve_stdio(
+            args.package, args.split, args.output,
+            engine=engine, registry=registry, platform=args.platform,
+            toolchain=toolchain, on_wiring_notes=report_notes,
+            log=sys.stderr.write)
+    except AdmissionError as ex:
+        sys.stderr.write("trvs: %s\n" % ex)
+        for key, value in sorted((getattr(ex, "detail", None) or {}).items()):
+            sys.stderr.write("      %s: %s\n" % (key, value))
+        raise SystemExit(EXIT_UNAVAILABLE)
+
+    describe = server.adapter.describe()
+    profile = describe["com.traaviis/profile"]
+    out = sys.stderr
+    out.write(_field("environment", profile["env_id"]) + "\n")
+    out.write(_field("split", args.split) + "\n")
+    out.write(_field("substrate", profile["substrate_profile"]) + "\n")
+    out.write(_field("profile", profile["mcp_profile_version"]) + "\n")
+    out.write(_field("runner", profile["runner_profile"]) + "\n")
+    out.write(_field("protocol", ", ".join(describe["supportedVersions"])) + "\n")
+    out.write(_field("transport", "stdio (no network surface)") + "\n")
+    out.write(_field("episodes", os.path.abspath(args.output)) + "\n")
+    out.write("\n  tools\n")
+    for tool in server.adapter.list_tools():
+        out.write("  %s %s\n" % (CHECK, tool["name"]))
+    unsupported = [op for op, ok in sorted(profile["operations"].items())
+                   if not ok]
+    if unsupported:
+        out.write("\n  refused by this substrate\n")
+        for op in unsupported:
+            out.write("  %s %s\n" % (CROSS, op))
+    out.write("\n  reading stdin. close it to stop.\n")
+    out.flush()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        sys.stderr.write("\nstopping\n")
+        server.drain()
     raise SystemExit(EXIT_OK)
 
 
@@ -1418,6 +1522,29 @@ def cmd_batch(engine, args):
 
 
 # ------------------------------------------------------------------ parser
+class _Explicit(argparse.Action):
+    """Store a value, and record that it was actually supplied.
+
+    Needed because `serve` now has two transports with different surfaces, and
+    exactly one question cannot be answered from a parsed namespace alone:
+    *did the operator type this, or is it the default?* `--port 8080` and no
+    `--port` at all produce an identical namespace.
+
+    The alternative — defaulting the option to `None` and resolving it inside
+    the command — answers that question by destroying a more important one. The
+    ORS bind default is loopback **by ruling**, and "what does this bind to by
+    default?" has to be answerable by reading the parser, because that is where
+    anyone looks and what `--help` prints. So the default stays on the action and
+    the explicitness is recorded beside it.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        given = set(getattr(namespace, "explicit_options", None) or ())
+        given.add(self.dest)
+        setattr(namespace, "explicit_options", given)
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="trvs",
@@ -1586,22 +1713,38 @@ def build_parser():
         help="serve a packed environment as a remote submission endpoint")
     srv.add_argument("package", metavar="PKG",
                      help="a packed environment directory (contains environment.json)")
-    srv.add_argument("--ors", action="store_true", required=True,
-                     help="serve the Residency Submission ORS Profile v1; the "
-                          "only protocol this verb speaks")
+    # Exactly one protocol, chosen explicitly. A default would make "which
+    # protocol am I speaking?" something a reader infers from the absence of a
+    # flag, and the two have different trust surfaces: --ors binds a socket,
+    # --mcp does not.
+    proto = srv.add_mutually_exclusive_group(required=True)
+    proto.add_argument("--ors", action="store_true",
+                       help="serve the Residency Submission ORS Profile v1 over "
+                            "HTTP")
+    proto.add_argument("--mcp", action="store_true",
+                       help="serve the Residency MCP Profile v1 over stdio "
+                            "(Model Context Protocol revision 2026-07-28); no "
+                            "network surface, so --host/--port/--allow-remote "
+                            "do not apply")
     srv.add_argument("--split", required=True, metavar="NAME",
                      help="which split is served (e.g. dev / test)")
     srv.add_argument("--output", required=True, metavar="DIR",
                      help="where every accepted submission's episode bundle is "
                           "published; required, because `finished` is a claim "
                           "that the evidence reached disk")
-    srv.add_argument("--host", default="127.0.0.1",
-                     help="bind address (default 127.0.0.1; anything else needs "
-                          "--allow-remote)")
-    srv.add_argument("--port", type=int, default=8080,
-                     help="bind port (0 picks a free one and prints it)")
+    # `--host` keeps its loopback default **on the action**, not one layer down
+    # in the command. Moving it into `_serve_ors` would have left the property
+    # true and made it unreadable: "what does this bind to by default?" must be
+    # answerable from the parser, because that is where anyone looks. `_Explicit`
+    # is what lets `--mcp` still tell "the user passed --host" apart from "the
+    # user did not" without touching the default.
+    srv.add_argument("--host", default="127.0.0.1", action=_Explicit,
+                     help="[--ors] bind address (default 127.0.0.1; anything "
+                          "else needs --allow-remote)")
+    srv.add_argument("--port", type=int, default=8080, action=_Explicit,
+                     help="[--ors] bind port (0 picks a free one and prints it)")
     srv.add_argument("--allow-remote", action="store_true",
-                     help="permit a non-loopback bind address")
+                     help="[--ors] permit a non-loopback bind address")
     srv.add_argument("--platform", default="unknown",
                      help="platform label sealed into execution_facts")
     srv.add_argument("--toolchain", metavar="FILE",

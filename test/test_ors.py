@@ -169,8 +169,15 @@ def _task(required=("citations", "patch", "tests", "identity")):
             "policy_version": "traaviis.agent-run-policy.v1",
             "command_mode": "argv", "shell": False, "network": "unrestricted",
             "timeout_seconds": 30, "max_output_bytes": 4194304,
-            "environment": {"TRAAVIIS_STUB_MODE": "ok",
-                            "PATH": os.environ.get("PATH", "")},
+            # No ambient `PATH` here. `runner._seal_env` (R1) discards any
+            # caller-supplied `PATH`, so it never reaches the agent -- but
+            # `agent_run_policy` is inside `task-`, and `task_id` is an episode
+            # identity key, so reading the host's `PATH` moved the id while
+            # changing nothing the id describes. That is the K27 defect, and on
+            # a box whose `PATH` carries per-session directories it made the
+            # same tree mint a different `episode-` in every session. Declare
+            # the environment the runner actually enforces.
+            "environment": {"TRAAVIIS_STUB_MODE": "ok"},
             "writable_paths": ["."],
             "result_path": "result.json", "patch_path": "candidate.patch",
         },
@@ -1020,7 +1027,17 @@ def test_o25_the_episode_output_is_mandatory_and_proven_writable_at_startup():
     parser = cli.build_parser()
     serve = parser._subparsers._group_actions[0].choices["serve"]
     required = {a.dest for a in serve._actions if getattr(a, "required", False)}
-    assert {"ors", "split", "output"} <= required, required
+    assert {"split", "output"} <= required, required
+    # `--ors` was an individually required flag while ORS was the only protocol
+    # this verb spoke; `trvs serve --mcp` shipped, so that clause expired -- the
+    # same way K18's "no CLI verb reaches the kernel" expired when ORS shipped.
+    # What must not expire is that the operator *chooses*. The protocol flags
+    # are a mutually exclusive group that is itself required, so exactly one of
+    # --ors / --mcp must be given and neither is defaulted -- which is a
+    # stronger statement than the one this clause used to make.
+    groups = [g for g in serve._mutually_exclusive_groups if g.required]
+    assert len(groups) == 1, "the protocol choice must be a required group"
+    assert {a.dest for a in groups[0]._group_actions} == {"ors", "mcp"}
 
 
 def test_o26_the_default_bind_is_loopback_and_leaving_it_is_an_explicit_act():
