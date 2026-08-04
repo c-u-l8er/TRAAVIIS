@@ -43,7 +43,15 @@ from traaviis.forge_adapter import (  # noqa: E402
     ForgeIdentityAdapterV1, LowerResult,
 )
 from traaviis.substrate_verifiers import (  # noqa: E402
-    make_identity_verifier, tests_verifier,
+    make_identity_verifier,
+    # Bound under a leading underscore on purpose: pytest's default
+    # `python_functions = test*` glob matches the name `tests_verifier`, so
+    # importing it bare makes the collector treat a verifier as a test case and
+    # error on its signature. Every other test module reaches it as
+    # `SV.tests_verifier`, which is never collected. The verifier itself keeps
+    # its name -- it is in `substrate_verifiers.__all__`, is wired by
+    # `traaviis.wiring`, and is referenced by six other modules.
+    tests_verifier as _tests_verifier,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -264,7 +272,7 @@ def test_forge_unavailable_is_invalid_config():
     receipt = evalone.eval_one(
         task, content, AGENT, reward_spec,
         snapshot=snapshot,
-        extra_verifiers={"tests": tests_verifier},  # identity deliberately absent
+        extra_verifiers={"tests": _tests_verifier},  # identity deliberately absent
         platform="linux-x86_64",
     )
     assert receipt["status"] == R.STATUS_INVALID, receipt["status"]
@@ -296,7 +304,7 @@ def test_different_forge_version_different_episode_id():
             task, content, AGENT, reward_spec,
             snapshot=snapshot,
             extra_verifiers={
-                "tests": tests_verifier,
+                "tests": _tests_verifier,
                 "identity": make_identity_verifier(_PinnedAdapter(ver)),
             },
             platform="linux-x86_64",

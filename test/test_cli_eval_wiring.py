@@ -60,10 +60,18 @@ def _packed(tmp):
     return out
 
 
+# Ceiling on a single `trvs eval` invocation. Not here to bound slowness -- it is
+# generous -- but so that a command which never returns is a failed test rather
+# than a battery that waits forever behind it. Without a timeout `subprocess.run`
+# has no upper bound at all, and neither does the runner above it.
+CLI_TIMEOUT = float(os.environ.get("TRVS_TEST_CLI_TIMEOUT", "300"))
+
+
 def _cli_eval(package, *extra):
     argv = [sys.executable, "-m", "traaviis.cli", "eval", package,
             "--split", "all", "--json", *extra, "--", *AGENT, "ok"]
-    p = subprocess.run(argv, cwd=REPO, capture_output=True, text=True)
+    p = subprocess.run(argv, cwd=REPO, capture_output=True, text=True,
+                       timeout=CLI_TIMEOUT)
     return p
 
 
@@ -253,7 +261,8 @@ def test_a10_sealed_verifier_versions_agree_with_the_attested_context():
         argv = [sys.executable, "-m", "traaviis.cli", "eval", package,
                 "--split", "all", "--json", "--output", keep,
                 "--", *AGENT, "ok"]
-        p = subprocess.run(argv, cwd=REPO, capture_output=True, text=True)
+        p = subprocess.run(argv, cwd=REPO, capture_output=True, text=True,
+                           timeout=CLI_TIMEOUT)
         report = json.loads(p.stdout)
         ctx = report["runtime_context"]
 

@@ -388,6 +388,15 @@ def _main():
         except AssertionError as exc:
             failures.append((name, exc))
             print(f"FAIL  {name}: {exc}")
+        except Exception as exc:  # noqa: BLE001 -- deliberate
+            # Not an assertion: a KeyError on a receipt field the CLI stopped
+            # emitting, an OSError in the bundle fixtures. Uncaught, one of these
+            # kills the process and every test after it goes unrun -- so the
+            # battery's count for this file comes back short rather than red,
+            # which is the harder failure to notice. Record it and continue.
+            # BaseException (KeyboardInterrupt, SystemExit) still propagates.
+            failures.append((name, exc))
+            print(f"FAIL  {name}: {type(exc).__name__}: {exc}")
     print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
     return 1 if failures else 0
 

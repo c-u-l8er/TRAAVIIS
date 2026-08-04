@@ -67,6 +67,31 @@ class Skip(Exception):
     pass
 
 
+def _repo_module(relpath):
+    """Import a module from *this* repository, by path.
+
+    `tools/` has no `__init__.py`, so it is an implicit namespace package and
+    `import tools.X` resolves against every `tools/` directory on `sys.path`, in
+    path order. `traaviis.engine` puts the Forge checkout on the *front* of
+    `sys.path` when it loads an engine, and Forge ships its own
+    `tools/build_packet.py`. So once any engine-using law in this file has run,
+    a plain `import tools.build_packet` silently binds to Forge's builder --
+    which has no `MANIFEST_VERSION` -- instead of ours. The law read as broken
+    when run with the file and passed when run alone.
+
+    Loading by path pins each law to the file it is actually about: the same
+    `REPO`-relative path whose source it goes on to read.
+    """
+    import importlib.util
+
+    path = os.path.join(REPO, relpath)
+    name = "_traaviis_repo_" + os.path.basename(relpath)[:-len(".py")]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # --------------------------------------------------------------- fixtures
 _FIXTURE = {}
 
@@ -749,7 +774,7 @@ def test_d26_the_packet_sha256_is_never_interpreted_as_a_bundle():
     """`accept_packet.py` gates a *source release* for a reviewer; a bundle is
     a domain artifact a TRAAVIIS consumer runs. They may share canonical-tree
     utilities, but they must keep different schemas and different claims."""
-    import tools.build_packet as BP  # noqa: E402
+    BP = _repo_module("tools/build_packet.py")
 
     assert BP.MANIFEST_VERSION != BD.BUNDLE_VERSION
     assert BP.MANIFEST_NAME != BD.MANIFEST_NAME
