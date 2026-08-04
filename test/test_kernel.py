@@ -178,8 +178,19 @@ def _task(required=("citations", "patch", "tests", "identity"), mode="ok"):
             "policy_version": "traaviis.agent-run-policy.v1",
             "command_mode": "argv", "shell": False, "network": "unrestricted",
             "timeout_seconds": 30, "max_output_bytes": 4194304,
-            "environment": {"TRAAVIIS_STUB_MODE": mode,
-                            "PATH": os.environ.get("PATH", "")},
+            # NO ambient `PATH` here, deliberately. `runner._seal_env` (R1)
+            # *discards* any caller-supplied `PATH` -- the toolchain resolver
+            # owns it -- so a `PATH` declared here never reached the child: the
+            # sealed child environment is `{"TRAAVIIS_STUB_MODE": mode}` either
+            # way. But `agent_run_policy` is inside `task-`, and `task-` is
+            # inside `episode-`, so an ambient `PATH` moved the episode identity
+            # while changing nothing the identity is meant to describe. On this
+            # host `PATH` carries a per-session directory
+            # (`local-agent-mode-sessions/<uuid>/<uuid>/...`), which is why the
+            # same tree minted a different `episode-` in each session. Writing
+            # the value the runner actually enforces is what makes the pinned id
+            # below a constant rather than a transcript of one shell.
+            "environment": {"TRAAVIIS_STUB_MODE": mode},
             "writable_paths": ["."],
             "result_path": "result.json", "patch_path": "candidate.patch",
         },
@@ -200,12 +211,41 @@ def _pass_identity(context):
 _pass_identity.version = "residency.identity.v1"
 
 ALL_PASS = {"tests": _pass, "identity": _pass_identity}
-AGENT = [sys.executable, STUB]
+
+
+def _stable_interpreter():
+    """`sys.executable` reached through a fixture-named symlink.
+
+    The canonical trace records `os.path.basename` of an absolute argv token
+    (`runner._normalize_command`, R4) so that a host's *directory* layout cannot
+    move `trace-`. The basename itself still enters it, and the basename of the
+    running interpreter is a property of the host, not of this fixture: the same
+    Python is `python3` here, `python3.11` under a distro alias and `python` in a
+    virtualenv. Measured, not assumed -- launching this battery's own fixture as
+    `python3.11` instead of `python3` moves the receipt to
+    `episode-c8b6cce7...`. Naming the interpreter ourselves is what lets the
+    pinned id below be a statement about the fixture instead of a statement
+    about whoever ran it. Falls back to the real path if symlinks are
+    unavailable, so a platform without them degrades to the old behavior rather
+    than failing to import.
+    """
+    link = os.path.join(_tmp(), "toolchain", "python3")
+    try:
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if not os.path.exists(link):
+            os.symlink(os.path.realpath(sys.executable), link)
+        return link
+    except (OSError, NotImplementedError, AttributeError):
+        return sys.executable
+
+
+INTERPRETER = _stable_interpreter()
+AGENT = [INTERPRETER, STUB]
 #: The agent used against a *packed* environment (K14, K27). The stub above
 #: answers the injected one-task kernel; this one produces a real patch against
 #: the `residency-repair` template, and is the same fixture `test_eval_split`
 #: drives, so a divergence here would be a divergence from the shipped path.
-RESIDENCY_AGENT = [sys.executable,
+RESIDENCY_AGENT = [INTERPRETER,
                    os.path.join(HERE, "fixtures", "residency_agent.py")]
 
 
@@ -1222,14 +1262,40 @@ def test_k26_no_lock_is_held_while_verifiers_execute():
     k.close(sid)
 
 
-#: The `episode-…` this fixture minted *before* the linearization patch,
-#: recomputed from the shipped `TRAAVIIS_EPISODE_KERNEL_CLOSURE` packet. Every
-#: input to it is fixture-determined -- the declared toolchain, the platform
-#: string, the stub agent's deterministic output, the injected verifier versions
-#: -- so it is a host-independent constant, and pinning it is the one check that
-#: a *later* slice cannot satisfy by moving both sides of a comparison.
+#: The `episode-…` this fixture mints. Every input to it is fixture-determined
+#: -- the declared toolchain, the platform string, the stub agent's
+#: deterministic output, the injected verifier versions -- so it is a
+#: host-independent constant, and pinning it is the one check that a *later*
+#: slice cannot satisfy by moving both sides of a comparison.
+#:
+#: That sentence used to be false, and the constant used to be
+#: `episode-7265e90a5680080bc0d5f995681b96360a214652f82771d52ff70336fa9e26c5`.
+#: The fixture wrote the *ambient* `PATH` into `agent_run_policy.environment`,
+#: and `agent_run_policy` is inside `task-`, which is inside `episode-`. So the
+#: pinned id was a transcript of one shell's `PATH` rather than a property of
+#: this battery, and on this host that `PATH` carries a per-session directory --
+#: the id was reproducible *within* a session and different in the next one. It
+#: read `episode-0fe5c764…` on 2026-07-29 and `episode-6a98c47c…` on 2026-08-04
+#: from an unchanged tree, which looks exactly like a later slice moving the
+#: identity and was not one.
+#:
+#: The distinction matters because the failure had an innocent-looking reading
+#: -- "a later slice moved it, re-freeze the constant" -- and re-freezing would
+#: have re-pinned the next session's `PATH` and hidden the leak for one more
+#: session. It was refuted by rebuilding `00ac675` and `983e8b5` out of place
+#: and evaluating this fixture against each: under one fixed `PATH` all three
+#: trees mint the same id, and the whole canonical episode document *minus*
+#: `task_id` is byte-identical with and without the ambient `PATH`. The ORS
+#: slice's `NON_EXECUTING_PROFILES` addition moved nothing, exactly as the note
+#: in `execfacts.RUNNER_PROFILES` promised.
+#:
+#: Two host inputs were closed to get here, both of which changed the identity
+#: without changing anything the identity describes: the ambient `PATH` (which
+#: `runner._seal_env` discards under R1, so it never reached the agent) and the
+#: interpreter's basename (which `runner._normalize_command` keeps under R4, so
+#: `python3.11` and `python3` disagreed). See `_task` and `_stable_interpreter`.
 PRE_LINEARIZATION_EPISODE_ID = (
-    "episode-7265e90a5680080bc0d5f995681b96360a214652f82771d52ff70336fa9e26c5")
+    "episode-3b4d75999bd6996bb17bca0d7accdce9e4b46675b9e8efdfe66df50347eae7e9")
 
 
 def test_k27_local_receipts_are_unmoved_by_the_linearization():
@@ -1239,8 +1305,26 @@ def test_k27_local_receipts_are_unmoved_by_the_linearization():
     the pre-patch kernel minted: the adapter, the receipt-only wrapper, a
     hand-driven session, and -- when an engine is present -- a real `eval_split`
     over a packed environment, run twice.
+
+    The pin is only worth anything if the id is a property of the fixture, so
+    that is asserted rather than assumed: the fixture is rebuilt under a
+    deliberately absurd ambient `PATH` and must produce the same `task-`. A
+    literal id and an ambient input cannot both be right, and for three commits
+    they were not -- see `PRE_LINEARIZATION_EPISODE_ID`. Perturbing the ambient
+    value is the only form of this check that a fixture reading the environment
+    cannot pass.
     """
     task = _task()
+    saved = os.environ.get("PATH")
+    os.environ["PATH"] = "/nonexistent/probe-path-that-must-not-reach-an-id"
+    try:
+        assert I.task_id(_task()) == I.task_id(task), \
+            "the ambient environment reached the task identity"
+    finally:
+        if saved is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = saved
     common = dict(snapshot=_snapshot(), extra_verifiers=ALL_PASS,
                   platform="linux-x86_64", toolchain=TOOLCHAIN)
 

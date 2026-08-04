@@ -13,6 +13,7 @@ Runs with pytest, or standalone: `python3 test/test_evalone.py`.
 import hashlib
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,6 +27,46 @@ from traaviis.vcontext import VerifierResult  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STUB = os.path.join(HERE, "fixtures", "stub_agent.py")
+
+_TMP = {}
+
+
+def _tmp():
+    if "d" not in _TMP:
+        _TMP["d"] = tempfile.mkdtemp(prefix="trvs-evalone-law-")
+    return _TMP["d"]
+
+
+def _stable_interpreter():
+    """`sys.executable` reached through a fixture-named symlink.
+
+    The canonical trace records `os.path.basename` of an absolute argv token
+    (`runner._normalize_command`, R4) so a host's *directory* layout cannot move
+    `trace-`. The basename itself still enters it, and `trace_id` is one of
+    `identity._EPISODE_IDENTITY_KEYS`, so the basename of the running
+    interpreter reaches `episode-`. That basename is a property of the host, not
+    of this fixture: the same Python is `python3` here, `python3.11` under a
+    distro alias and `python` in a virtualenv. Naming the interpreter ourselves
+    is what would let an `episode-` pinned in this file be a statement about the
+    fixture instead of a statement about whoever ran it. Falls back to the real
+    path if symlinks are unavailable, so a platform without them degrades to the
+    old behavior rather than failing to import.
+
+    Copied deliberately from `test_kernel._stable_interpreter` -- the same
+    defect, closed the same way, so the two batteries do not drift apart.
+    """
+    link = os.path.join(_tmp(), "toolchain", "python3")
+    try:
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if not os.path.exists(link):
+            os.symlink(os.path.realpath(sys.executable), link)
+        return link
+    except (OSError, NotImplementedError, AttributeError):
+        return sys.executable
+
+
+INTERPRETER = _stable_interpreter()
+AGENT = [INTERPRETER, STUB]
 
 # The frozen subject the stub was written against.
 CONTENT = {"spec/one.md": "alpha\nbeta\n", "src/mod.py": "return 1\n"}
@@ -83,8 +124,23 @@ def _task(required):
             "policy_version": "traaviis.agent-run-policy.v1",
             "command_mode": "argv", "shell": False, "network": "unrestricted",
             "timeout_seconds": 30, "max_output_bytes": 4194304,
-            "environment": {"TRAAVIIS_STUB_MODE": "ok",
-                            "PATH": os.environ.get("PATH", "")},
+            # NO ambient `PATH` here, deliberately. `runner._seal_env` (R1)
+            # *discards* any caller-supplied `PATH` -- the toolchain resolver
+            # owns it -- so a `PATH` declared here never reached the agent: the
+            # sealed child environment is `{"TRAAVIIS_STUB_MODE": ...}` either
+            # way. But `agent_run_policy` is inside `task-`
+            # (`identity.canonicalize_task`), and `task_id` is inside
+            # `episode-`, so an ambient `PATH` moved this fixture's identity
+            # while changing nothing the identity is meant to describe.
+            # Measured, not assumed: with the host `PATH` this fixture minted
+            # `task-89e2eae7…`, and under a bogus one `task-31b7158a…`. On this
+            # host `PATH` carries a per-session directory, so the same tree
+            # minted a different `episode-` in every session -- which is exactly
+            # the multi-session investigation `test_kernel`'s
+            # `PRE_LINEARIZATION_EPISODE_ID` note records. No id is pinned in
+            # this file today; the leak is closed so that pinning one later is
+            # safe. See `test_ambient_environment_does_not_reach_identity`.
+            "environment": {"TRAAVIIS_STUB_MODE": "ok"},
             "writable_paths": ["."],
             "result_path": "result.json", "patch_path": "candidate.patch",
         },
@@ -115,7 +171,7 @@ def _eval(mode, required, extra=ALL_PASS, env=None):
     else:
         task["agent_run_policy"]["environment"]["TRAAVIIS_STUB_MODE"] = mode
     return E.eval_one(
-        task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+        task, CONTENT, AGENT, REWARD_SPEC,
         snapshot=_snapshot(),
         extra_verifiers=extra, platform="linux-x86_64",
         toolchain=TOOLCHAIN,
@@ -142,13 +198,14 @@ def test_bad_patch_fails_patch_and_hits_floor():
 
 
 def test_policy_violation_is_invalid_episode():
-    r = _eval("ok", ["citations", "patch"], env={
-        "TRAAVIIS_STUB_MODE": "ok", "PATH": os.environ.get("PATH", "")})
+    # No ambient `PATH` in this env either -- see the note in `_task`; the
+    # runner strips a caller `PATH` (R1) but `task-` hashes it anyway.
+    r = _eval("ok", ["citations", "patch"], env={"TRAAVIIS_STUB_MODE": "ok"})
     # constrain writable to src/ so root outputs violate
     # (re-run with a tighter policy)
     task = _task(["citations", "patch"])
     task["agent_run_policy"]["writable_paths"] = ["src/"]
-    r = E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+    r = E.eval_one(task, CONTENT, AGENT, REWARD_SPEC,
                    snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS, platform="linux-x86_64")
     assert r["status"] == R.STATUS_INVALID
@@ -181,10 +238,66 @@ def test_episode_identity_stable_across_reruns():
     assert a["episode_id"] == b["episode_id"]
 
 
+def test_ambient_environment_does_not_reach_identity():
+    """This battery's identities are properties of the fixture, not of the host.
+
+    `test_episode_identity_stable_across_reruns` above cannot see this: both of
+    its reruns read the *same* ambient environment, so a fixture that copies the
+    host into the task agrees with itself and passes. The failure only appears
+    across two hosts -- or, on a box whose `PATH` carries a per-session
+    directory, across two sessions -- which is where it cost `test_kernel`'s K27
+    a multi-session investigation before the leak was found rather than the
+    "later slice moved the id" it looked like.
+
+    So perturb the input instead of repeating the run. Two host inputs are
+    closed here and both are checked:
+
+    - the ambient `PATH`, which `runner._seal_env` *discards* under R1 (so it
+      never reached the agent) while `canonicalize_task` hashed it;
+    - the interpreter basename, which `runner._normalize_command` *keeps* under
+      R4, so `python3` and `python3.11` disagree on `trace-` and therefore on
+      `episode-`.
+
+    Both directions matter: R1 and R2 are right, and it was the fixtures that
+    contradicted them. This is the check a fixture reading the environment
+    cannot pass, and it is what makes pinning a literal `episode-` in this file
+    safe later.
+    """
+    required = ["citations", "patch", "tests", "identity"]
+    before_task = I.task_id(_task(required))
+    before_episode = _eval("ok", required)["episode_id"]
+
+    saved = os.environ.get("PATH")
+    os.environ["PATH"] = ("/nonexistent/local-agent-mode-sessions"
+                          "/00000000-1111-2222-3333-444444444444/probe")
+    try:
+        assert I.task_id(_task(required)) == before_task, \
+            "the ambient environment reached the task identity"
+        assert _eval("ok", required)["episode_id"] == before_episode, \
+            "the ambient environment reached the episode identity"
+    finally:
+        if saved is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = saved
+
+    # And the agent's argv basename -- the half a `PATH` perturbation cannot
+    # reach -- is named by this fixture rather than by whoever launched it.
+    # This cannot be written as an invariance: R4 *keeps* the basename on
+    # purpose, so running the same Python as `python3.11` genuinely must move
+    # `trace-`. The law is that the fixture, not the host, picks which name that
+    # is. When `_stable_interpreter` took its documented symlink-less fallback
+    # there is no fixture-chosen name to check, and that platform is the one
+    # case this file cannot close.
+    if INTERPRETER != sys.executable:
+        assert os.path.basename(INTERPRETER) == "python3", \
+            "the agent argv basename is host-determined, so episode- is too"
+
+
 def test_toolchain_change_moves_episode():
     a = _eval("ok", ["citations", "patch", "tests", "identity"])
     task = _task(["citations", "patch", "tests", "identity"])
-    b = E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+    b = E.eval_one(task, CONTENT, AGENT, REWARD_SPEC,
                    snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS, platform="linux-x86_64",
                    toolchain={"profile": "cpython-3.11",
@@ -213,13 +326,22 @@ def test_malformed_json_result_never_crashes():
 def test_patched_tests_regression_hits_040_cap():
     # Wire the REAL tests verifier: baseline passes the check, the ok patch changes
     # "return 1" -> "return 2" so the patched tree regresses -> tests fail -> 0.40.
+    # Deliberately the real `sys.executable`, NOT `INTERPRETER`. A `test_plan`
+    # argv is hashed into `task-` verbatim -- `canonicalize_task` drops only
+    # `task_id`, and nothing basenames it the way `runner._normalize_command`
+    # (R4) basenames the *agent* argv. `INTERPRETER` lives under a per-run
+    # `mkdtemp`, so routing this through it would make `task-` differ on every
+    # invocation: strictly worse than a path that is at least fixed per host.
+    # This law pins a reward, not an id, so neither is load-bearing here -- but
+    # a `test_plan` is the one place in this file a host-stable `task-` would
+    # need a fixed-location toolchain rather than the symlink above.
     check = [sys.executable, "-c",
              "import sys;sys.exit(0 if open('src/mod.py').read().strip()=="
              "'return 1' else 1)"]
     task = _task(["citations", "patch", "tests", "identity"])
     task["test_plan"] = {"commands": [{"argv": check, "cwd": "."}]}
     r = E.eval_one(
-        task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+        task, CONTENT, AGENT, REWARD_SPEC,
         snapshot=_snapshot(),
         extra_verifiers={"tests": SV.tests_verifier, "identity": _pass_identity},
         platform="linux-x86_64", toolchain=TOOLCHAIN,
@@ -233,7 +355,7 @@ def test_false_declared_snapshot_id_is_rejected():
     snap = _snapshot()
     snap["snapshot_id"] = "snap-fixture"  # a lie
     try:
-        E.eval_one(_task(["patch"]), CONTENT, [sys.executable, STUB], REWARD_SPEC,
+        E.eval_one(_task(["patch"]), CONTENT, AGENT, REWARD_SPEC,
                    snapshot=snap,
                    extra_verifiers=ALL_PASS)
     except ADM.AdmissionError:
@@ -244,7 +366,7 @@ def test_false_declared_snapshot_id_is_rejected():
 def test_content_snapshot_mismatch_is_rejected():
     tampered = dict(CONTENT, **{"src/mod.py": "return 42\n"})
     try:
-        E.eval_one(_task(["patch"]), tampered, [sys.executable, STUB], REWARD_SPEC,
+        E.eval_one(_task(["patch"]), tampered, AGENT, REWARD_SPEC,
                    snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS)
     except ADM.AdmissionError:
@@ -260,7 +382,7 @@ def test_task_referencing_wrong_valid_reward_is_rejected():
     task["reward_id"] = I.reward_id(other_reward)  # valid id, wrong reference
     task["task_id"] = I.task_id(task)
     try:
-        E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+        E.eval_one(task, CONTENT, AGENT, REWARD_SPEC,
                    snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS)
     except ADM.AdmissionError:
@@ -280,7 +402,7 @@ def test_task_referencing_wrong_valid_snapshot_is_rejected():
     task["subject"] = {"snapshot_id": other["snapshot_id"]}  # valid id, wrong subject
     task["task_id"] = I.task_id(task)
     try:
-        E.eval_one(task, CONTENT, [sys.executable, STUB], REWARD_SPEC,
+        E.eval_one(task, CONTENT, AGENT, REWARD_SPEC,
                    snapshot=_snapshot(),
                    extra_verifiers=ALL_PASS)
     except ADM.AdmissionError:

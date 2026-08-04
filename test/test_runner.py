@@ -20,6 +20,27 @@ STUB = os.path.join(HERE, "fixtures", "stub_agent.py")
 
 CONTENT = {"spec/one.md": "alpha\nbeta\n", "src/mod.py": "return 1\n"}
 
+#: A caller-supplied ``PATH`` that this fixture *owns*.
+#:
+#: These policies deliberately declare a ``PATH`` — several laws below are about
+#: R1 stripping it, and a policy that never supplies one cannot witness a strip.
+#: But the value used to be ``os.environ["PATH"]``, and reading the host for a
+#: value the runner is guaranteed to throw away buys nothing and couples the
+#: battery to whoever ran it. That coupling is what moved ``test_kernel``'s
+#: pinned ``episode-`` across sessions: there the same ambient read landed in a
+#: task's ``agent_run_policy``, and ``agent_run_policy`` is inside ``task-``,
+#: which is inside ``episode-``.
+#:
+#: It could not do that *here* — measured, not assumed: ``run_agent`` mints only
+#: ``trace-``, and the trace records ``sorted(sealed_env.keys())`` **after**
+#: ``_seal_env`` has dropped ``PATH``, so this file's ``trace-`` was already
+#: byte-identical under the real host ``PATH`` and under a bogus one
+#: (``trace-ff754732…`` both ways). Nothing here was failing, and nothing here
+#: is being fixed. What changes is that the fixture no longer reads an input it
+#: does not use, so the R1 laws below say what they mean: the value below is
+#: never seen by any child, by construction rather than by luck.
+CALLER_PATH = "/fixture-supplied/never-reaches-the-agent/bin"
+
 
 def _policy(**over):
     p = {
@@ -29,8 +50,7 @@ def _policy(**over):
         "network": "disabled",
         "timeout_seconds": 30,
         "max_output_bytes": 4194304,
-        "environment": {"TRAAVIIS_STUB_MODE": "ok",
-                        "PATH": os.environ.get("PATH", "")},
+        "environment": {"TRAAVIIS_STUB_MODE": "ok", "PATH": CALLER_PATH},
         "writable_paths": ["."],
         "result_path": "result.json",
         "patch_path": "candidate.patch",
@@ -40,7 +60,7 @@ def _policy(**over):
 
 
 def _run(mode="ok", **over):
-    env = {"TRAAVIIS_STUB_MODE": mode, "PATH": os.environ.get("PATH", "")}
+    env = {"TRAAVIIS_STUB_MODE": mode, "PATH": CALLER_PATH}
     over.setdefault("environment", env)
     return RUN.run_agent([sys.executable, STUB], CONTENT, _policy(**over))
 
@@ -93,13 +113,42 @@ def test_host_env_not_inherited():
     assert keys == {"TRAAVIIS_STUB_MODE"}
 
 
+def test_caller_path_cannot_move_the_trace_id():
+    """R1 at the identity level: a stripped key may not reach ``trace-``.
+
+    ``test_host_env_not_inherited`` above asserts the strip one level down, on
+    ``environment_keys``. This asserts the consequence that actually matters:
+    two runs whose policies differ *only* in a caller-supplied ``PATH`` — one
+    absent, two with different values — must mint the same ``trace-``.
+
+    It is here because the identity/host coupling that cost ``test_kernel``'s
+    K27 a multi-session investigation entered through exactly this door: an
+    ``agent_run_policy`` carrying ``os.environ["PATH"]``. ``run_agent`` mints no
+    ``task-``, so that leak could never reach an id from *this* battery — the
+    reason is a property of ``_seal_env``, though, not of the fixture, so it is
+    worth one cheap law rather than a comment. If a future ``PATH`` ever
+    survives sealing, this fails here, where the runner is, instead of surfacing
+    as a moved receipt in a battery three layers up.
+    """
+    base = _run("ok", environment={"TRAAVIIS_STUB_MODE": "ok"})
+    one = _run("ok", environment={"TRAAVIIS_STUB_MODE": "ok",
+                                  "PATH": "/one/bin"})
+    two = _run("ok", environment={"TRAAVIIS_STUB_MODE": "ok",
+                                  "PATH": "/a/totally/different/two/bin:/x"})
+    assert base["trace"]["trace_id"] == one["trace"]["trace_id"] == \
+        two["trace"]["trace_id"], "a caller-supplied PATH moved trace-"
+    # ...and the reason it cannot: PATH never enters the sealed map at all.
+    for r in (base, one, two):
+        assert "PATH" not in r["trace"]["events"][0]["environment_keys"]
+
+
 def test_output_cap_truncates():
     # A tiny cap should mark truncation if the child emits anything; the ok stub
     # is silent, so force output via a one-liner that prints.
     printer = "import sys; sys.stdout.write('x'*100)"
     r = RUN.run_agent(
         [sys.executable, "-c", printer], CONTENT,
-        _policy(max_output_bytes=10, environment={"PATH": os.environ.get("PATH", "")}),
+        _policy(max_output_bytes=10, environment={"PATH": CALLER_PATH}),
     )
     assert r["output_truncated"] is True
     assert len(r["stdout"]) == 10
@@ -113,8 +162,7 @@ def test_writable_path_violation_reported():
     r2 = RUN.run_agent(
         [sys.executable, STUB], CONTENT,
         _policy(writable_paths=["src/"],
-                environment={"TRAAVIIS_STUB_MODE": "ok",
-                             "PATH": os.environ.get("PATH", "")}),
+                environment={"TRAAVIIS_STUB_MODE": "ok", "PATH": CALLER_PATH}),
     )
     # result.json + candidate.patch are written at root, outside "src/"
     assert "result.json" in r2["policy_violations"]
