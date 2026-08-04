@@ -933,18 +933,20 @@
         </div>
 
         <p class="demo-note">
-          Every terminal on this page is <b>verbatim output from the real
-          <code>trvs</code> CLI</b> folding <code>worlds/alley.wrl</code> over the
-          TRVM engine — nothing here is scripted. <b>TRAAVIIS does not embed,
+          Every terminal on this page is <b>captured output from the real
+          <code>trvs</code> CLI</b> — nothing here is scripted. The world casts
+          fold <code>worlds/alley.wrl</code> over the TRVM engine; the eval, batch
+          and serve casts are recorded sessions over a packed Evidence Residency
+          environment, and each says so on its own bar. <b>TRAAVIIS does not embed,
           select, or route a model</b>; the shipped world commands call none. The
           same world always folds to the same identity and the same film; that is
           the whole point.
         </p>
 
         <div class="install" id="install">
-          <code><span class="s">$ </span>pipx install traaviis</code>
+          <code><span class="s">$ </span><span id="installCmd">git clone https://github.com/c-u-l8er/TRAAVIIS &amp;&amp; pipx install ./TRAAVIIS</span></code>
           <button class="copy" id="copyBtn">copy</button>
-          <span class="faint">· then <span class="inline">trvs doctor</span> · needs the TRVM/forge engine on-path</span>
+          <span class="faint">· not on PyPI · then <span class="inline">trvs doctor</span> · needs the TRVM/forge engine on-path</span>
         </div>
 
         <!-- THE PIPELINE -->
@@ -1117,10 +1119,10 @@
         <div class="kicker">The terminal</div>
         <h2>One honest workflow.</h2>
         <p>
-          <code>trvs</code> is a small, stable surface. Seven commands ship today
-          and fold real worlds over the TRVM engine; the rest are the environment
-          surface that turns a subject into something an agent can be evaluated
-          against. Its beachhead is <code>trvs eval-one</code> — a one-shot
+          <code>trvs</code> is a small, stable surface. Seven commands fold real
+          worlds over the TRVM engine; the rest of the eighteen shipped below are
+          the environment surface that turns a subject into something an agent can
+          be evaluated against. Its beachhead is <code>trvs eval-one</code> — a one-shot
           evaluation of a single frozen subject. Nothing below embeds, selects,
           or routes a model.
         </p>
@@ -1143,20 +1145,20 @@
           <div class="cmd-row"><span class="nm">trvs verify-bundle</span><span class="desc">re-verify a package tree or archive against bundle-…</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs archive-bundle</span><span class="desc">emit a canonical archive + its transport checksum</span><span class="st"><span class="badge ship">shipped</span></span></div>
           <div class="cmd-row"><span class="nm">trvs serve --ors</span><span class="desc">serve a packed environment as a submission endpoint</span><span class="st"><span class="badge ship">shipped</span></span></div>
-          <div class="cmd-row plan"><span class="nm">trvs serve --mcp</span><span class="desc">the same kernel behind the MCP wire vocabulary</span><span class="st"><span class="badge plan">later</span></span></div>
+          <div class="cmd-row"><span class="nm">trvs serve --mcp</span><span class="desc">the same kernel behind the MCP wire vocabulary</span><span class="st"><span class="badge ship">shipped</span></span></div>
         </div>
         <p class="soft" style="margin-top:14px;font-size:13px">
           <span class="badge ship">shipped</span> commands are real over the
-          engine today. <span class="badge plan">planned</span> commands describe
-          the environment surface below and are not yet built — they are the
-          published roadmap, not a claim.
+          engine today, and every command in this list is one. What is not yet
+          built is named in the roadmap below rather than here — a published
+          roadmap, not a claim.
         </p>
       </section>
 
       <!-- ENVIRONMENT CONTRACT (ORS first) -->
       <section class="stage" id="environment">
         <span class="node"></span>
-        <div class="kicker">The environment surface · kernel + ORS shipped</div>
+        <div class="kicker">The environment surface · kernel + ORS + MCP shipped</div>
         <h2>A neutral kernel. Protocols are adapters.</h2>
         <p>
           A tool list tells an agent what it <em>can</em> call. It does not define
@@ -1199,7 +1201,30 @@
             <div class="ttl">compatibility adapter — <code>trvs serve pkg --mcp</code></div>
             <div class="resolved">
               The same world as MCP tools / resources / prompts, wrapping the
-              kernel — never the source of truth. <span class="miss">not yet built</span>
+              kernel — never the source of truth. It targets revision
+              <code>2026-07-28</code>, the one that made MCP <b>stateless</b>: no
+              <code>initialize</code> handshake, no protocol-level sessions, and
+              cross-call state carried instead on <em>server-minted handles
+              passed as ordinary tool arguments</em> — which is what the kernel's
+              <code>session-…</code> already was. That mapping was found, not
+              designed. Resources are the content-addressed immutables
+              (<code>trvs://env/…</code>, <code>trvs://task/…</code>,
+              <code>trvs://episode/{id}</code>): reading one twice returns
+              identical bytes, which is what <em>earns</em> the long cache TTL —
+              so a session, being mutable and ephemeral, deliberately has no
+              <code>trvs://</code> name at all. It speaks <b>stdio</b>, which has
+              no network surface to defend, and <code>--mcp</code> refuses
+              <code>--host</code> / <code>--port</code> /
+              <code>--allow-remote</code> rather than silently ignoring them.
+              There is no idempotency key, on purpose: a key passed as a tool
+              argument is written by a language model, and a key a model invents
+              makes double-execution merely <em>look</em> deduplicated — so a
+              repeat submission is refused, and the refusal carries the
+              <code>episode_id</code> plus a resource link. Navigable, not
+              replayed. It composes the ORS adapter rather than re-reaching the
+              kernel, so exactly one place decides what the server believes a
+              client did; <b>no kernel change was needed.</b>
+              <span class="badge ship">shipped</span>
             </div>
           </div>
         </div>
@@ -1225,6 +1250,31 @@
           before the socket binds, so there is no arrangement of failures that
           produces a listening server over a package that did not admit. The
           default bind is loopback; leaving it takes <code>--allow-remote</code>.
+        </p>
+
+        <div class="term" style="margin-top:18px">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — serve --mcp</span>
+            <span class="hint">captured · MCP client session</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs serve</span> pkg --mcp --split all --output episodes-mcp</div>
+            <div class="cast" data-cast="mcp"><span class="row">  server/discover                supportedVersions ["2026-07-28"]</span><span class="row">  tools/list                     list_tasks, open_session, submit_candidate, close_session</span><span class="row">  resources/list                 trvs://env/env-a38ec4c0…   trvs://task/task-3b4b2599…</span><span class="row">  prompts/get residency_task     "Task task-3b4b2599…"</span><span class="row">  tools/call open_session        session-d20f6c46748746cbbfca1f22b40b8234</span><span class="row">  tools/call submit_candidate    isError false  status ok  validity valid</span><span class="row">                                 reward 1.0  finished true</span><span class="row">                                 episode-29690223ea13acab06c04e551ecbb171…</span><span class="row">  (repeat, same handle)          isError true  <span class="no">ORS_SESSION_FINISHED</span></span><span class="row">                                 no reward; points at trvs://episode/episode-29690223…</span><span class="row">  tools/call step                isError true  <span class="no">KERNEL_OPERATION_UNSUPPORTED</span></span><span class="row">  tools/call frobnicate          <span class="no">-32602</span>  Unknown tool: frobnicate</span><span class="row">  close stdin                    server exit 0</span><span class="row"> </span><span class="row">  $ trvs verify-episode episodes-mcp/episode-29690223ea13acab…</span><span class="row">  closure       <span class="ok">✓</span> all members bind</span><span class="row">  signals       7/7  replay == receipt</span><span class="row">  reward        <span class="ok">✓</span> replayed reward 1.0 vs receipt 1.0</span><span class="row">  episode-id    <span class="ok">✓</span> episode-id closes over the derived receipt</span><span class="row">  verified      <span class="ok">✓ closed</span></span></div>
+          </div>
+        </div>
+        <p class="soft" style="margin-top:12px;font-size:12.5px">
+          The live end-to-end run recorded in the closure memo, ids truncated to
+          fit: a fresh scaffold, no fixtures, over real pipes. An MCP episode and
+          an ORS episode over the same candidate are the <em>same</em>
+          <code>episode-…</code>, because the thing that happened is the same
+          thing — and the last block is that episode replaying offline, with no
+          agent, no server and no protocol, to the same reward. On
+          compatibility, precisely what was run: a client written against the
+          wire for this server (~180 lines, importing nothing from TRAAVIIS).
+          <b>No third-party MCP SDK and no Claude Desktop has connected.</b>
+          Pagination is not implemented — a client that sends a cursor is
+          ignored rather than refused — and the framing is POSIX-tested only.
         </p>
 
         <p class="soft" style="margin-top:16px;font-size:13px">
@@ -1337,6 +1387,45 @@
         </div>
       </section>
 
+      <!-- THE FAMILY -->
+      <!-- `code` shipped at code.traaviis.com and this page did not mention it
+           anywhere, while the ladder below listed only wrl and trvm. Four
+           properties, three accounted for. It cannot simply be appended to that
+           ladder, because `code` is not a layer TRAAVIIS stands on -- it is a
+           sibling that *consumes* the stack, and the "Not a coding agent"
+           section further down is the reason the distinction has to be drawn
+           rather than blurred. -->
+      <section class="stage" id="family">
+        <span class="node"></span>
+        <div class="kicker">Four properties</div>
+        <h2>One house. Four things you can actually run.</h2>
+        <p>
+          <code>traaviis.com</code> is the evaluation product; three siblings sit
+          beside it on the same domain. They are separate programs with separate
+          repositories — not editions of one another — and the seam between them
+          is the point of the section below.
+        </p>
+
+        <div class="grid">
+          <div class="cell">
+            <h3>TRAAVIIS <span class="badge ship">you are here</span></h3>
+            <p><code>trvs</code> — evidence-grade environments for evaluating agents. Packs a subject into a content-addressed environment, folds one episode, and returns a receipt that replays with no agent in the loop.</p>
+          </div>
+          <div class="cell">
+            <h3><a href="https://wrl.traaviis.com">WallRiderLang &#8599;</a></h3>
+            <p>The language a TRVM world is written in — actors, edges, world rules. A world's meaning is its hash. <a href="https://wrl.traaviis.com" style="color:var(--teal)">wrl.traaviis.com</a></p>
+          </div>
+          <div class="cell">
+            <h3><a href="https://trvm.traaviis.com">TRVM &#8599;</a></h3>
+            <p>The deterministic execution substrate and its Forge identity pipeline. Same world, same scenario, same trajectory — same hash, every time. <a href="https://trvm.traaviis.com" style="color:var(--teal)">trvm.traaviis.com</a></p>
+          </div>
+          <div class="cell">
+            <h3><a href="https://code.traaviis.com">code &#8599;</a></h3>
+            <p>The open-source control plane for coding agents — many workers, each in its own git worktree under its own spending cap, and nothing merges itself. It is the stack's <em>consumer</em>, not one of its layers. <a href="https://code.traaviis.com" style="color:var(--teal)">code.traaviis.com</a></p>
+          </div>
+        </div>
+      </section>
+
       <!-- PRODUCT BOUNDARY -->
       <section class="stage" id="boundary">
         <span class="node"></span>
@@ -1345,7 +1434,9 @@
         <p>
           The boundary is frozen on purpose. <code>trvs</code> carries no world
           semantics — it packages capabilities the layers below already provide,
-          for someone who does not know the internal history of TRVM.
+          for someone who does not know the internal history of TRVM. Everything
+          in this ladder is something TRAAVIIS <em>stands on</em>; <code>code</code>
+          is deliberately absent from it, because a consumer is not a layer.
         </p>
 
         <div class="hier">
@@ -1369,7 +1460,13 @@
           exists. Its credibility comes from what it refuses to do.
         </p>
         <div class="didnt">
-          <div class="item"><div class="no">Not a coding agent</div><p>trvs builds and proves environments. It is not another Claude Code, not a chat interface.</p></div>
+          <!-- This item used to read "not another Claude Code" full stop, while
+               code.traaviis.com — a sibling on this very domain — dispatches
+               Claude Code for a living. The refusal is unchanged and still the
+               real one; what was missing is that it is a *seam*, not an opinion
+               about the category. Naming the sibling that does the thing is what
+               makes the refusal checkable instead of merely stated. -->
+          <div class="item"><div class="no">Not a coding agent</div><p>trvs builds and proves environments. It writes no code, embeds no model, and is not a chat interface. Dispatching coding agents is <a href="https://code.traaviis.com" style="color:var(--teal)">code</a>'s job — a sibling property, and a consumer of this stack rather than part of it. The seam is the product: the thing being evaluated must not be the thing doing the evaluating.</p></div>
           <div class="item"><div class="no">Not a model router</div><p>TRAAVIIS does not embed, select, or route a model. The fold is deterministic; the reward is computed. Evaluation runs an agent command supplied by the user.</p></div>
           <div class="item"><div class="no">Not an RL cloud</div><p>Worlds run locally. TRAAVIIS authors environments that export to hosting stacks — it is not the catalog.</p></div>
           <div class="item"><div class="no">Not a game engine</div><p>WallRider worlds are deterministic agent environments, not a rendering or physics engine.</p></div>
@@ -1428,13 +1525,18 @@
       // ---- copy --------------------------------------------------------
       (function () {
         const btn = document.getElementById("copyBtn");
+        // The copied string is READ from the rendered #installCmd rather than
+        // repeated here, because a second copy of it is a second thing that can
+        // drift -- and this line has now been wrong twice. First the page
+        // rendered `pipx install traaviis` while this copied `npm install -g
+        // traaviis`, handing out an install line for the quarantined Node
+        // harness. Then both agreed on `pipx install traaviis`, which fails:
+        // `traaviis` is an unclaimed name on PyPI and the metadata URL 404s.
+        // Agreement was never the property worth having on its own.
+        const src = document.getElementById("installCmd");
         btn.addEventListener("click", async () => {
           try {
-            // Must match the string rendered in #install above. It said
-            // `pipx install traaviis` while this copied `npm install -g
-            // traaviis`, so the button handed out an install line for the
-            // quarantined Node harness, not the CLI the page documents.
-            await navigator.clipboard.writeText("pipx install traaviis");
+            await navigator.clipboard.writeText(src.textContent.trim());
             btn.textContent = "copied";
             setTimeout(() => (btn.textContent = "copy"), 1200);
           } catch {

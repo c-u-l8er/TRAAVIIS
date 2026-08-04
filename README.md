@@ -27,10 +27,19 @@ agent command *supplied by the user*, which may itself use a model.
 
 ## Install
 
+**Not on PyPI yet.** `pipx install traaviis` does not work — `traaviis` is an
+unclaimed name there, and this README claimed otherwise for long enough that it
+is worth saying plainly rather than quietly deleting. Install from source:
+
 ```sh
-pipx install traaviis        # or: pip install traaviis
+git clone https://github.com/c-u-l8er/TRAAVIIS.git && cd TRAAVIIS
+pipx install .               # or: pip install -e .   (or: pip install .)
 trvs doctor                  # check the engine + verifiers are on-path
 ```
+
+`pyproject.toml` declares both `trvs` and `traaviis` as console scripts, so
+either name works once installed. Without installing, every command is also
+reachable as `python3 -m traaviis.cli <verb>` from a checkout.
 
 **No third-party Python dependencies.** Requires Python ≥ 3.9, a compatible
 Forge/TRVM engine reachable at runtime (see `traaviis.engine`), and — for native
@@ -39,7 +48,7 @@ reference reducer).
 
 ## The command set
 
-Eight commands ship today and fold real worlds over the engine. The
+Eighteen commands ship today; seven of them fold real worlds over the engine. The
 **environment surface** turns a subject into something an agent can be evaluated
 against; its **beachhead — `trvs eval-one`** — now ships: a one-shot,
 trusted-local evaluation of a single frozen subject that admits the bundle,
@@ -66,7 +75,7 @@ come after.
 | `trvs verify-bundle`  | re-verify a package tree or archive against `bundle-…` | shipped  |
 | `trvs archive-bundle` | emit a canonical archive + its transport checksum  | shipped        |
 | `trvs serve --ors` | serve a packed environment as a submission endpoint   | shipped        |
-| `trvs serve --mcp` | the same kernel behind the MCP wire vocabulary       | later          |
+| `trvs serve --mcp` | the same kernel behind the MCP wire vocabulary       | shipped        |
 
 Every shipped command takes `--json` for CI / agent consumption.
 
@@ -378,6 +387,136 @@ holds a candidate's patches and runs verifier commands; the default for a thing
 like that is not "reachable from the network", and it is a flag rather than an
 inference from the address so that exposing it is something a human typed.
 
+### Serve the same kernel over MCP (`serve --mcp`, shipped)
+
+`serve --ors` is an HTTP endpoint a script submits to. `serve --mcp` is the same
+kernel, the same admission and the same receipts behind the **Model Context
+Protocol**, so the client can be a language model.
+
+Built against **MCP revision `2026-07-28`** — named in the code, refused by name
+if a client asks for anything else. That revision matters: it is the one that
+made MCP *stateless*, removing the `initialize` handshake and protocol-level
+sessions, and telling servers that need state to mint **explicit handles passed
+as ordinary tool arguments**. That is already what a TRAAVIIS session is, so the
+mapping was found rather than designed.
+
+```sh
+trvs serve my-env-pkg --mcp --split all --output episodes/
+```
+
+```
+  environment   env-a38ec4c04532be258a59663588b0b7e678bf7ad31eee8173e09b35f4229740e2
+  split         all
+  substrate     residency.repository.v1
+  profile       traaviis.mcp-profile.v1
+  runner        traaviis.ors-submission.v1
+  protocol      2026-07-28
+  transport     stdio (no network surface)
+  episodes      /abs/path/episodes
+
+  tools
+  ✓ list_tasks
+  ✓ open_session
+  ✓ submit_candidate
+  ✓ close_session
+
+  refused by this substrate
+  ✗ observe
+  ✗ reset
+  ✗ step
+
+  reading stdin. close it to stop.
+```
+
+Every line of that banner is on **stderr**. Stdout is the wire, and a decorative
+line on it is not a cosmetic problem — it is a malformed message from a server
+the client otherwise trusts.
+
+Configure it as an MCP server by pointing a client at that command; it speaks
+newline-delimited JSON-RPC on stdin/stdout and answers `server/discover`.
+
+**The vocabulary, and why each thing landed where it did.**
+
+* **Tools are what spends something.** `submit_candidate` consumes a handle's one
+  chance to be scored. `open_session` / `close_session` are its constructor and
+  destructor — explicit, because the protocol no longer has sessions of its own.
+* **Resources are the content-addressed and immutable**, under a `trvs://`
+  scheme: `trvs://env/env-…`, `trvs://task/task-…`, and
+  `trvs://episode/{episode_id}`. Reading one twice returns the same bytes, which
+  is what earns the long `ttlMs` — a different receipt would have a different
+  name, so staleness is not merely unlikely, it is unrepresentable. Episodes are
+  reached by the `resource_link` a submission returns and by the template, not by
+  listing, because `resources/list` must not change as a side effect of other
+  requests.
+* **A session is neither.** It is mutable, ephemeral, and minted from randomness
+  rather than content. `trvs://session/…` does not exist and will not: it would
+  put a thing with none of a resource's properties into the namespace whose whole
+  meaning is those properties.
+* **One prompt**, `residency_task`, taking a `task_id`. Its text is the same
+  function `serve --ors` serves — a second copy would be a second thing that
+  could drift, and the drift would be invisible.
+
+**The operations this substrate refuses are not on the menu, but still answer.**
+`observe` / `step` / `reset` are absent from `tools/list`, because that list is
+handed to a model as a menu and an advertised capability is a *claim*. They are
+still routable by `tools/call`, where they relay the kernel's own
+`KERNEL_OPERATION_UNSUPPORTED` — "unknown tool" would be a claim about this
+server's catalog, when the truth is a claim about the substrate. A name in
+neither the catalog nor the frozen operation set gets `-32602 Unknown tool`.
+
+**A handle is spent once, and a repeat is refused rather than replayed.** There
+is deliberately **no idempotency key** here. Over HTTP a retry can happen below
+the caller, so ORS needed a header to stop a duplicate becoming a second episode;
+under this revision resumability was removed and a client whose stream breaks
+must re-issue with a *new* request id, so retries are already explicit. A key as
+a *tool argument* would be worse than none: a key a language model invents is not
+an idempotency key, it is a token that makes double-execution look deduplicated.
+So a second submission is `ORS_SESSION_FINISHED` — and it carries the
+`episode_id` and a `trvs://episode/…` link, so the answer is *navigable* rather
+than replayed. The evidence is on disk, because `finished: true` is only ever
+returned after it got there.
+
+**The submission is a nested document.** `submit_candidate` takes
+`{session_id, submission}`, not a flat map. `RemoteSubmissionV1` is validated by
+**exact key set** — "is this the document?", not "does this contain the
+document?" — so the handle stays outside it. Same argument that put ORS's
+idempotency key in a header.
+
+**Two error channels, one dividing line: is this the caller's to fix?** A bad
+submission, an unknown handle, a spent session and a substrate with no `step` are
+`isError: true`, which clients feed back to the model for self-correction. A
+version mismatch, missing `_meta`, an unknown method or tool, and anything
+meaning *this server is broken* (`ORS_PUBLISH_FAILED`) are JSON-RPC errors.
+`KERNEL_RUN_RESULT_MISSING` is `-32603` specifically because a client cannot
+cause it — the adapter builds the run result — so reaching it means a defect here.
+
+**Concurrency is inherited, not re-solved.** Requests are dispatched on their own
+threads and only the *writes* are serialized; a read-handle-write loop would keep
+the kernel linearizable while quietly serializing the server to one episode at a
+time. Two different sessions really do score simultaneously; two submissions to
+one handle score exactly once, and the loser is refused by name.
+
+**No network surface at all.** Stdio has no port, no bind address and no
+`--allow-remote`, which is strictly stronger than ORS's loopback default —
+`--host`, `--port` and `--allow-remote` are *refused* with `--mcp` rather than
+ignored, because a flag silently doing nothing is how somebody comes to believe
+an stdio server is listening somewhere. Streamable HTTP is **not** implemented:
+conforming to it means headers, origin validation, the authorization framework
+and `subscriptions/listen`, and a partial implementation would advertise a
+transport this server does not speak. `serve --ors` is the HTTP surface.
+
+An episode produced this way is an ordinary episode. It replays offline with no
+agent, no server and no protocol:
+
+```sh
+trvs verify-episode episodes/episode-29690223ea13acab06c04e551ecbb171…
+#   reward     ✓ replayed reward 1.0 vs receipt 1.0
+#   verified   ✓ closed
+```
+
+See `TRAAVIIS_MCP_CLOSURE_MEMO.md` for the full design record, laws M1–M31, and
+what is unproven.
+
 ### Comparing two candidates
 
 `compare` answers *"which of these two did better, and where did they differ?"*
@@ -560,7 +699,7 @@ EpisodeKernelV1  list_tasks · start · observe · step · reset · finalize · 
         ↓                                           (internal, neutral, SHIPPED)
 local runner     trvs eval-one / trvs eval          →  start → run → finalize
 ORS adapter      first / primary public surface     →  trvs serve --ors (SHIPPED)
-MCP adapter      compatibility (tools/resources/prompts) → trvs serve --mcp
+MCP adapter      compatibility (tools/resources/prompts) → trvs serve --mcp (SHIPPED)
 JSONL adapter    local automation / debugging
 ```
 
@@ -583,6 +722,9 @@ Four things about it are worth knowing before writing an adapter:
   front: since a remote client cannot `observe` a Residency session at all,
   `trvs serve --ors` over Residency exposes exactly `start` + `finalize` and
   one tool — see [Serve a submission endpoint](#serve-a-submission-endpoint-serve---ors-shipped).
+  `trvs serve --mcp` inherits the same limit and surfaces it the same way: the
+  three refused operations are kept off the tool menu and still answer with the
+  substrate's own refusal when called.
 * **One kernel = one admitted environment**, many ephemeral sessions, one shared
   registry and engine seam, and no lock held across a session lifetime — so a
   future server is not serialized down to one episode at a time.
@@ -705,6 +847,44 @@ Every `test/test_*.py` is a self-running script, so any one of them can be run
 alone. `tools/run_battery.py` runs them all and prints a single total; prefer it
 over adding the per-file summaries up by hand, which is how one handoff came to
 report two different totals for the same tree.
+
+**What the total counts, and when to distrust it.** The battery counts the
+per-test result lines (`PASS`/`FAIL`/`SKIP`), one per test, so it is counting the
+same things `pytest test/` collects and the two numbers must agree — as of this
+writing both say **595 over 30 files**. If they ever disagree, that is a defect in
+one of them, not a difference of convention; the two known ways they can:
+
+- A file that is reported `CRASHED` or `TIMED OUT` did not run the tests after
+  the one that broke, so the total is a **floor**, not the tree's test count. The
+  runner names those two outcomes separately from a plain failure for exactly
+  this reason — a crash is short *and* red, a failure is only red, and a timeout
+  is neither: nothing said no, nothing raised, the answer is simply unknown.
+- **Without the Forge engine reachable, the two runners disagree by design.** The
+  engine-gated files raise a locally defined `Skip(Exception)`, which the
+  self-running `main()` counts as a skip but pytest — which only recognises its
+  own `Skipped` — counts as a *failure*. On such a machine expect
+  `run_battery` to say "N skipped" where pytest says "N failed". Same tree, same
+  tests, and the honest number is `run_battery`'s.
+
+**It is slow, and slow is not hung.** With the engine reachable the battery takes
+about 9 minutes, and 86% of that is one file: `test/test_cli.py` runs for ~458s
+because it drives the real CLI over the real engine — `trvs verify` alone replays
+the world three ways and takes ~45s, and that file calls it four times. Every
+other file in the tree finishes in 76s put together. Both runners are equally
+slow; there is no runner in which that file is fast. It was once given less time
+than it needs, read as a hang, and reported as a crash — so the runner now prints
+each file's wall clock, and slowness is a number rather than an inference.
+
+### Reimplementing an id in another language
+
+Every id is `<prefix>-<sha256(canonical_bytes(document))>` over **TRAAVIIS
+canonical JSON** — UTF-8, object keys sorted, minimal separators, non-ASCII
+emitted as is. Do **not** reach for an RFC 8785 (JCS) library: the two are
+byte-identical for ASCII keys and small integers, but TRAAVIIS renders numbers
+with Python's `repr` (so a receipt's `"reward": 1.0` stays `1.0`, where JCS
+writes `1`) and sorts keys by Unicode code point rather than UTF-16 code unit.
+`test/test_canonical.py` pins every difference with a reproducing value, and
+`ARCHITECTURE.md` §3a states the rule; port from those, not from a JCS package.
 
 Releases go through an acceptance gate that extracts the packet into an empty
 directory, runs the battery there both with and without the engine, and rebuilds
