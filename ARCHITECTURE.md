@@ -132,6 +132,34 @@ evaluation ladder.
 Re-scoring the *same* trace under a different rubric changes the `episode-…`
 receipt but never the `trace-…` — the recorded behavior did not change.
 
+#### Canonical form (what an id is a hash *of*)
+
+Every rung is `<prefix>-<sha256(canonical_bytes(document))>`, where
+`canonical_bytes` is **TRAAVIIS canonical JSON**: UTF-8, object keys sorted, no
+insignificant whitespace — concretely `json.dumps(obj, sort_keys=True,
+separators=(",", ":"), ensure_ascii=False)`.
+
+This is *not* RFC 8785 (JCS), and the difference is stated here rather than
+discovered by a reimplementer. It is byte-identical to RFC 8785 over documents
+whose keys hold no code point at or above U+10000 and whose numbers avoid four
+bands, but it differs in two ways that are already reachable:
+
+- **Numbers.** RFC 8785 mandates ECMAScript `Number::toString`; Python does not
+  match it for integral-valued floats below 10²¹ (`1.0` vs `1`), for `-0.0`
+  (`-0.0` vs `0`), across `[1e16, 1e21)` and `[1e-6, 1e-4)`, or on exponent
+  zero-padding (`1e-07` vs `1e-7`). A receipt's `reward` is always a float, so
+  a fully-passing episode carries `1.0` and is on the diverging side.
+- **Key order.** RFC 8785 sorts property names by UTF-16 code unit; Python sorts
+  by code point. These agree below U+10000 and diverge above it, so a subject
+  repository containing an astral-plane filename orders its `files` map
+  differently under the two schemes.
+
+Nothing enforces the agreeing subset — there is no schema check, key charset
+check or numeric domain check anywhere on the path. `test/test_canonical.py`
+measures all of this against a reference RFC 8785 implementation and pins each
+divergence with a reproducing value; treat it as the specification of the
+canonical form until a ruling decides whether to conform and migrate.
+
 ### 3b. The bundle — `traaviis.environment.v1`
 
 `trvs pack` separates *what an environment means* from *how it is shipped*. The

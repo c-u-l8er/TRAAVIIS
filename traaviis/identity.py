@@ -33,9 +33,11 @@ their given order** (the producer is responsible for canonical list ordering).
 
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 __all__ = [
+    "IdentityError", "CANONICAL_NON_FINITE",
     "canonical_bytes",
     "canonicalize_snapshot", "snapshot_id",
     "canonicalize_finding", "finding_id",
@@ -49,11 +51,100 @@ __all__ = [
 ]
 
 
+#: The one code this module raises. A non-finite number reached the hasher.
+CANONICAL_NON_FINITE = "CANONICAL_NON_FINITE"
+
+
+class IdentityError(ValueError):
+    """A typed refusal from the identity spine; ``code`` names the law broken.
+
+    Carries a stable string ``code`` plus ``message`` and ``detail``, which is
+    the shape every typed refusal in this codebase takes. It is declared *here*,
+    and not shared with the modules above, because this module is the leaf of
+    the import graph: everything that raises a typed refusal imports identity,
+    so identity can import none of them. This module names nothing above itself.
+
+    It subclasses ``ValueError`` deliberately. ``json.dumps`` is what raises on
+    this input class and it raises ``ValueError``; narrowing to a bare
+    ``Exception`` would quietly change which failures an existing ``except``
+    clause absorbs, which is a behaviour change wearing a type annotation.
+    """
+
+    def __init__(self, code, message, detail=None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.detail = detail or {}
+
+    def __str__(self):
+        return "[%s] %s" % (self.code, self.message)
+
+
+def _find_non_finite(obj, path="$", seen=None):
+    """``(json-ish path, value)`` of the first NaN/Infinity in ``obj``, or None.
+
+    Runs only on the refusal path, so it costs nothing in the normal case. It
+    exists so the refusal can *name* what was refused rather than repeat
+    ``json``'s anonymous "out of range float". Container identities are tracked
+    so a circular structure — the other ``ValueError`` ``json.dumps`` raises —
+    terminates here instead of looping.
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return path, obj
+        return None
+    if isinstance(obj, (dict, list, tuple)):
+        if seen is None:
+            seen = set()
+        if id(obj) in seen:
+            return None
+        seen.add(id(obj))
+        items = (obj.items() if isinstance(obj, dict)
+                 else enumerate(obj))
+        for key, value in items:
+            sub = "%s.%s" % (path, key) if isinstance(obj, dict) \
+                else "%s[%d]" % (path, key)
+            hit = _find_non_finite(value, sub, seen)
+            if hit is not None:
+                return hit
+    return None
+
+
 def canonical_bytes(obj: Any) -> bytes:
-    """Deterministic UTF-8 JSON: sorted object keys, no insignificant whitespace."""
-    return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    """Deterministic UTF-8 JSON: sorted object keys, no insignificant whitespace.
+
+    ``allow_nan=False`` is the one domain check the spine applies. Python's
+    default emits the bare tokens ``NaN`` / ``Infinity`` / ``-Infinity``, which
+    are **not JSON** — no conforming parser in any language reads them back. So
+    the default would let this function mint a content-addressed id whose
+    preimage is unparseable, which is the exact failure a content address exists
+    to prevent. RFC 8785 §3.2.2.3 requires a compliant implementation to
+    terminate instead, and now this one does.
+
+    The refusal moves no id: no artifact, and no document any producer in this
+    repository emits, contains a non-finite number, so the emitted bytes are
+    unchanged over the entire existing corpus (see ``test/test_canonical.py``
+    C27-C30).
+    """
+    try:
+        text = json.dumps(
+            obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            allow_nan=False,
+        )
+    except ValueError as ex:
+        found = _find_non_finite(obj)
+        if found is None:
+            raise            # a different ValueError (e.g. a circular reference)
+        where, value = found
+        raise IdentityError(
+            CANONICAL_NON_FINITE,
+            "refusing to mint an id over a non-finite number: %s is %r. JSON "
+            "has no NaN or Infinity, so the bytes hashed would not be JSON and "
+            "no conforming parser could read the preimage back "
+            "(RFC 8785 §3.2.2.3)." % (where, value),
+            {"path": where, "value": repr(value)},
+        ) from ex
+    return text.encode("utf-8")
 
 
 def _id(prefix: str, canon: bytes) -> str:
