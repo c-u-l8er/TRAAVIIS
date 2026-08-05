@@ -24,7 +24,9 @@ collapse into each other:
 - a package could carry a subject mode that its own archive cannot, so it would
   verify as a package and fail to reopen as an environment (D31-D36);
 - an archive could be published on the strength of the directory it was built
-  from rather than of the bytes it actually contains (D37-D38).
+  from rather than of the bytes it actually contains (D37-D38);
+- a package the decoder cannot decode could crash its reader instead of being
+  refused, so a bad package would read as a broken verifier (D41).
 
 **On what needs an engine.** A package tree is a substrate-neutral object, so
 the manifest, closure, transport and publication laws (D2, D3, D14-D16, D18,
@@ -40,7 +42,9 @@ Run directly:      python3 test/test_bundle.py
 Run under pytest:  pytest test/test_bundle.py
 """
 
+import ast
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -49,6 +53,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,6 +61,7 @@ sys.path.insert(0, REPO)
 
 from traaviis import bundle as BD  # noqa: E402
 from traaviis import engine as _engine  # noqa: E402
+from traaviis import evalsplit as ES  # noqa: E402
 from traaviis import identity, pack as P, scaffold as S  # noqa: E402
 from traaviis.substrates import AdmissionError  # noqa: E402
 
@@ -223,6 +229,31 @@ def _bundle_of(root):
     """Re-derive `bundle-…` from a tree, independent of what it claims."""
     return BD.build_manifest(_manifest(root)["env_id"],
                              BD.scan_tree(root))["bundle_id"]
+
+
+def _caught_by(fn, needle):
+    """The exception names caught by the `except` clause in `fn` whose refusal
+    message contains `needle`.
+
+    Located on the parse tree, not in the source text: a comment naming an
+    exception then cannot satisfy a law about what is caught, and a name that
+    *is* caught cannot hide behind prose saying it is not. Selected by message
+    rather than by refusal code because one code is often reached from several
+    handlers (`_read_member` raises `ENV_MEMBER` from two), and the law is about
+    one of them.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler):
+            continue
+        if not any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and needle in n.value for n in ast.walk(handler)):
+            continue
+        caught = handler.type
+        parts = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+        return {n.id for n in parts}
+    raise AssertionError("no except clause in %s mentions %r"
+                         % (fn.__name__, needle))
 
 
 # --- D1-D3: what does NOT move the identity ----------------------------------
@@ -1337,6 +1368,88 @@ def test_d39_zip_and_tar_full_environment_verification_agree():
     assert a["environment_verified"] is b["environment_verified"] is True
 
 
+def test_d41_a_package_the_decoder_cannot_decode_is_a_bad_package():
+    """The package boundary has four doors, and all four are readers of bytes
+    somebody else wrote:
+
+        bundle.read_manifest        TRAAVIIS_BUNDLE.json     BUNDLE_MALFORMED
+        bundle.verify_bundle        environment.json         BUNDLE_MALFORMED
+        evalsplit.open_environment  environment.json         ENV_MALFORMED
+        evalsplit._read_member      a manifested member      ENV_MEMBER
+
+    Each already declares a typed refusal for a document that will not parse.
+    Each named only `(ValueError, UnicodeDecodeError)`, which is the whole of
+    what a *corrupted* file raises but not the whole of what `json.loads`
+    raises: the document below is valid RFC 8259 -- nested arrays, no syntax
+    error -- and the decoder still cannot decode it, with `RecursionError`. That
+    is a `RuntimeError`, so it escaped all four clauses as an untyped crash.
+
+    Why that matters here more than anywhere else. A consumer verifying a
+    downloaded package usually has no engine and no checkout; the only thing
+    they have is this verdict. A crash and a refusal are not the same verdict:
+    a refusal says *this package is bad*, a traceback says *this verifier is
+    broken*, and the second is the reading a tampered package would prefer to
+    earn. Worse for the two `read_manifest`/`open_environment` doors, a crash
+    means the package was neither admitted nor refused -- the one outcome a
+    fail-closed door exists to exclude.
+
+    200 000 nested arrays is 400 kB. No size bound catches it, because there is
+    nothing unusual about its size; what is unusual is its depth.
+
+    This law lives with the *package* battery rather than with any one module's
+    because the claim is about the boundary, not about a function -- a fifth
+    door added later belongs in this list.
+    """
+    deep_text = "[" * 200_000 + "]" * 200_000
+    deep = deep_text.encode("utf-8")
+    try:
+        json.loads(deep_text)
+    except RecursionError:
+        pass  # the precondition holds: this host's decoder refuses these bytes
+    else:
+        raise AssertionError(
+            "this host decoded the payload; deepen it or this law asserts nothing")
+    # The widening was necessary and was never implied by the old clause.
+    assert not issubclass(RecursionError, ValueError)
+
+    # --- door 1: the manifest itself.
+    root, _ = _synth("d41-manifest")
+    with open(os.path.join(root, BD.MANIFEST_NAME), "wb") as fh:
+        fh.write(deep)
+    _refuses(lambda: BD.read_manifest(root), "BUNDLE_MALFORMED", "d41-manifest")
+
+    # --- door 2: environment.json, behind a manifest that is beyond reproach.
+    members = tuple((rel, deep if rel == "environment.json" else data, mode)
+                    for rel, data, mode in SYNTH_MEMBERS)
+    root, _ = _synth("d41-env", members=members)
+    _refuses(lambda: BD.verify_bundle(root), "BUNDLE_MALFORMED", "d41-env")
+    # ...and the refusal is about the *environment document*, not about closure:
+    # the package layer of this very tree still verifies.
+    assert BD.verify_bundle(root, environment=False)["closed"] is True, \
+        "the package layer must still close; only the environment doc is bad"
+
+    # --- doors 3 and 4: the evaluation side of the same tree.
+    _refuses(lambda: ES.open_environment(root), "ENV_MALFORMED", "d41-open")
+    _refuses(lambda: ES._read_member(root, "environment.json", "task document"),
+             "ENV_MEMBER", "d41-member")
+
+    # Every clause is exactly the three decoder failures, read off the parse
+    # tree so that a comment naming an exception cannot satisfy the law.
+    #
+    # `MemoryError` is deliberately absent from all four: whether a document
+    # exhausts memory is a fact about the *host*, so catching it would refuse
+    # the same package on one machine and admit it on another -- a
+    # host-dependent verdict on a portable artifact is worse than a visible
+    # crash. `TypeError` is absent because `json.loads` raises it only for a
+    # non-`str` argument, which only a bug in the reader can produce; a bug in
+    # the verifier must never be reported as a bad package.
+    want = {"ValueError", "UnicodeDecodeError", "RecursionError"}
+    for fn in (BD.read_manifest, BD.verify_bundle,
+               ES.open_environment, ES._read_member):
+        got = _caught_by(fn, "is not valid JSON")
+        assert got == want, (fn.__name__, got)
+
+
 def test_d40_the_earlier_laws_and_the_packet_gates_are_untouched():
     """A completeness check over this battery, not a re-run of it -- D1-D30 are
     re-run by the battery itself, in this process, every time. What is asserted
@@ -1345,7 +1458,7 @@ def test_d40_the_earlier_laws_and_the_packet_gates_are_untouched():
     laws = sorted(k for k in globals()
                   if k.startswith("test_d") and callable(globals()[k]))
     numbers = sorted(int(k.split("_")[1][1:]) for k in laws)
-    assert numbers == list(range(1, 41)), numbers
+    assert numbers == list(range(1, 42)), numbers
 
     # The packet gate is a source-release gate for a reviewer. It knows nothing
     # about the package rung and nothing about substrate admission.

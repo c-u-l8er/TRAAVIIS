@@ -161,7 +161,23 @@ def make_handler(adapter, *, log=None):
             raw = self.rfile.read(length)
             try:
                 return json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError) as exc:
+            except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+                # `RecursionError` is the one that is easy to miss: it is a
+                # `RuntimeError`, not a `ValueError`, so a *legal* JSON document
+                # nested past the decoder's stack used to escape this handler
+                # entirely, killing the request thread and dropping the
+                # connection with no response at all. `MAX_BODY_BYTES` does not
+                # bound it — 200 000 nested arrays is 400 kB, well inside 8 MiB.
+                #
+                # The distinction being kept is the one `status_for` is built
+                # around: a dropped connection reads as "the server broke", which
+                # invites a retry that cannot help and which no submitter is
+                # accountable for. This body is the candidate's own bytes, so an
+                # undecodable one is a fact about the submission — the same
+                # `ORS_BAD_REQUEST`/400 an unbalanced brace already earns, and
+                # the same ruling `runner.run_agent` applies to an undecodable
+                # `result.json`. No new refusal code: this is not a new kind of
+                # wrongness, only a new way of reaching the existing one.
                 raise _ors.OrsError("ORS_BAD_REQUEST",
                                     "request body is not valid JSON: %s" % exc)
 

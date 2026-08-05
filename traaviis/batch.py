@@ -176,7 +176,42 @@ def load_candidate_set(path):
     except OSError as ex:
         raise BatchError("CANDIDATE_SET_UNREADABLE",
                          "could not read candidate set: %s" % ex)
-    except (ValueError, UnicodeDecodeError) as ex:
+    except (ValueError, UnicodeDecodeError, RecursionError) as ex:
+        # Every way the decoder can refuse these bytes lands on one code.
+        #
+        #   ValueError          `json.JSONDecodeError`, and the >4300-digit
+        #                       integer refusal (CVE-2020-10735).
+        #   UnicodeDecodeError  non-UTF-8 bytes out of `.decode`. A `ValueError`
+        #                       subclass, named because it comes from a
+        #                       different call than the rest.
+        #   RecursionError      a *legal* document nested past the decoder's
+        #                       stack. It is a `RuntimeError`, so the clause
+        #                       used to let it through: measured, a 400 kB file
+        #                       of nested arrays killed `load_candidate_set`
+        #                       outright instead of refusing it.
+        #
+        # Unlike `ors_server._body` and `bundle.read_manifest`, this file is not
+        # third-party: an operator writes (or generates) their own candidate
+        # set, so there is no trust boundary here and nothing an adversary
+        # gains. The reason to catch it anyway is B1 -- *the whole plan is
+        # admitted before anything runs.* B1 is a claim about the shape of the
+        # failure, not only its timing: the operator is promised a named
+        # refusal naming the file, and an untyped `RecursionError` traceback is
+        # not that. The code is unchanged because this is not a new kind of
+        # wrongness, only a new way of reaching the existing one.
+        #
+        # Deliberately NOT caught:
+        #
+        #   TypeError    `json.loads` raises it only for a non-`str`/`bytes`
+        #                argument. The argument is the result of `.decode`, so
+        #                it is always a `str`; the only way to reach it is a bug
+        #                in this function, and a bug here must stay loud rather
+        #                than be reported as the operator's malformed file.
+        #   MemoryError  whether a document exhausts memory is a fact about the
+        #                host, not about the bytes. Catching it would refuse the
+        #                same candidate set on one machine and admit it on
+        #                another, and it would close nothing anyway: `fh.read()`
+        #                above has already loaded the whole file.
         raise BatchError("CANDIDATE_SET_MALFORMED",
                          "candidate set is not valid JSON: %s" % ex)
     return validate_candidate_set(doc)

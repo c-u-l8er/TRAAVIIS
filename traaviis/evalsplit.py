@@ -130,7 +130,30 @@ def open_environment(package, engine=None):
     with open(manifest_path, "rb") as fh:
         try:
             head = json.loads(fh.read().decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as ex:
+        except (ValueError, UnicodeDecodeError, RecursionError) as ex:
+            # `open_environment` is *the only door* into a package, so every way
+            # the decoder can refuse these third-party bytes has to land on
+            # `ENV_MALFORMED`. `RecursionError` is a `RuntimeError`, not a
+            # `ValueError`, so a *legal* document nested past the decoder's
+            # stack used to escape this clause and kill the evaluation -- and a
+            # crash before `sub.open_package` means the package was never
+            # admitted *or* refused, which is the one outcome a fail-closed door
+            # is built to exclude. 200 000 nested arrays is 400 kB.
+            #
+            # `UnicodeDecodeError` is a `ValueError` subclass and so already
+            # implied; it is named because it comes from `.decode`, not
+            # `json.loads`.
+            #
+            # Deliberately NOT caught, here and in `_read_member`:
+            #
+            #   TypeError    only a bug in this module can reach it (the
+            #                argument is always the `str` `.decode` returned),
+            #                and a bug in the reader must not be reported as a
+            #                malformed package.
+            #   MemoryError  a fact about the host, not about the bytes -- it
+            #                would refuse the same package on one machine and
+            #                admit it on another. It closes nothing here in any
+            #                case: `fh.read()` has already loaded the file.
             raise SplitError("ENV_MALFORMED",
                              "environment.json is not valid JSON: %s" % ex)
     profile = head.get("substrate_profile")
@@ -460,5 +483,10 @@ def _read_member(root, ref, what):
     with open(target, "rb") as fh:
         try:
             return json.loads(fh.read().decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as ex:
+        except (ValueError, UnicodeDecodeError, RecursionError) as ex:
+            # A member document out of somebody else's package: same clause and
+            # same reasoning as `open_environment` above. `ENV_MEMBER` already
+            # covers "this reference does not resolve to a document I can
+            # read", and an undecodably-deep member is one more way of being
+            # exactly that -- not a new kind of wrongness.
             raise SplitError("ENV_MEMBER", "%s is not valid JSON: %s" % (what, ex))

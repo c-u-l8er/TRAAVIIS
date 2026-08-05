@@ -8,6 +8,7 @@ observable-event change).
 Runs with pytest, or standalone: `python3 test/test_runner.py`.
 """
 
+import json
 import os
 import sys
 
@@ -188,6 +189,226 @@ def test_command_normalized_absolute_executable_not_in_trace():
     assert cmd[0] == os.path.basename(sys.executable)
     assert sys.executable not in cmd
     assert not any(os.path.isabs(tok) for tok in cmd)
+
+
+# --- A result the decoder cannot decode is `None`, never a crash -------------
+#
+# `run_agent` reads the candidate's `result.json` and hands the orchestrator a
+# parsed object or `None`; the clause that produces the `None` is the seam where
+# "the agent wrote nonsense" is separated from "the evaluator broke". §10a rules
+# that the first is a `fail`, so anything that reaches this clause and escapes
+# instead of being absorbed is a way for the evaluated agent to delete its own
+# evaluation.
+
+def test_a_pathologically_nested_result_is_none_not_a_crash():
+    """A legal-but-undecodable `result.json` yields `None`, and the run completes.
+
+    The bytes here are valid RFC 8259 — a nested array, no syntax error anywhere
+    — but `json.loads` cannot decode them: it raises `RecursionError`, which is a
+    `RuntimeError`, so the guard's original `(ValueError, UnicodeDecodeError)`
+    did not catch it. Measured before the fix, through the committed
+    `residency-demo` bundle: `trvs eval-one` died with a traceback, exit 1, no
+    receipt on stdout and nothing under `--output`. A crashed run is not a bad
+    run, it is an absent one — `compare` refuses a pair it cannot read, so the
+    bad score simply never existed.
+
+    The law's own precondition is asserted rather than assumed. On CPython 3.12+
+    the decoder's bound is the real C stack measured at call time, not
+    `sys.getrecursionlimit()`, so a host with more stack could decode the
+    fixture's depth and quietly turn this into a test of nothing. The check runs
+    against the bytes the agent actually wrote (out of `workspace_after`), not a
+    constant copied from the fixture, so the two cannot drift.
+    """
+    r = _run("deepresult")
+    raw = r["workspace_after"]["result.json"]
+    try:
+        json.loads(raw)
+    except RecursionError:
+        pass  # the precondition holds: this host cannot decode those bytes
+    else:
+        raise AssertionError(
+            "this host decoded %d bytes of nested JSON; raise `_DEEP` in "
+            "test/fixtures/stub_agent.py or this law asserts nothing" % len(raw))
+
+    assert r["exit_code"] == 0        # the agent itself succeeded
+    assert r["timed_out"] is False
+    assert r["result"] is None        # undecodable -> None, scored as fail
+    # Everything else the run observed is still observed: the undecodable file is
+    # one output among several, not a poison pill for the whole capture.
+    assert r["patch_text"].startswith("--- a/src/mod.py")
+    assert "result.json" in r["files_created"]
+    assert r["trace"]["trace_id"].startswith("trace-")
+
+
+def test_an_undecodable_result_is_indistinguishable_from_no_result():
+    """`None` means one thing, so garbage cannot be a third state to exploit.
+
+    `nooutput` writes no `result.json` at all and `deepresult` writes one that
+    cannot be decoded. Both must reach the orchestrator as the same `None`: if
+    an undecodable result were its own state, a downstream branch could treat it
+    as something other than the missing output §10a says it is.
+    """
+    assert _run("deepresult")["result"] is _run("nooutput")["result"] is None
+
+
+# --- A filename the evaluator cannot write down --------------------------------
+#
+# The two laws above close routes through the candidate's *submission* — bytes it
+# wrote into `result.json`. This one closes a route through the evaluator's own
+# *observation*: `_scan` walks the workspace after the run, and a POSIX filename
+# is bytes, so `os.walk` hands back a surrogate-escaped `str` for a name that is
+# not UTF-8. That name went straight into `files_created` and into
+# `files_created_digest`, where `identity.canonical_bytes` refused it and the
+# refusal escaped `run_agent` *before it returned*. Same erased-grade outcome as
+# the two above, one line of agent code, and no malformed byte required.
+
+def _badname_key(mapping):
+    """The one escaped key in ``mapping``, asserting the fixture reproduced.
+
+    On a filesystem that enforces UTF-8 names the stub's `open` raises and
+    `badname` degrades to `ok`; this is where that platform finds out, rather
+    than silently running a law about nothing.
+    """
+    keys = [k for k in mapping if k.startswith(RUN._UNDECODABLE_NAME_PREFIX)]
+    assert len(keys) == 1, (
+        "expected exactly one escaped name, got %r -- if this host's filesystem "
+        "rejects non-UTF-8 filenames the `badname` mode cannot reproduce here"
+        % (sorted(mapping),))
+    return keys[0]
+
+
+def test_an_undecodable_filename_is_recorded_not_a_crash():
+    """An agent cannot crash its evaluator by naming a file.
+
+    The stub writes `b"evil\\xff.txt"` and then submits the *same valid answer*
+    the `ok` mode submits — nothing about its output is malformed. Measured
+    before the fix, through the committed `residency-demo` bundle: `trvs
+    eval-one` exited 1 with `IdentityError [CANONICAL_ENCODING] ... the key at $
+    contains U+DCFF at offset 4`, printed no receipt and wrote nothing under
+    `--output`.
+
+    The run must complete and the file must appear in the inventory. Both halves
+    are the law: completing without recording it would be the *other* hack — a
+    candidate writing files the evidence does not know about.
+    """
+    r = _run("badname")
+    assert r["exit_code"] == 0
+    assert r["timed_out"] is False
+    key = _badname_key(r["files_created"])
+    # Everything else the run did is still recorded alongside it.
+    assert {"result.json", "candidate.patch"} <= set(r["files_created"])
+    assert r["trace"]["trace_id"].startswith("trace-")
+    assert r["result"]["format"] == "traaviis.agent-result.v1"
+    # ...and the record is lossless: the real bytes come back exactly.
+    raw = bytes.fromhex(key[len(RUN._UNDECODABLE_NAME_PREFIX):])
+    assert raw == b"evil\xff.txt", raw
+
+
+def test_an_undecodable_filename_still_trips_the_write_escape_gate():
+    """Recording it is not enough — the tamper gate has to be able to see it.
+
+    `policy_violations` is derived from the same maps, so the remedy that merely
+    *dropped* the offending entry would have taken the write-escape observation
+    (R3/E2) out with it: a candidate could write anywhere it liked as long as it
+    chose a name the evaluator could not spell. That is strictly worse than the
+    crash it would have replaced, because the episode then completes and looks
+    clean. Here the escaped name is outside `writable_paths` and is reported.
+    """
+    r = RUN.run_agent(
+        [sys.executable, STUB], CONTENT,
+        _policy(writable_paths=["src/"],
+                environment={"TRAAVIIS_STUB_MODE": "badname"}),
+    )
+    key = _badname_key(r["files_created"])
+    assert key in r["policy_violations"], r["policy_violations"]
+
+
+def test_the_escape_is_the_identity_on_every_encodable_name():
+    """No existing id moves, by construction rather than by luck over a corpus.
+
+    `_evidence_name` is only allowed to differ from its input where `str.encode`
+    refuses. Checked two ways: directly, over names chosen to sit near the
+    interesting edges (astral planes, combining marks, a literal backslash-x
+    sequence, a `%`), and at the identity level, by pinning that a normal run's
+    `trace-` is unchanged.
+    """
+    for name in ("src/mod.py", "spec/one.md", "a b/c.txt", "µ/é.txt",
+                 "\U0001F600.txt", "é.md", "evil\\xff.txt", "100%.txt",
+                 "/leading-slash-is-not-a-relpath", ""):
+        assert RUN._evidence_name(name) == name, name
+    # The literal-backslash name above is the collision a `backslashreplace`
+    # rendering would have created: it is encodable, so it keeps its own name,
+    # while the undecodable one is escaped into a namespace it cannot reach.
+    assert RUN._evidence_name("evil\udcff.txt") != "evil\\xff.txt"
+
+
+def test_an_escaped_name_can_never_collide_with_a_real_one():
+    """Injectivity, which is what stops two workspaces sharing one `trace-`.
+
+    Two independent reasons, both asserted: hex is injective on bytes, and the
+    escaped form starts with `/`, which `os.path.relpath` cannot produce for a
+    path under the root — so it is unreachable for a real file. The second is
+    also why `paths.safe_relposix` rejects it, which turns "someone opened an
+    evidence name as a path" into a loud error rather than a read of the wrong
+    file.
+    """
+    from traaviis.paths import PathError, safe_relposix
+
+    a = RUN._evidence_name("evil\udcff.txt")
+    b = RUN._evidence_name("evil\udcfe.txt")
+    assert a != b, "two distinct names collapsed onto one evidence name"
+    assert a.startswith("/")
+    try:
+        safe_relposix(a)
+    except PathError:
+        pass
+    else:
+        raise AssertionError("an escaped evidence name was accepted as a path")
+
+
+def test_a_snapshot_refuses_the_same_name_the_runner_escapes():
+    """The other half of the ruling: an operator's tree is not a candidate's.
+
+    `snapshot.build_snapshot` meets the identical byte sequence and *refuses*
+    it, and the asymmetry is deliberate. The runner is inventorying what the
+    agent under evaluation did, and an agent that can crash the evaluator can
+    delete its own grade — so that path must complete no matter what. A subject
+    tree is operator-authored input: nobody gains by crashing their own snapshot
+    build. And a snapshot's `files` keys become `content` keys, which
+    `runner._materialize` pushes through `safe_relposix` — so the runner's
+    escape, applied there, would seal a subject that admits cleanly and then
+    cannot be laid down.
+
+    What the fix buys is the message. Before it the operator got
+    `IdentityError ... the key at $ contains U+DCFF at offset 4`, which names no
+    file; now the refusal names the path and the raw bytes. This law lives in
+    the runner battery on purpose — it is the *contrast* that is being pinned,
+    and splitting the two halves across two files is how they drift apart.
+    """
+    import tempfile
+
+    from traaviis import snapshot as SNAP
+    from traaviis.paths import PathError
+
+    root = tempfile.mkdtemp(prefix="trvs-badname-snap-")
+    with open(os.path.join(root, "ok.md"), "wb") as fh:
+        fh.write(b"fine\n")
+    with open(os.path.join(root.encode(), b"evil\xff.txt"), "wb") as fh:
+        fh.write(b"x")
+
+    try:
+        SNAP.build_snapshot(root)
+    except PathError as exc:
+        assert "evil" in str(exc) and "6576696cff2e747874" in str(exc), exc
+    else:
+        raise AssertionError(
+            "build_snapshot sealed a name that is not UTF-8 -- or this host's "
+            "filesystem rejected the name and the law tested nothing")
+
+    # ...and an *excluded* unsealable name is not a refusal: exclusions run
+    # first, so a tree that never intended to seal the file still seals.
+    snap = SNAP.build_snapshot(root, exclusions=["evil*"])
+    assert set(snap["files"]) == {"ok.md"}
 
 
 def _main():

@@ -14,7 +14,10 @@ composition could quietly stop being true:
 - a pair with a missing side could be given a fabricated relation (B14);
 - one candidate's failure could abandon the rest of the matrix (B15);
 - a `candidate_key` could leak into something content-addressed (B18-B19);
-- a half-written matrix could be published (B22-B23).
+- a half-written matrix could be published (B22-B23);
+- a candidate set the decoder cannot decode could crash the admission step
+  instead of refusing it, so "admitted before anything runs" would hold for the
+  timing and not for the outcome (B31).
 
 The expensive half -- packing a two-task environment and running three
 candidates over it -- is built once and shared, because most laws are readings
@@ -26,6 +29,8 @@ Run directly:      python3 test/test_batch.py
 Run under pytest:  pytest test/test_batch.py
 """
 
+import ast
+import inspect
 import json
 import os
 import re
@@ -33,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -163,6 +169,30 @@ def _refuses(code, candidates, output_name="refused"):
             "a refused batch left an output directory behind"
         return ex
     raise AssertionError("expected %s" % code)
+
+
+def _caught_by(fn, needle):
+    """The exception names caught by the `except` clause in `fn` whose refusal
+    message contains `needle`.
+
+    Located on the parse tree, not in the source text: a comment naming an
+    exception then cannot satisfy a law about what is caught, and a name that
+    *is* caught cannot hide behind prose saying it is not. Selected by message
+    rather than by refusal code because one code is often reached from several
+    handlers, and the law is about one of them.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler):
+            continue
+        if not any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and needle in n.value for n in ast.walk(handler)):
+            continue
+        caught = handler.type
+        parts = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+        return {n.id for n in parts}
+    raise AssertionError("no except clause in %s mentions %r"
+                         % (fn.__name__, needle))
 
 
 # --- B1: the whole plan is admitted before anything runs -------------------
@@ -1019,6 +1049,82 @@ def test_b30b_an_unadmitted_batch_exits_2_from_the_cli():
              "--candidates", good, "--output", output)
     assert p.returncode == 2, (p.returncode, p.stderr)
     assert not os.path.exists(output)
+
+
+# --- B31: an undecodable candidate set is refused, not crashed on ----------
+
+def test_b31_an_undecodable_candidate_set_is_a_typed_refusal():
+    """B1 is a claim about the *shape* of the failure, not only its timing.
+
+    B2b already fixes the vocabulary for a candidate set that will not parse:
+    `CANDIDATE_SET_MALFORMED`. What it exercises are documents with a syntax
+    error or a wrong type -- everything a hand-edited file usually gets wrong,
+    and everything `json.loads` reports as a `ValueError`.
+
+    It is not everything `json.loads` raises. The document below is valid
+    RFC 8259 -- nested arrays, no syntax error -- but the decoder cannot decode
+    it, and the failure is `RecursionError`, a `RuntimeError`. The clause in
+    `load_candidate_set` named only `(ValueError, UnicodeDecodeError)`, so this
+    escaped as an untyped crash: measured, a 400 kB file killed the call.
+
+    Unlike the package readers (D41), no trust boundary is crossed here -- an
+    operator writes their own candidate set, and there is nothing an adversary
+    gains. The reason to catch it is still B1: *the whole plan is admitted
+    before anything runs*, and "admitted" means the operator is handed a named
+    refusal that names the file. A traceback is not an admission decision, and a
+    generated candidate set is exactly the kind that can be surprisingly deep
+    without anybody having typed it.
+
+    No new code: this is a new way of reaching the existing refusal, never a new
+    word in the vocabulary -- which B2b's list still fixes.
+    """
+    deep = "[" * 200_000 + "]" * 200_000
+    try:
+        json.loads(deep)
+    except RecursionError:
+        pass  # the precondition holds: this host's decoder refuses these bytes
+    else:
+        raise AssertionError(
+            "this host decoded the payload; deepen it or this law asserts nothing")
+
+    tmp = tempfile.mkdtemp(prefix="trvs-b31-")
+    try:
+        path = os.path.join(tmp, "candidates.json")
+        with open(path, "w") as fh:
+            fh.write(deep)
+        try:
+            B.load_candidate_set(path)
+        except B.BatchError as ex:
+            assert ex.code == "CANDIDATE_SET_MALFORMED", ex.code
+        else:
+            raise AssertionError("an undecodable candidate set was accepted")
+
+        # And the two neighbours of the clause stay where they are. A file that
+        # is not there is unreadable, not malformed -- widening the parse guard
+        # must not have swallowed that distinction.
+        try:
+            B.load_candidate_set(os.path.join(tmp, "absent.json"))
+        except B.BatchError as ex:
+            assert ex.code == "CANDIDATE_SET_UNREADABLE", ex.code
+        else:
+            raise AssertionError("a missing candidate set was accepted")
+
+        # The widening was necessary and is not implied: `RecursionError` is not
+        # a `ValueError`, so naming `ValueError` never covered it.
+        assert not issubclass(RecursionError, ValueError)
+
+        # And the clause is exactly three names. `MemoryError` is deliberately
+        # absent: whether a document exhausts memory is a fact about the *host*,
+        # so catching it would refuse the same file on one machine and admit it
+        # on another. `TypeError` is absent because `json.loads` raises it only
+        # for a non-`str` argument, which only a bug in this module can produce
+        # -- a bug in the reader must not be reported as the operator's bad
+        # file. Read off the parse tree rather than the text, so a comment
+        # cannot satisfy it.
+        assert _caught_by(B.load_candidate_set, "is not valid JSON") == \
+            {"ValueError", "UnicodeDecodeError", "RecursionError"}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ------------------------------------------------------------------- runner

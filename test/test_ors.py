@@ -1179,6 +1179,58 @@ def test_o29_an_ors_episode_and_a_local_episode_honestly_differ():
     assert local["artifacts"]["trace"]["trace_version"] == RUN.TRACE_VERSION
 
 
+def test_o31_an_undecodable_body_is_refused_not_dropped():
+    """A legal-but-undecodable request body earns a typed 400, not a dead socket.
+
+    The body is the submitter's own bytes, so `_body` is the seam where "you
+    sent nonsense" is separated from "the server broke". `status_for` says which
+    way an unlisted refusal falls and why: *a refusal whose status was never
+    considered should read as "your request was wrong" rather than as "the
+    server broke" — the second invites a retry that cannot help.*
+
+    A `RecursionError` out of `json.loads` used to fall the wrong way. The
+    document below is valid RFC 8259 — nested arrays, no syntax error — but the
+    decoder cannot decode it, and `RecursionError` is a `RuntimeError`, so the
+    handler's `(ValueError, UnicodeDecodeError)` clause did not catch it: the
+    request thread died and the connection closed with no response. Measured
+    live before the fix, against a really-bound server, as
+    `RemoteDisconnected`. `MAX_BODY_BYTES` is not a defence — the payload here
+    is 400 kB against an 8 MiB bound.
+
+    The same shape as `runner.run_agent`'s undecodable `result.json`, and the
+    same ruling: an undecodable submission is a fact about the submitter.
+    Refused with the code an unbalanced brace already earns, so this adds a way
+    of reaching the vocabulary, never a word to it (o30 checks that).
+    """
+    deep = b"[" * 200_000 + b"]" * 200_000
+    assert len(deep) < OS.MAX_BODY_BYTES, \
+        "the payload must be admissible, or this tests ORS_BODY_TOO_LARGE"
+    try:
+        json.loads(deep.decode("utf-8"))
+    except RecursionError:
+        pass  # the precondition holds: this host's decoder refuses these bytes
+    else:
+        raise AssertionError(
+            "this host decoded the payload; deepen it or this law asserts nothing")
+
+    with _Live(_adapter()) as live:
+        req = urllib.request.Request(live.base + "/sessions", data=deep,
+                                     method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            urllib.request.urlopen(req, timeout=30)
+            raise AssertionError("an undecodable body was accepted")
+        except urllib.error.HTTPError as exc:
+            status, payload = exc.code, json.loads(exc.read().decode("utf-8"))
+        assert status == 400, status
+        assert payload["error"]["code"] == "ORS_BAD_REQUEST", payload
+
+        # The *same* server is still serving. A per-request refusal must not be
+        # a way to take the submission surface away from everybody else, and
+        # asserting that on a freshly built server would not have said so.
+        assert live.request("GET", "/describe")[0] == 200
+
+
 def test_o30_the_slice_added_no_rung_no_receipt_field_and_one_new_verb():
     """The completeness law: what this slice was allowed to add, and no more.
 
@@ -1237,9 +1289,9 @@ def test_o30_the_slice_added_no_rung_no_receipt_field_and_one_new_verb():
 
     # The battery is complete and numbered without gaps.
     names = _law_names()
-    assert len(names) == 30, "expected 30 laws, found %d" % len(names)
+    assert len(names) == 31, "expected 31 laws, found %d" % len(names)
     numbers = sorted(int(n.split("_")[1][1:]) for n in names)
-    assert numbers == list(range(1, 31)), numbers
+    assert numbers == list(range(1, 32)), numbers
 
 
 def main():

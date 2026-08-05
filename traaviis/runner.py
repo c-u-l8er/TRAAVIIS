@@ -38,7 +38,10 @@ GPT-5.6 closure rulings implemented here:
       for created/modified/deleted maps, ``{relpath: mode}`` for mode changes, and
       the sorted ``policy_violations`` list; ``result_file_digest`` is sha256 of
       the raw result bytes. The ``command`` is normalized (absolute argv tokens →
-      basename) so ``trace-…`` is host-independent.
+      basename) so ``trace-…`` is host-independent. Every ``relpath`` in those
+      maps is the *canonical evidence name* of the file (``_evidence_name``), not
+      the raw string ``os.walk`` returned — see that function for why the two can
+      differ and why the difference is the agent's doing.
 """
 
 import hashlib
@@ -111,7 +114,92 @@ def _materialize(content: Mapping[str, str], root: str) -> None:
             fh.write(data)
 
 
+#: Marker for the canonical evidence name of a file whose real name is not UTF-8.
+#:
+#: A leading ``/`` is deliberate and load-bearing twice over. ``_scan`` builds
+#: every name with ``os.path.relpath(abspath, root)``, which for a path under
+#: ``root`` can never begin with ``/`` — so no real file can ever collide with an
+#: escaped one, which is what makes ``_evidence_name`` injective. And
+#: ``paths.safe_relposix`` *rejects* a leading ``/``, so if one of these names is
+#: ever mistaken for a path to open, the mistake is a loud ``PathError`` rather
+#: than a read of some other file.
+_UNDECODABLE_NAME_PREFIX = "/undecodable-name.v1:"
+
+
+def _evidence_name(rel: str) -> str:
+    """The canonical evidence name of one scanned path.
+
+    A POSIX filename is **bytes**, not text. ``os.walk`` hands them back as a
+    ``str`` decoded with ``surrogateescape`` (PEP 383), so a file the agent
+    created as ``b"evil\\xff.txt"`` arrives here as ``"evil\\udcff.txt"`` — a
+    ``str`` holding a lone surrogate, which is precisely what
+    ``identity.canonical_bytes`` refuses (``CANONICAL_ENCODING``). That name goes
+    into ``files_created`` and thence into ``files_created_digest``, so before
+    this function existed **one line in an agent** —
+    ``open(b'evil\\xff.txt','wb').write(b'x')`` — raised an unhandled
+    ``IdentityError`` out of ``run_agent``, *before it returned*. No result, no
+    receipt, no bundle, no score: the candidate deleted its own grade. It is the
+    same reward hack as the two closed in ``evalone._finding_artifact`` and in
+    the result-decode handler below, and strictly the easiest of the three — the
+    agent does not have to write a single malformed byte, and here it does not
+    even have to submit a bad answer.
+
+    **This is not the same kind of input as those two, and it does not get the
+    same remedy.** A finding is the candidate's *submission*: refusing to read a
+    malformed submission costs the candidate its claim, so collapsing it to the
+    empty finding is honest. This map is the evaluator's *own observation* of
+    what the run did to the workspace. An observation that drops what it could
+    not name is a false record, and false in the direction that pays the
+    candidate. Two remedies were rejected for exactly that reason:
+
+    * **Collapse the whole map** (the ``_finding_artifact`` answer). One badly
+      named file would erase the evidence for every file the run created — and
+      ``policy_violations`` is computed from these maps, so the write-escape gate
+      would go blind at the same moment. That is a *better* hack than the crash
+      it replaces, because the episode now completes and looks clean.
+    * **Drop just the offending entry.** Then a candidate can write files the
+      evidence does not record, including outside ``writable_paths``: a crash
+      (loud, no score) becomes a silent clean pass. Strictly worse.
+
+    So the name is **escaped losslessly** instead: the inventory still records
+    that something was created, at a name that is exactly recoverable
+    (``bytes.fromhex`` of the suffix) and can be hashed. The two properties that
+    make this safe are stated as laws in ``test_runner.py``:
+
+    * **Identity on every encodable name.** The escape is applied only where
+      ``str.encode`` refuses, so every workspace that worked before mints exactly
+      the digests it minted before. No existing id moves — by construction, not
+      by luck over a corpus.
+    * **Injective.** Hex is injective on bytes and the prefix is unreachable for
+      a real relative path, so two distinct workspaces can never share one
+      ``trace-``.
+
+    One consequence, stated rather than hidden: ``writable_paths`` globs are
+    matched against this canonical name, so a policy of ``["*.txt"]`` does not
+    admit ``b"evil\\xff.txt"`` the way it admits ``evil.txt``. That is the safe
+    direction for a gate — a name that cannot be written down is treated as
+    *not* matching the permission rather than as invisible — and it keeps one
+    rule over one name, so a replayer checking the persisted violation list
+    against the persisted policy reaches the same verdict this run did.
+    """
+    try:
+        rel.encode("utf-8")
+    except UnicodeEncodeError:
+        # ``os.fsencode`` is the exact inverse of the ``os.fsdecode`` ``os.walk``
+        # applied, so this recovers the filename's real bytes rather than a
+        # re-encoding of them under some other assumption.
+        return _UNDECODABLE_NAME_PREFIX + os.fsencode(rel).hex()
+    return rel
+
+
 def _scan(root: str) -> Dict[str, dict]:
+    """``{canonical evidence name: {hash, mode, os_path}}`` for every file under ``root``.
+
+    ``os_path`` is the concrete host path the entry was read from. It is carried
+    because the canonical name is not always openable (see ``_evidence_name``),
+    and it is never hashed: callers project ``hash`` / ``mode`` out and the
+    digests are taken over those projections alone.
+    """
     out: Dict[str, dict] = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames
@@ -124,7 +212,8 @@ def _scan(root: str) -> Dict[str, dict]:
             with open(abspath, "rb") as fh:
                 digest = _sha256_bytes(fh.read())
             mode = stat.S_IMODE(os.lstat(abspath).st_mode)
-            out[rel] = {"hash": digest, "mode": f"{mode:04o}"}
+            out[_evidence_name(rel)] = {
+                "hash": digest, "mode": f"{mode:04o}", "os_path": abspath}
     return out
 
 
@@ -212,8 +301,66 @@ def run_agent(
                 result_bytes = fh.read()
             try:
                 result_obj = json.loads(result_bytes.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                result_obj = None  # malformed → orchestrator scores as fail
+            except (ValueError, UnicodeDecodeError, RecursionError):
+                # malformed → orchestrator scores as fail.
+                #
+                # These are the candidate's own bytes, and §10a already rules on
+                # them: *a missing or malformed agent output is a `fail`, never
+                # an `error`.* So every way this decode can refuse the bytes has
+                # to land here, not escape as an untyped crash — a crashed run
+                # persists no receipt, and `batch`/`compare` refuse a pair they
+                # cannot read, so a candidate that crashes its evaluator has
+                # erased the bad score rather than earned a good one.
+                #
+                # The clause used to name only the first two, which is the whole
+                # of what a *hand-written* malformed file raises but not the
+                # whole of what `json.loads` raises:
+                #
+                #   ValueError          `json.JSONDecodeError` — a syntax error;
+                #                       also the >4300-digit integer refusal
+                #                       (CVE-2020-10735), which is why a huge
+                #                       numeric literal was already covered.
+                #   UnicodeDecodeError  non-UTF-8 bytes out of `.decode`. It is a
+                #                       `ValueError` subclass and so is already
+                #                       implied, but it is named because it comes
+                #                       from a different call than the rest.
+                #   RecursionError      a *legal* document nested past the
+                #                       decoder's stack. This is the one that was
+                #                       missing: it is a `RuntimeError`, so the
+                #                       old clause let it through. Measured: a
+                #                       200 000-deep array is 400 kB of ordinary
+                #                       bytes any agent can write, and before
+                #                       this line it killed `eval-one` outright
+                #                       (exit 1, no receipt, nothing persisted).
+                #
+                # Deliberately NOT caught here:
+                #
+                #   TypeError    `json.loads` raises it only for an argument that
+                #                is not `str`/`bytes`. The argument is the result
+                #                of `.decode`, so it is always a `str`: the only
+                #                way to reach it is a bug in this function, and a
+                #                bug in the evaluator must not be scored as
+                #                somebody's bad finding.
+                #   MemoryError  an out-of-memory parse is *not* classified here,
+                #                on purpose. Two reasons. It is not attributable:
+                #                whether a given document exhausts memory is a
+                #                fact about the host, so catching it would score
+                #                the same submission `fail` on one machine and
+                #                let it through on another — a host-dependent
+                #                reward is worse than a visible crash. And it
+                #                would not close anything anyway: `fh.read()`
+                #                above has already loaded the whole file, so an
+                #                oversized `result.json` dies before this `try`
+                #                is entered. The real closure for size is a
+                #                declared byte bound on the result file (a fact
+                #                about the bytes, identical on every host), which
+                #                is a policy change, not a handler.
+                #
+                # Like `evalone._finding_artifact`, this offers the bytes to the
+                # parser and honours its refusal rather than re-deriving what
+                # JSON depth this host can take. A pre-parse depth check would be
+                # a second, drifting copy of the decoder's domain.
+                result_obj = None
 
         patch_text: Optional[str] = None
         pp = safe_join(root, patch_path)
@@ -229,9 +376,15 @@ def run_agent(
             except UnicodeDecodeError:
                 patch_text = None
 
+        # Keyed by the canonical evidence name, opened by the concrete host path
+        # ``_scan`` already read it from. Re-deriving the path from the key (the
+        # old ``safe_join(root, rel)``) cannot work for an escaped name and was
+        # never necessary: every key here came from this function's own walk
+        # under ``root``, so there is nothing to re-validate, and reading the
+        # recorded path guarantees the bytes reported are the bytes hashed.
         workspace_after = {}
-        for rel in after:
-            with open(safe_join(root, rel), "rb") as fh:
+        for rel, entry in after.items():
+            with open(entry["os_path"], "rb") as fh:
                 workspace_after[rel] = fh.read().decode("utf-8", errors="replace")
 
         event = {

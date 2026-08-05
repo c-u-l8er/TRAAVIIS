@@ -125,24 +125,149 @@ _LIVE_VERIFIERS: Dict[str, Verifier] = {
 _PSEUDO_SIGNALS = ("native", "oracle")
 
 
+def _finding_document(summary: Any, citations: Any) -> Dict[str, Any]:
+    """The unsealed ``FindingV1`` body. Byte-identical to what this always built."""
+    return {
+        "finding_version": "residency.finding.v1",
+        "claims": [{"statement": summary, "citations": citations}],
+    }
+
+
 def _finding_artifact(result: Any) -> Dict[str, Any]:
     """Build a ``FindingV1`` from the agent result, tolerating malformed JSON.
 
     A result that is not a JSON object — a list, a scalar, or ``None`` — yields an
     empty finding (blocker 7): never a crash, and the verifiers score it ``fail``.
+
+    **One of the places the candidate's bytes reach the identity spine is here,
+    so this is where *these* bytes are stopped from breaking it.** The stronger
+    sentence this used to carry — "the candidate's bytes reach the identity
+    spine here, so this is where they are stopped" — read as a statement of
+    coverage and was false: an agent also reaches the spine through
+    ``runner._scan``, which walks the workspace after the run and puts the
+    *filenames it finds* into the trace's ``files_*`` digests. That route needs
+    no ``result.json`` at all (see ``runner._evidence_name``). This guard is one
+    caller's answer to one input; it is not the boundary.
+
+    ``summary`` and ``citations`` come verbatim
+    out of the agent's own ``result.json``; ``finding_id`` is inside
+    ``identity._EPISODE_IDENTITY_KEYS``; so the agent *being evaluated* chooses
+    bytes that are hashed into the evaluator's episode id. Some of those bytes
+    are not hashable, and ordinary ``json.loads`` produces them: a ``"\\ud800"``
+    escape parses to a lone surrogate that ``canonical_bytes`` cannot encode, a
+    bare ``NaN`` token parses to a float the canonicalizer refuses
+    (``CANONICAL_NON_FINITE``), and a citation nested a few tens of thousands
+    deep parses fine and then exhausts the serializer's stack. All three were
+    verified reachable from a plain agent-written result file.
+
+    Before this guard the refusal escaped ``eval_one`` uncaught: no receipt, no
+    episode bundle, no score — a **candidate could crash its own evaluation to
+    avoid being scored by it**, and a crashed run is not comparable, so the bad
+    score simply never existed. That is a reward-hacking surface, and it is
+    closed by classifying the input the way §10a already classifies every other
+    malformed agent output: *a malformed submission is a fact about the
+    candidate.* It is scored, not escalated. ``error``/exit 2 is reserved for
+    substrate unavailability, and an agent writing a lone surrogate is not the
+    substrate being unavailable — it is the agent's answer.
+
+    So an unhashable finding collapses to the **empty finding**, which is exactly
+    what blocker 7 already yields for a result that is not an object, and which
+    ``verify_citations`` and ``verify_finding_completeness`` both score ``fail``.
+    The episode completes, the reward is capped by the citations floor, and the
+    receipt is minted and persisted — which is the whole of what is claimed
+    here, and less than an earlier draft claimed.
+
+    **The receipt does not record *why* the finding is empty, and must not.**
+    All three refusal kinds — and a submission that was simply never a JSON
+    object — collapse to the *byte-identical* empty finding
+    (``finding-62466b21…``), so ``outputs.finding_id`` cannot tell them apart.
+    That is the design, not a gap in it: ``test_evalone``'s
+    ``test_a_pathologically_nested_result_scores_what_an_empty_one_scores``
+    states the reason as a law — a distinguishable state is a lever, and
+    submitting garbage must not say anything about a candidate that submitting
+    nothing does not. The receipt has no other slot for the distinction either;
+    every key it carries is inside ``identity._EPISODE_IDENTITY_KEYS``, so
+    adding one would move every episode id ever minted.
+
+    What survives is *evidence*, not *receipt*: ``trace.result_file_digest``
+    pins the exact bytes the agent wrote (and a missing file digests as the
+    empty string, so "wrote garbage" and "wrote nothing" are distinguishable
+    there), and the episode bundle persists the process ``stdout`` / ``stderr``.
+    The distinction is available to anyone auditing the run and unavailable to
+    anything scoring it. That is the correct split.
+
+    Two things this deliberately does **not** do:
+
+    * It does not re-derive the canonicalizer's rules. The authority on what can
+      be hashed is ``identity.canonical_bytes``; a shape check copied up here
+      would be a second, drifting copy of that domain. The finding is offered to
+      the hasher and the refusal is honoured — so as ``identity.py`` tightens,
+      this caller stays correct without being edited.
+    * It does not *drop* the offending citation and keep the rest. Dropping is
+      the version of this fix that pays the candidate: a submission of one good
+      citation plus one unhashable one would lose the bad one and could then
+      *pass* ``citations``, making garbage a way to launder a partial answer.
+      Collapsing is all-or-nothing, so a malformed submission can only ever
+      score what an empty one scores.
+
+    Because the fallback runs only on inputs that previously raised, **no finding
+    that has ever been minted changes id**: every input that produced an id
+    before produces the same id now.
     """
     raw = result.get("finding") if isinstance(result, Mapping) else None
     if not isinstance(raw, Mapping):
         raw = {}
-    summary = raw.get("summary", "")
     citations = raw.get("citations", [])
     if not isinstance(citations, list):
         citations = []
-    finding = {
-        "finding_version": "residency.finding.v1",
-        "claims": [{"statement": summary, "citations": citations}],
-    }
-    finding["finding_id"] = identity.finding_id(finding)
+    finding = _finding_document(raw.get("summary", ""), citations)
+    try:
+        finding["finding_id"] = identity.finding_id(finding)
+    except (ValueError, TypeError, RecursionError):
+        # Three named failures, one meaning. ValueError covers both
+        # identity.IdentityError (the typed refusals: non-finite number,
+        # non-string key) and UnicodeEncodeError (a lone surrogate, which is a
+        # ValueError subclass); TypeError covers a value json.dumps cannot
+        # serialize at all; RecursionError covers a document json.loads accepted
+        # and json.dumps cannot re-emit — measured, a citation ~50 000 objects
+        # deep parses and then blows the serializer's stack. Each one means the
+        # candidate submitted something that cannot be sealed, and the empty
+        # finding is the answer to all of them. Named individually rather than
+        # as a bare `Exception` so a genuine bug in the spine still surfaces as
+        # a bug instead of being scored as somebody's bad finding. The stack has
+        # already unwound by the time this handler runs, so the fallback's own
+        # hash has room.
+        #
+        # `identity.IdentityError` subclasses `ValueError`, so *every* typed
+        # refusal the spine has — present and future, whatever its `code` —
+        # lands here. Catching by `code` instead was considered and rejected:
+        #
+        #   * A code allowlist fails **open** into the exact hole this handler
+        #     exists to close. A refusal added later with a code not on the list
+        #     escapes `eval_one`, and an escaped refusal is a crashed episode:
+        #     no receipt, nothing persisted, the bad score erased. Catching the
+        #     class fails **closed** into a wrong score, which is visible in the
+        #     receipt and can be argued with. Wrong-and-recorded beats
+        #     absent-and-unarguable when the threat is a candidate deleting its
+        #     own grade.
+        #   * More decisively, `code` does not partition by blame, so the
+        #     allowlist could not be written even in principle.
+        #     `CANONICAL_ENCODING` is raised both by a candidate's lone
+        #     surrogate in a citation *and* by the evaluator's own workspace
+        #     rescan meeting a non-UTF-8 filename (the defect fixed in
+        #     `runner._evidence_name`). One code, two blame-holders. A code
+        #     names the law broken, never who broke it. `test_evalone` states
+        #     this as a law rather than leaving it as an assertion here.
+        #
+        # Attribution comes from the **narrowness of the guarded input**, not
+        # from the exception taxonomy: the `try` above covers exactly one call,
+        # over exactly one document, built from the candidate's own bytes plus
+        # two constants. Nothing evaluator-owned is offered to the hasher inside
+        # this handler's reach, so there is nothing evaluator-owned for it to
+        # misattribute. Keep it that way — widening the guarded region is what
+        # would make the class catch wrong, not the class catch itself.
+        finding = _finding_document("", [])
+        finding["finding_id"] = identity.finding_id(finding)
     return finding
 
 

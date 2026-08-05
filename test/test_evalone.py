@@ -164,18 +164,23 @@ _pass_identity.version = "residency.identity.v1"
 ALL_PASS = {"tests": _pass_tests, "identity": _pass_identity}
 
 
-def _eval(mode, required, extra=ALL_PASS, env=None):
+def _evaluate(mode, required, extra=ALL_PASS, env=None):
+    """The complete `EvaluationRunV1` (receipt **and** artifacts) for one mode."""
     task = _task(required)
     if env is not None:
         task["agent_run_policy"]["environment"] = env
     else:
         task["agent_run_policy"]["environment"]["TRAAVIIS_STUB_MODE"] = mode
-    return E.eval_one(
+    return E.evaluate(
         task, CONTENT, AGENT, REWARD_SPEC,
         snapshot=_snapshot(),
         extra_verifiers=extra, platform="linux-x86_64",
         toolchain=TOOLCHAIN,
     )
+
+
+def _eval(mode, required, extra=ALL_PASS, env=None):
+    return _evaluate(mode, required, extra=extra, env=env)["receipt"]
 
 
 def test_happy_path_full_reward_valid_episode():
@@ -321,6 +326,256 @@ def test_malformed_json_result_never_crashes():
     assert r["status"] == R.STATUS_OK
     assert r["verification"]["citations"] == R.FAIL
     assert r["episode_id"].startswith("episode-")
+
+
+# --- An unhashable submission is scored, not escalated -----------------------
+#
+# The candidate's own bytes reach the identity spine through `_finding_artifact`
+# (`summary` and `citations` come verbatim out of its `result.json`, and
+# `finding_id` is inside `identity._EPISODE_IDENTITY_KEYS`). Some of those bytes
+# cannot be hashed, and plain `json.loads` produces them. The three laws below
+# are the difference between that being a fact about the candidate and being a
+# way out of the evaluation.
+
+def test_an_unhashable_finding_is_scored_not_escalated():
+    """A candidate cannot crash its own evaluation to avoid a bad score.
+
+    `result.json` here is well-formed JSON — it parses — but it carries a lone
+    surrogate and a `NaN`, so the finding cannot be canonicalized. That used to
+    escape `eval_one` as an untyped `UnicodeEncodeError`: no receipt, no episode
+    bundle, no reward, nothing for `compare` to read. A crashed run is not a bad
+    run, it is an absent one, which is precisely what a candidate facing a bad
+    score would want.
+
+    §10a already says what this is: *a malformed agent output is a `fail`, never
+    an `error`.* So the episode completes and the submission scores, and the
+    routing is the point — `status == ok` (exit 0, a valid episode with a bad
+    score), never `error` (exit 2, "the substrate could not answer").
+    """
+    r = _eval("unhashable", ["citations", "patch", "tests", "identity"])
+    assert r["status"] == R.STATUS_OK, r          # not error: not the substrate
+    assert r["validity"] == R.VALID
+    assert r["verification"]["citations"] == R.FAIL
+    assert r["verification"]["finding_completeness"] == R.FAIL
+    assert r["reward"] is not None, "an unhashable submission escaped scoring"
+    assert abs(r["reward"] - 0.25) < 1e-9         # the citations-fail cap
+    assert r["episode_id"].startswith("episode-")
+    assert r["outputs"]["finding_id"].startswith("finding-")
+
+
+def test_an_unhashable_finding_scores_exactly_what_an_empty_one_scores():
+    """Collapse is all-or-nothing, so garbage is not a way to launder an answer.
+
+    The alternative fix — drop the citation that will not hash and keep the
+    rest — pays the candidate: one good citation plus one unhashable one would
+    lose the bad one and could then *pass* `citations`. Here the unhashable
+    submission mints the same `finding-` as a result that was never an object at
+    all, so the best it can do is what submitting nothing does.
+    """
+    unhashable = _eval("unhashable", ["citations", "patch"])
+    nothing = _eval("listresult", ["citations", "patch"])
+    assert unhashable["outputs"]["finding_id"] == nothing["outputs"]["finding_id"]
+    assert unhashable["verification"]["citations"] == \
+        nothing["verification"]["citations"] == R.FAIL
+
+
+def test_a_hashable_finding_is_untouched_by_the_unhashable_guard():
+    """The guard runs only where the spine refused. Nothing else moved.
+
+    Stated as a law because the guard's whole claim is that it changes behaviour
+    on exactly the inputs that used to raise: a well-formed finding must still
+    mint the id it always minted, computed here from the same document
+    `_finding_artifact` builds rather than pinned as a literal (a pinned hash
+    would move with the fixture and stop being about the guard).
+    """
+    result = {"finding": {"summary": "spec/one.md line 2 contradicts src/mod.py",
+                          "citations": [{"path": "spec/one.md", "start_line": 2,
+                                         "end_line": 2, "quote": "beta"}]}}
+    document = {
+        "finding_version": "residency.finding.v1",
+        "claims": [{"statement": result["finding"]["summary"],
+                    "citations": result["finding"]["citations"]}],
+    }
+    got, want = E._finding_artifact(result)["finding_id"], I.finding_id(document)
+    assert got == want, "the guard moved a well-formed finding: %s != %s" % (got, want)
+
+
+# --- ...and the same hack one layer earlier ---------------------------------
+#
+# The three laws above close the route through `_finding_artifact`: bytes that
+# `json.loads` accepted and the identity spine refused. This one closes the
+# route through `runner.run_agent`, where `json.loads` refuses the bytes itself
+# and the run dies before any finding is built. The submission never reaches
+# `_finding_artifact`, so the guard above cannot see it; the outcome the
+# candidate buys is identical (exit 1, no receipt, nothing persisted) and so is
+# the ruling that closes it (§10a: a malformed agent output is a `fail`).
+
+def test_a_pathologically_nested_result_is_scored_not_escalated():
+    """A candidate cannot crash the *decoder* to avoid being scored either.
+
+    `result.json` here is valid RFC 8259 JSON with no syntax error in it —
+    200 000 nested arrays, 400 kB of ordinary bytes any agent can write. It does
+    not parse: `json.loads` raises `RecursionError`, a `RuntimeError`, which the
+    runner's `(ValueError, UnicodeDecodeError)` clause did not catch. Measured
+    before the fix through the committed `residency-demo` bundle: `trvs eval-one`
+    exited 1 with a traceback, printed no receipt, and wrote nothing under
+    `--output`.
+
+    The routing is the point, exactly as for the unhashable case: `status == ok`
+    (a valid episode carrying a bad score), never `error` (exit 2, "the substrate
+    could not answer"). A JSON document too deep for the decoder is the agent's
+    answer, not the substrate being unavailable.
+    """
+    r = _eval("deepresult", ["citations", "patch", "tests", "identity"])
+    assert r["status"] == R.STATUS_OK, r          # not error: not the substrate
+    assert r["validity"] == R.VALID
+    assert r["verification"]["citations"] == R.FAIL
+    assert r["verification"]["finding_completeness"] == R.FAIL
+    assert r["reward"] is not None, "an undecodable submission escaped scoring"
+    assert abs(r["reward"] - 0.25) < 1e-9         # the citations-fail cap
+    assert r["episode_id"].startswith("episode-")
+    assert r["outputs"]["finding_id"].startswith("finding-")
+
+
+def test_a_pathologically_nested_result_scores_what_an_empty_one_scores():
+    """One undecodable-submission price, shared with every other malformed one.
+
+    `listresult` (parses, wrong type), `unhashable` (parses, cannot be sealed)
+    and `deepresult` (does not parse at all) are three different failures of the
+    same contract, and they must all mint the same empty `finding-`. If the new
+    route collapsed to anything else it would be a distinguishable state, and a
+    distinguishable state is a lever: submitting garbage would say something
+    about the candidate that submitting nothing does not.
+    """
+    deep = _eval("deepresult", ["citations", "patch"])
+    nothing = _eval("listresult", ["citations", "patch"])
+    unhashable = _eval("unhashable", ["citations", "patch"])
+    assert deep["outputs"]["finding_id"] == nothing["outputs"]["finding_id"] \
+        == unhashable["outputs"]["finding_id"]
+    assert deep["verification"]["citations"] == \
+        nothing["verification"]["citations"] == R.FAIL
+
+
+# --- ...and the same hack through the evaluator's own observation ------------
+#
+# The five laws above close both routes through the candidate's *submission*.
+# This one closes the route through the evaluator's *rescan*: `runner._scan`
+# walks the workspace after the run, and a POSIX filename is bytes, so a file the
+# agent created as `b"evil\xff.txt"` comes back surrogate-escaped and lands in
+# `files_created_digest`. The candidate has to write no malformed byte at all —
+# one `open()` call, and `run_agent` raised before it returned.
+
+def test_an_undecodable_filename_is_scored_not_escalated():
+    """A candidate cannot crash its own evaluation by naming a file, either.
+
+    The `badname` stub submits the *same valid answer* the `ok` stub does and
+    additionally creates one file whose name is not UTF-8. Measured before the
+    fix, through the committed `residency-demo` bundle: `trvs eval-one` exited 1
+    with `IdentityError [CANONICAL_ENCODING]`, printed no receipt and wrote
+    nothing under `--output`.
+
+    The routing follows §10a exactly as for the two submission routes: the
+    process ran, exited 0, and produced everything the evaluator asked for, so
+    nothing about the substrate was unavailable. `status == ok`, never `error`.
+    """
+    r = _eval("badname", ["citations", "patch", "tests", "identity"])
+    assert r["status"] == R.STATUS_OK, r
+    assert r["validity"] == R.VALID
+    assert r["reward"] is not None, "an undecodable filename escaped scoring"
+    assert r["episode_id"].startswith("episode-")
+
+
+def test_an_undecodable_filename_costs_the_answer_nothing_and_hides_nothing():
+    """The score is untouched; the evidence is not. Both halves are the law.
+
+    Unlike the three malformed-submission routes, this one does not collapse to
+    anything: the agent's *answer* was perfectly good and nothing about a badly
+    named scratch file makes it worse, so the reward must be exactly the `ok`
+    reward. But the episode is not the same episode — the file is recorded, so
+    the trace's `files_created_digest` differs, and `trace_id` is inside
+    `identity._EPISODE_IDENTITY_KEYS`. An `episode-` that did *not* move would
+    mean the evidence had quietly dropped the file, which is the hack this fix
+    is trading against: a candidate writing files the record does not show.
+    """
+    required = ["citations", "patch", "tests", "identity"]
+    ok = _eval("ok", required)
+    bad = _eval("badname", required)
+    assert bad["reward"] == ok["reward"]
+    assert bad["verification"] == ok["verification"]
+    assert bad["outputs"] == ok["outputs"]          # same finding, same patch
+    assert bad["episode_id"] != ok["episode_id"], \
+        "the badly named file left no trace in the episode identity"
+
+
+def test_an_identity_code_does_not_say_whose_fault_it_is():
+    """Why `_finding_artifact` catches `IdentityError` by class, not by `code`.
+
+    The collapse handler absorbs every `ValueError`, which includes every typed
+    refusal `identity.py` has and every one it will ever have. The tempting
+    narrowing is to catch only an enumerated set of `code`s, so an
+    evaluator-side refusal surfaces as a bug instead of being scored as
+    somebody's bad finding.
+
+    It cannot be done, and this is the disproof: `CANONICAL_ENCODING` is raised
+    both by a candidate's lone surrogate inside a finding *and* by the
+    evaluator's own workspace inventory meeting a non-UTF-8 filename — the very
+    defect fixed in `runner._evidence_name`. One code, two blame-holders. A
+    `code` names the law that was broken, never who broke it, so a code
+    allowlist could not have partitioned even the case that motivated it; and it
+    would fail *open* — a future code not on the list escapes `eval_one`, which
+    is the crashed-episode hack all over again.
+
+    Attribution comes instead from the narrowness of the guarded input, which
+    the second half asserts: the handler collapses a finding built from the
+    candidate's own bytes, and it is reached, so it is not dead code.
+    """
+    from_finding = from_inventory = None
+    try:
+        I.canonical_bytes({"claims": [{"statement": "\ud800"}]})
+    except I.IdentityError as exc:
+        from_finding = exc.code
+    try:                                   # the shape `runner._scan` used to emit
+        I.canonical_bytes({"evil\udcff.txt": "sha256:00"})
+    except I.IdentityError as exc:
+        from_inventory = exc.code
+    assert from_finding == from_inventory == I.CANONICAL_ENCODING, \
+        (from_finding, from_inventory)
+
+    # The guard is live: a candidate-owned surrogate still reaches it and still
+    # collapses, so the class catch is doing work rather than sitting unused.
+    collapsed = E._finding_artifact({"finding": {"summary": "\ud800",
+                                                 "citations": []}})
+    assert collapsed == E._finding_artifact({})
+
+
+def test_the_receipt_does_not_say_why_a_finding_is_empty():
+    """The docstring used to claim more than the receipt delivers.
+
+    All four ways to end up with an empty finding — never an object, a lone
+    surrogate, a `NaN`, an undecodable document — mint the *byte-identical*
+    empty `finding-`, and the receipt carries no other slot that could hold the
+    difference (every key it has is inside `identity._EPISODE_IDENTITY_KEYS`, so
+    adding one would move every episode id ever minted). That indistinguishability
+    is required by `test_..._scores_what_an_empty_one_scores` above: a
+    distinguishable state is a lever.
+
+    So the prose was wrong, not the behaviour. What actually survives is
+    *evidence*: `trace.result_file_digest` pins the exact bytes the agent wrote,
+    and a missing file digests as the empty string. Available to an auditor,
+    unavailable to anything scoring.
+    """
+    kinds = {mode: _evaluate(mode, ["citations", "patch"])
+             for mode in ("listresult", "unhashable", "deepresult", "nooutput")}
+    ids = {r["receipt"]["outputs"]["finding_id"] for r in kinds.values()}
+    assert len(ids) == 1, ids                       # the receipt cannot tell them apart
+
+    # The receipt seals only `trace_id`; the digest lives in the trace evidence
+    # the bundle persists, which is `evaluate`'s second half.
+    digests = {mode: r["artifacts"]["trace"]["events"][0]["result_file_digest"]
+               for mode, r in kinds.items()}
+    assert len(set(digests.values())) == len(digests), digests
+    empty = "sha256:" + hashlib.sha256(b"").hexdigest()
+    assert digests["nooutput"] == empty             # "wrote nothing" is its own digest
 
 
 def test_patched_tests_regression_hits_040_cap():

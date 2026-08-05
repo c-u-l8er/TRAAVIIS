@@ -264,7 +264,36 @@ def read_manifest(root):
         raw = fh.read()
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as ex:
+    except (ValueError, UnicodeDecodeError, RecursionError) as ex:
+        # These bytes arrived inside somebody else's package -- the same trust
+        # boundary `ors_server._body` sits on. Every way the decoder can refuse
+        # them has to land on `BUNDLE_MALFORMED`, because this function is the
+        # door: `verify_bundle` calls it before `verify_tree`, so a manifest
+        # that crashes the reader has skipped closure verification entirely
+        # rather than failed it. An untyped crash is also indistinguishable to a
+        # consumer from "the verifier is broken", which is exactly the reading a
+        # tampered package would like to earn.
+        #
+        #   ValueError          `json.JSONDecodeError`, and the >4300-digit
+        #                       integer refusal (CVE-2020-10735).
+        #   UnicodeDecodeError  non-UTF-8 bytes out of `.decode`; a `ValueError`
+        #                       subclass, named because it comes from a
+        #                       different call than the rest.
+        #   RecursionError      a *legal* document nested past the decoder's
+        #                       stack, and a `RuntimeError`, so the clause used
+        #                       to let it through. 200 000 nested arrays is
+        #                       400 kB -- an ordinary-looking member.
+        #
+        # Deliberately NOT caught, at this site and the `environment.json` one
+        # below:
+        #
+        #   TypeError    reachable only through a bug in this module, since the
+        #                argument is always the `str` `.decode` returned. A bug
+        #                in the verifier must not be reported as a bad package.
+        #   MemoryError  a fact about the host, not about the bytes: catching it
+        #                would refuse the same package on one machine and admit
+        #                it on another. It would close nothing here anyway --
+        #                `fh.read()` above has already loaded the file.
         raise BundleError("BUNDLE_MALFORMED",
                           "%s is not valid JSON: %s" % (MANIFEST_NAME, ex))
     return _validate_manifest(doc)
@@ -354,7 +383,13 @@ def verify_bundle(root, *, engine=None, environment=True):
     with open(env_doc_path, "rb") as fh:
         try:
             env_doc = json.loads(fh.read().decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as ex:
+        except (ValueError, UnicodeDecodeError, RecursionError) as ex:
+            # Same clause, same reasoning as `read_manifest` above (including
+            # what is deliberately left uncaught). `RecursionError` matters more
+            # here, not less: `verify_tree` has already passed by this point, so
+            # an untyped crash reads as the verifier dying *after* declaring the
+            # package closed -- a package that could never be pronounced on
+            # rather than one that was refused.
             raise BundleError("BUNDLE_MALFORMED",
                               "environment.json is not valid JSON: %s" % ex)
     profile = env_doc.get("substrate_profile")
