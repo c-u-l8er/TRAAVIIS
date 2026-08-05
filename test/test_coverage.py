@@ -52,6 +52,32 @@ from traaviis import reward as R  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+
+
+class Skip(Exception):
+    """The house skip signal, spelled the same way as every other battery.
+
+    Deliberately not `pytest.skip`: every file in `test/` is also a self-running
+    script with zero dependencies, and `_main` below is what the release gate
+    actually executes. Under pytest with an engine present no skip fires at all,
+    so the two runners agree.
+    """
+
+
+def _engine_or_skip():
+    """Skip rather than fail when no Forge engine is reachable.
+
+    Matches `test_kernel._engine_or_skip`. A law that needs the engine and does
+    not skip reports a defect on a machine that simply does not have one, which
+    is how the release packet's engine-absent gate came to be red on a tree
+    where nothing was wrong.
+    """
+    from traaviis import engine as _engine
+
+    eng = _engine.try_load()
+    if eng is None:
+        raise Skip("Forge engine not locatable; set TRVS_FORGE_DIR")
+    return eng
 FLAGSHIP = os.path.join(
     REPO, "examples", "eval-one", "episodes",
     "episode-42d0bb07e5f83e9e57518bf5cd3717e2a1e3aa45aa5821e36ac19206a3d73299")
@@ -863,7 +889,18 @@ def test_c28_verify_episode_prints_the_reading_in_both_forms():
     ``verify-episode`` is the surface that matters most: it is the command a
     third party runs on evidence somebody else produced, which is precisely the
     audience for "what did the verifier actually check?".
+
+    Engine-dependent, and it must say so. The flagship's `identity` signal is
+    replayed by the Forge engine, so with no engine reachable the command exits
+    2 (`unavailable`) -- correctly. This law asserted `returncode == 0`
+    unconditionally, which made it fail in the release packet's engine-absent
+    gate: an engine-dependent law that did not skip is exactly what that gate
+    exists to catch, and it caught it. Skipping is the honest answer, because
+    the claim here is about what the command *prints*, not about whether a
+    verifier could be located.
     """
+    _engine_or_skip()
+
     human = _trvs("verify-episode", FLAGSHIP)
     assert human.returncode == 0, human.stderr
     assert "coverage" in human.stdout
@@ -1355,15 +1392,26 @@ def _main():
         for name, obj in globals().items()
         if name.startswith("test_") and callable(obj)
     )
-    failures = []
+    failures, skipped = [], []
     for name, fn in tests:
         try:
             fn()
             print("PASS  %s" % name)
+        except Skip as exc:
+            # Counted, not swallowed. A skipped law that printed nothing would
+            # read as a law that does not exist, and the battery runner tallies
+            # by these line prefixes.
+            skipped.append((name, exc))
+            print("SKIP  %s (%s)" % (name, exc))
         except AssertionError as exc:
             failures.append((name, exc))
             print("FAIL  %s: %s" % (name, exc))
-    print("\n%d/%d passed" % (len(tests) - len(failures), len(tests)))
+    # The house summary shape. The runner accepts `N/N passed` too, but that form
+    # cannot say how many were skipped, and on a machine with no engine the
+    # difference between "skipped" and "did not run" is the whole point.
+    print("\n%d passed, %d skipped, %d failed"
+          % (len(tests) - len(failures) - len(skipped), len(skipped),
+             len(failures)))
     return 1 if failures else 0
 
 
