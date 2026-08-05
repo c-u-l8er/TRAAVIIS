@@ -188,10 +188,19 @@ def test_l1c_the_rung_list_covers_every_id_identity_mints():
     """
     from traaviis import identity as I
 
+    # The smallest document each rung will actually seal. Empty was enough for
+    # every rung until `episode-` gained a declared canonicalization scheme
+    # (B1): `identity.episode_scheme` refuses a receipt that declares no
+    # version rather than guessing one, so `{}` is no longer a document it can
+    # mint over. The law is unchanged in what it asserts -- it still derives the
+    # rung list by minting through every public `*_id` the spine exports -- and
+    # a rung that needs a non-empty document says so here, once.
+    seed = {"episode_id": {"episode_version": "traaviis.episode.v1"}}
+
     minters = [getattr(I, name) for name in I.__all__ if name.endswith("_id")]
     assert len(minters) >= 9, [f.__name__ for f in minters]
     for mint in minters:
-        rung = mint({}).split("-", 1)[0]
+        rung = mint(seed.get(mint.__name__, {})).split("-", 1)[0]
         assert rung in S.ID_RUNGS, \
             "identity.%s mints the %r rung, which ID_RUNGS does not name" \
             % (mint.__name__, rung)

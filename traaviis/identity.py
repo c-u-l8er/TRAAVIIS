@@ -14,6 +14,11 @@ object keys, minimal separators) of the artifact with its own id field removed
 and any volatile / non-identity metadata excluded, per the frozen contracts in
 `RFC_TRAAVIIS_ARTIFACTS.md` (§1–§4) and `RFC_EVIDENCE_RESIDENCY.md` (§4–§9).
 
+**The `episode-` rung is the one rung with two canonicalizers**, selected by the
+receipt's own declared `episode_version`. See `episode_scheme` for the whole of
+that mechanism and for why the id *grammar* — `episode-<64 lowercase hex>` — is
+identical under both and is not versioned. Every other rung has exactly one.
+
 Canonicalization rule of thumb: **maps are order-independent** (object keys are
 sorted, so reordering an unordered map never moves an id); **lists preserve
 their given order** (the producer is responsible for canonical list ordering).
@@ -36,10 +41,16 @@ import json
 import math
 from typing import Any, Mapping
 
+from . import jcs as _jcs
+
 __all__ = [
     "IdentityError", "CANONICAL_NON_FINITE", "CANONICAL_KEY_TYPE",
-    "CANONICAL_ENCODING",
-    "canonical_bytes",
+    "CANONICAL_ENCODING", "CANONICAL_INT_RANGE",
+    "EPISODE_SCHEME_UNKNOWN", "EPISODE_SCHEME_DECLARATION",
+    "SCHEME_LEGACY", "SCHEME_RFC8785", "EPISODE_SCHEMES", "CANONICALIZERS",
+    "DECLARES_CANONICALIZATION", "episode_scheme",
+    "episode_scheme_declaration",
+    "canonical_bytes", "canonical_bytes_rfc8785",
     "canonicalize_snapshot", "snapshot_id",
     "canonicalize_finding", "finding_id",
     "canonicalize_patch", "patch_id",
@@ -68,6 +79,31 @@ CANONICAL_KEY_TYPE = "CANONICAL_KEY_TYPE"
 #: because it is the step that fails: the document is well-formed JSON right up
 #: until it has to become bytes, and a content address is over bytes.
 CANONICAL_ENCODING = "CANONICAL_ENCODING"
+
+#: A number outside the declared scheme's integer domain. Reachable only under
+#: `SCHEME_RFC8785`, whose numbers are IEEE-754 binary64 constrained to
+#: `jcs.PROFILE`'s interoperable safe-integer range. The legacy scheme prints an
+#: `int` exactly at any magnitude, so there is nothing there to refuse; this is
+#: the one domain check the two schemes do not share, and it exists because
+#: conformance *introduces* the hazard rather than inheriting it.
+#:
+#: Note what the hazard is and is not. It is **not** that binary64 cannot hold
+#: large integers exactly — it holds `2**54` and `2**60` exactly, and every
+#: power of two up to `2**1023`. It is that above `2**53` the representable
+#: integers thin out, so distinct integers round onto one double and would mint
+#: one id between two documents no reader would call the same; and that a token
+#: like `18014398509481984` reparses as an integer this same scheme then
+#: refuses, which would leave a sealed document its own verifier could not
+#: re-read. See `jcs.admit_number` for how both are closed at once.
+CANONICAL_INT_RANGE = "CANONICAL_INT_RANGE"
+
+#: A document declared a schema version this build has no canonicalizer for.
+#: Refused, never guessed: see `episode_scheme`.
+EPISODE_SCHEME_UNKNOWN = "EPISODE_SCHEME_UNKNOWN"
+
+#: A document's `canonicalization` self-declaration is missing, forbidden, or
+#: disagrees with the one its `episode_version` implies. See `episode_scheme`.
+EPISODE_SCHEME_DECLARATION = "EPISODE_SCHEME_DECLARATION"
 
 
 class IdentityError(ValueError):
@@ -471,6 +507,127 @@ def canonical_bytes(obj: Any) -> bytes:
         ) from ex
 
 
+def canonical_bytes_rfc8785(obj: Any) -> bytes:
+    """Deterministic UTF-8 JSON per RFC 8785, the `traaviis.episode.v2` scheme.
+
+    The second canonicalizer. It exists so that "SHA-256 over RFC 8785 canonical
+    JSON" is a true sentence about newly minted episodes, with an off-the-shelf
+    implementation in Go, Rust, JavaScript and Java — a property `canonical_bytes`
+    provably does not have and is not being changed to have, because changing it
+    would move every id in existence.
+
+    **The same three domain checks apply here as there, and one more.** That is
+    worth stating precisely, because "JCS is stricter" is true in general and
+    misleading in the particular:
+
+    * `CANONICAL_KEY_TYPE` — **not redundant, and enforced by the identical code
+      path.** `_find_bad_key` runs first here exactly as it does in
+      `canonical_bytes`, so the collision `{1: "x"}` / `{"1": "x"}` is closed
+      once, in one walk, for both schemes. RFC 8785 §3.1 requires it too, but a
+      requirement in a specification does not enforce itself in Python, where
+      the hazard is that a `dict` can hold a key JSON cannot.
+    * `CANONICAL_NON_FINITE` — not redundant. §3.2.2.3 requires termination and
+      this implementation does terminate, but the refusal has to be *typed* and
+      has to *name the path*, which is a property of this boundary rather than
+      of the serializer under it.
+    * `CANONICAL_ENCODING` — not redundant, but it **moves earlier**. Under the
+      legacy scheme a lone surrogate survives serialization and is caught by
+      `.encode("utf-8")`; under this one §3.2.2.2 refuses it during string
+      serialization, before any bytes exist. Same code, same detail keys,
+      strictly earlier detection. The legacy path's "let the encoder be the
+      judge" rationale is scheme-specific and does not carry over: here the RFC
+      names the range, so the range *is* the specification.
+    * `CANONICAL_INT_RANGE` — **new, and only here.** This is the one place
+      conformance is not a narrowing of an existing domain but a new hazard.
+      RFC 8785 has only binary64 numbers, so `2**53 + 1` and `2**53` would
+      canonicalize to the same bytes and mint one id between two documents no
+      reader would call the same. That is precisely the silent-collision failure
+      the key-type check exists to close, arriving through the front door with
+      the conformance work; it is refused rather than accepted. Note what this
+      makes true: the v2 number domain is *narrower* than v1's, which prints any
+      `int` exactly. Conformance costs a little reach and buys portability.
+
+      The bound is `jcs.PROFILE`'s and is stated there, not here, because it is
+      a property of the serialization rather than of this boundary. Two things
+      about it are worth knowing at this level. It is `2**53 - 1`, not `2**53`
+      — the interoperable maximum RFC 7493 §2.2 and RFC 8259 §6 both state. And
+      it is decided by the *token* a value would be sealed under, not by whether
+      the caller handed in a Python `int` or a `float`, so `2**54` and
+      `float(2**54)` get the same answer and a sealed document always survives
+      being parsed and re-canonicalized.
+
+    Nothing else is checked, for the same reason `canonical_bytes` checks
+    nothing else: every further restriction would move ids without anyone
+    deciding to.
+    """
+    bad_key = _find_bad_key(obj)
+    if bad_key is not None:
+        where, key = bad_key
+        raise IdentityError(
+            CANONICAL_KEY_TYPE,
+            "refusing to mint an id over a non-string object key: %s has the "
+            "key %s of type %s. JSON object names are strings (RFC 8259 §4) "
+            "and RFC 8785 §3.1 inherits that from I-JSON, so the key is "
+            "rejected here rather than silently rewritten."
+            % (where, _safe_repr(key), type(key).__name__),
+            {"path": where, "key_type": type(key).__name__,
+             "key": _safe_repr(key)},
+        )
+    try:
+        return _jcs.canonical_bytes(obj)
+    except _jcs.JcsError as ex:
+        raise _translate_jcs(ex, obj) from ex
+
+
+#: `JcsError.code` → the `IdentityError` code it is reported as. One refusal
+#: vocabulary is presented to callers whichever scheme they asked for, so an
+#: `except IdentityError` written against v1 keeps its reach over v2.
+_JCS_CODES = {
+    _jcs.JCS_KEY_TYPE: CANONICAL_KEY_TYPE,
+    _jcs.JCS_NON_FINITE: CANONICAL_NON_FINITE,
+    _jcs.JCS_ENCODING: CANONICAL_ENCODING,
+    _jcs.JCS_INT_RANGE: CANONICAL_INT_RANGE,
+}
+
+
+def _translate_jcs(ex, obj):
+    """A `JcsError` as the `IdentityError` this boundary promises.
+
+    `JCS_NOT_JSON` is deliberately **not** in `_JCS_CODES` and is re-raised as a
+    `TypeError`. That is what `json.dumps` does for a value JSON has no
+    representation for, so the two schemes agree on it, and a law that pins "a
+    non-JSON leaf is a `TypeError`, not a typed identity refusal" keeps holding
+    under both. A typed refusal names a *law of this system*; "you passed a
+    `set`" is a caller bug and belongs to Python.
+
+    The path in the detail is the serializer's, which walks the document it was
+    given. `obj` is accepted so the non-finite case can be located by the same
+    helper the legacy path uses and the two refusals read alike.
+    """
+    if ex.code == _jcs.JCS_NOT_JSON:
+        return TypeError(ex.message)
+    detail = dict(ex.detail)
+    if ex.code == _jcs.JCS_NON_FINITE:
+        found = _find_non_finite(obj)
+        if found is not None:
+            where, value = found
+            return IdentityError(
+                CANONICAL_NON_FINITE,
+                "refusing to mint an id over a non-finite number: %s is %r. "
+                "JSON has no NaN or Infinity, so the bytes hashed would not be "
+                "JSON and no conforming parser could read the preimage back "
+                "(RFC 8785 §3.2.2.3)." % (where, value),
+                {"path": where, "value": repr(value)})
+    if ex.code == _jcs.JCS_ENCODING:
+        found = _find_unencodable(obj)
+        if found is not None:
+            where, position, text_value = found
+            detail.setdefault("position", position)
+            detail["path"] = where
+            detail["string"] = _safe_repr(text_value)
+    return IdentityError(_JCS_CODES[ex.code], ex.message, detail)
+
+
 def _id(prefix: str, canon: bytes) -> str:
     return prefix + "-" + hashlib.sha256(canon).hexdigest()
 
@@ -586,15 +743,160 @@ def task_id(task: Mapping[str, Any]) -> str:
 # output-truncation state) and verifier_versions ARE inside the allowlist, so a
 # toolchain / platform / exit-code / verifier-version change moves episode-.
 _EPISODE_IDENTITY_KEYS = (
-    "episode_version", "substrate_profile", "task_id", "reward_id", "subject",
+    "episode_version", "canonicalization", "substrate_profile", "task_id",
+    "reward_id", "subject",
     "trace_id", "outputs", "verification", "verification_evidence",
     "verifier_versions", "reward", "status", "validity", "replayability",
     "execution_facts",
 )
 
+#: The frozen serializer every rung has always used and every rung but this one
+#: still uses: `json.dumps(sort_keys, minimal separators, ensure_ascii=False,
+#: allow_nan=False)` plus the three domain checks. Named so that a document can
+#: say which serializer it was sealed under instead of leaving it to be inferred
+#: from the release that produced it.
+SCHEME_LEGACY = "traaviis.canonical-json.v1"
+
+#: RFC 8785 serialization over a named numeric input domain, as implemented in
+#: `traaviis.jcs`. **This declared name was `"rfc8785-v1"` and was changed
+#: before any document carrying it shipped**, because it overclaimed: it said
+#: "RFC 8785" to a reader while accepting strictly less than RFC 8785 accepts.
+#: What is implemented is the RFC's serialization plus `jcs.PROFILE`'s frozen
+#: integer domain, so that is what the wire says. The value is taken from
+#: `jcs.PROFILE` rather than repeated here — one string, one place, so a future
+#: profile revision cannot leave the declared name pointing at the old domain.
+SCHEME_RFC8785 = _jcs.PROFILE
+
+#: Declared `episode_version` → the canonicalization it selects. **A build
+#: knows exactly the schemes in this table and refuses every other**, which is
+#: the fourth instance in this codebase of a reader that stops rather than
+#: guesses (`bundle.py`, `pack.py`, `episode_bundle.py` are the other three).
+#: Adding a row here is how a scheme ships; there is no fallback row, no
+#: `.get(..., default)`, and no "looks like a v1" heuristic anywhere.
+EPISODE_SCHEMES = {
+    "traaviis.episode.v1": SCHEME_LEGACY,
+    "traaviis.episode.v2": SCHEME_RFC8785,
+}
+
+#: Canonicalization name → the function that performs it.
+CANONICALIZERS = {
+    SCHEME_LEGACY: canonical_bytes,
+    SCHEME_RFC8785: canonical_bytes_rfc8785,
+}
+
+#: Schemes whose receipts must carry a `canonicalization` field naming them.
+#: `traaviis.episode.v1` is absent on purpose — see `episode_scheme`.
+DECLARES_CANONICALIZATION = frozenset((SCHEME_RFC8785,))
+
+
+def episode_scheme_declaration(episode_version: Any) -> Any:
+    """The `canonicalization` value a receipt of this version must carry, or None.
+
+    The *producer's* half of `episode_scheme`'s check, so that the rule "which
+    versions carry the field" is written down once. A builder asks this what to
+    stamp; `episode_scheme` asks the same table what to require. Two call sites,
+    one table, no way for the minter and the verifier to hold different beliefs
+    about which shape is correct — which is the failure a redundant field is
+    otherwise an invitation to.
+
+    An unknown version yields None rather than raising. Refusing is
+    `episode_scheme`'s job and it happens a moment later, when the id is sealed;
+    raising here as well would give one mistake two refusals that could drift.
+    """
+    scheme = EPISODE_SCHEMES.get(episode_version) \
+        if isinstance(episode_version, str) else None
+    return scheme if scheme in DECLARES_CANONICALIZATION else None
+
+
+def episode_scheme(receipt: Mapping[str, Any]) -> str:
+    """The canonicalization `receipt` declares, or a typed refusal.
+
+    **The grammar is public; this field is the authority for interpreting it.**
+    An `episode-` id is `episode-<64 lowercase hex>` under every scheme, now and
+    permanently: the id is a lexical compatibility promise, so nothing about it
+    changes, and the 21 `startswith("episode-")` sites, the path components, the
+    URI builders and every literal already published stay exactly as they are.
+    What varies is *how the bytes under the digest were produced*, and that is
+    read off the receipt.
+
+    Two properties make this safe, and only the first is obvious.
+
+    **The declaration is inside the hash.** `episode_version` is the first entry
+    of `_EPISODE_IDENTITY_KEYS`, so it is part of what the digest covers. A
+    receipt that lies about its scheme therefore computes a *different* id and
+    fails; the scheme cannot be edited after the fact, cannot be stripped, and
+    cannot be relabelled. This is the property a versioned id *prefix* would not
+    have — a tag outside the digest is verified by nothing, and a producer could
+    stamp any label on any bytes.
+
+    **An unknown scheme is refused, not guessed.** There is no default. A build
+    that meets `traaviis.episode.v3` says so and stops, rather than reaching for
+    the serializer it happens to have and computing a confident wrong answer. A
+    verifier that guesses is a verifier that can be wrong without failing, which
+    is the failure class this whole module is arranged against.
+
+    **On the second field.** A receipt under a non-legacy scheme also carries
+    `canonicalization`, so it is self-describing to a reader who has the bytes
+    but not this table. That field is deliberately **not** an independent axis:
+    `episode_version` alone selects the canonicalizer, and `canonicalization` is
+    required to *agree* with what it implies. A second field that could be
+    consulted would be a second place to be wrong; a second field that must
+    agree is a redundancy check, and disagreement is refused here rather than
+    resolved. `traaviis.episode.v1` requires the field to be **absent**, because
+    every v1 receipt that exists was sealed without it and admitting it
+    optionally would create two v1 shapes — one of which no v1 document has.
+
+    **Mixed-scheme episodes are the normal case, and are coherent.** A v2
+    receipt names a `task_id`, a `reward_id`, a `subject.snapshot_id`, a
+    `trace_id` and `outputs.finding_id` / `patch_id` that are all still minted
+    under the legacy scheme, because those rungs are not versioned by this
+    change and their ids are frozen keys. That is not an inconsistency, because
+    an id inside a receipt is an opaque *string* to the receipt: `episode-`
+    hashes the characters `task-52bd…`, never the task document. What the
+    receipt asserts is "these are the artifacts", and it asserts it by name. The
+    scheme declared here governs exactly one thing — the serialization of *this*
+    document — and claims nothing about how the documents it names were sealed.
+    Each rung's own `*_version` continues to answer that for itself.
+
+    The corollary is the reason only `episode-` moved: the rungs form a
+    dependency graph — `task-` contains `reward_id` and `snapshot_id`, `env-`
+    contains `task_id`s and `reward_id`s, `bundle-` contains `env_id` — and
+    `episode-` is the only rung *nothing else contains*. Versioning any other
+    rung would restamp it, which would change the id string that a task or an
+    environment carries, which would move those too. `episode-` is the leaf, and
+    versioning a leaf moves one rung.
+    """
+    declared = receipt.get("episode_version")
+    scheme = EPISODE_SCHEMES.get(declared) if isinstance(declared, str) else None
+    if scheme is None:
+        raise IdentityError(
+            EPISODE_SCHEME_UNKNOWN,
+            "refusing to canonicalize a receipt declaring episode_version %r: "
+            "this build knows %s and no other. The declared version selects the "
+            "canonicalization, so serializing it under a guessed scheme would "
+            "compute a confident wrong id rather than fail."
+            % (declared, ", ".join(sorted(EPISODE_SCHEMES))),
+            {"episode_version": _safe_repr(declared),
+             "known": sorted(EPISODE_SCHEMES)},
+        )
+    stated = receipt.get("canonicalization")
+    wanted = episode_scheme_declaration(declared)
+    if stated != wanted:
+        raise IdentityError(
+            EPISODE_SCHEME_DECLARATION,
+            "refusing to canonicalize a receipt whose canonicalization "
+            "declaration is %r when episode_version %r implies %r. The version "
+            "is the authority and the field is a redundancy check, so the two "
+            "disagreeing is a broken document, not a choice to be resolved."
+            % (stated, declared, wanted),
+            {"episode_version": declared, "declared": _safe_repr(stated),
+             "implied": wanted},
+        )
+    return scheme
+
 
 def canonicalize_episode(receipt: Mapping[str, Any]) -> bytes:
-    return canonical_bytes({
+    return CANONICALIZERS[episode_scheme(receipt)]({
         k: receipt[k] for k in _EPISODE_IDENTITY_KEYS if k in receipt
     })
 
