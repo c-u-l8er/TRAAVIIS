@@ -35,8 +35,26 @@ The failure modes they exist to close:
   the channel a model self-corrects from invites an infinite retry (M22, M23);
 - the kernel's linearization could be undone by a read-handle-write loop, which
   preserves the property on paper and loses it in fact (M24-M27);
-- and the whole thing could add a rung, a verb, a second admission path, or a
-  network surface stdio does not have (M28-M30).
+- the whole thing could add a rung, a verb, a second admission path, or a
+  network surface stdio does not have (M28-M30);
+- cancellation could be recorded as a fact about a *number* rather than about a
+  request in progress, so that a withdrawal sent before -- or long after -- the
+  request it names silently suppresses the answer to a later request that reused
+  the id, and the client waits forever for a message this server already decided
+  not to send (M32-M35);
+- and shutdown could abandon the one thing it exists to protect: an EOF path
+  that joins the workers on a fixed deadline and then exits, killing daemon
+  threads mid-publication, discards a scored episode whose one-shot session has
+  already been spent (M36, M37);
+- an unimplemented capability could be *ignored* instead of refused, so that a
+  client which asked for page N receives page 1 in a response byte-identical to
+  the one it would have received had the cursor been honoured -- there being no
+  field in which the two could differ (M38);
+- and a description could promise an artifact the read does not hand over. The
+  URI serves the sealed **receipt**; the **bundle** is the directory the receipt
+  is one document inside, and it is the bundle that `verify-episode` replays.
+  Calling the URI a bundle overclaims offline replay, which is the product's
+  headline claim and therefore the most expensive thing to overclaim (M39).
 
 **On what needs an engine.** Nothing here does. Every law runs against injected
 verifiers over an in-memory subject, so this file runs identically with or
@@ -56,6 +74,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -327,6 +346,26 @@ def _law_names():
                   if k.startswith("test_m") and callable(v))
 
 
+def _dispatched_methods(source):
+    """Every method name `_dispatch` routes on, read off the comparisons.
+
+    Parsed, not grepped, for the reason this battery keeps rediscovering: the
+    module's prose names methods it deliberately does not implement (Streamable
+    HTTP's `subscriptions/listen`, the removed `initialize`), and a text scan
+    would read those sentences as a routing table.
+    """
+    methods = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(source))):
+        if not isinstance(node, ast.Compare):
+            continue
+        if getattr(node.left, "id", None) != "method":
+            continue
+        for other in node.comparators:
+            if isinstance(other, ast.Constant) and isinstance(other.value, str):
+                methods.add(other.value)
+    return methods
+
+
 class _Live(object):
     """A really-running stdio server on a real pair of pipes.
 
@@ -336,7 +375,7 @@ class _Live(object):
     observable through `McpAdapterV1.handle`.
     """
 
-    def __init__(self, adapter):
+    def __init__(self, adapter, on_serve_return=None, log=None):
         client_to_server = os.pipe()
         server_to_client = os.pipe()
         self._server_in = os.fdopen(client_to_server[0], "rb")
@@ -344,15 +383,28 @@ class _Live(object):
         self._client_in = os.fdopen(server_to_client[0], "rb")
         self._server_out = os.fdopen(server_to_client[1], "wb")
         self.server = MS.McpStdioServer(
-            adapter, stdin=self._server_in, stdout=self._server_out)
+            adapter, stdin=self._server_in, stdout=self._server_out, log=log)
         self.raw = []
         self._by_id = {}
         self._cv = threading.Condition()
-        self._serve = threading.Thread(target=self.server.serve_forever,
-                                       daemon=True)
+        self._on_serve_return = on_serve_return
+        # Deliberately a **daemon** thread, and the laws depend on it being one.
+        # `threading.Thread` inherits `daemon` from the thread that creates it,
+        # so a worker spawned from here with no explicit flag would be a daemon
+        # too -- which is exactly the abandonment M36 exists to refuse. The
+        # server has to *say* `daemon=False`, and this fixture is what makes an
+        # omission visible rather than harmless.
+        self._serve = threading.Thread(target=self._serve_loop, daemon=True)
         self._serve.start()
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
+
+    def _serve_loop(self):
+        try:
+            self.server.serve_forever()
+        finally:
+            if self._on_serve_return is not None:
+                self._on_serve_return()
 
     def _read(self):
         while True:
@@ -373,11 +425,11 @@ class _Live(object):
         self._client_out.write(data)
         self._client_out.flush()
 
-    def request(self, method, params=None, ident=None, meta=None):
+    def request(self, method, params=None, ident=None, meta=None, timeout=60):
         _IDS[0] += 1
         ident = _IDS[0] if ident is None else ident
         self.send(_request(method, params, ident=ident, meta=meta))
-        return self.await_id(ident)
+        return self.await_id(ident, timeout=timeout)
 
     def await_id(self, ident, timeout=60):
         with self._cv:
@@ -390,6 +442,30 @@ class _Live(object):
         with self._cv:
             return _key(ident) in self._by_id
 
+    def forget(self, idents):
+        """Drop remembered responses, so a *reused* id is a fresh observation.
+
+        Id reuse is the whole subject of M33 and M35, and a client that
+        remembered the first answer forever could not tell "the second request
+        was answered" from "I am still looking at the first answer".
+        """
+        with self._cv:
+            for ident in idents:
+                self._by_id.pop(_key(ident), None)
+
+    def eof(self):
+        """Close stdin without waiting: the shutdown signal, on its own."""
+        try:
+            self._client_out.close()
+        except OSError:
+            pass
+
+    def serve_alive(self):
+        return self._serve.is_alive()
+
+    def join_serve(self, timeout=60):
+        self._serve.join(timeout=timeout)
+
     def __enter__(self):
         return self
 
@@ -397,11 +473,8 @@ class _Live(object):
         self.close()
 
     def close(self):
-        try:
-            self._client_out.close()   # EOF: the shutdown signal the spec names
-        except OSError:
-            pass
-        self._serve.join(timeout=30)
+        self.eof()                     # EOF: the shutdown signal the spec names
+        self.join_serve(timeout=120)
         try:
             self._server_out.close()
         except OSError:
@@ -483,6 +556,86 @@ class _Barrier(object):
 
     def __exit__(self, *exc):
         K._finish_episode = self._real
+
+
+class _HeldPublication(object):
+    """Hold `write_episode_bundle` open, then let it finish for real.
+
+    The delay is **injected**, not borrowed from a genuinely slow verifier. A
+    law that waited for real work to be slow would be measuring the fixture's
+    repository rather than the transport's shutdown, and would be slow on every
+    run of a suite that is already too long.
+
+    By default the hold is *unbounded* rather than timed: the publication does
+    not finish until a law says so. That is strictly stronger than "longer than
+    thirty seconds" -- it is longer than **any** constant a `drain` might have
+    been written with -- and it costs the suite milliseconds instead of a minute.
+    Setting `TRVS_MCP_SLOW_PUBLISH_SECONDS` swaps in a real wall-clock hold of
+    that many seconds, which is how the >30s case named in the acceptance list
+    was exercised against the old 30-second deadline; it is not the default,
+    because a suite that pays 35 seconds to re-observe a fixed constant is
+    paying for a fact the structural half of M37 already establishes.
+
+    The wrapped call is the real one. "Durable terminal state" means
+    `write_episode_bundle` returned -- staged, replay-verified, fsynced and
+    atomically renamed -- not that a stub said it did.
+    """
+
+    def __init__(self):
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+        self.published = threading.Event()
+        self.paths = []
+        self._real = None
+        self._seconds = float(os.environ.get(
+            "TRVS_MCP_SLOW_PUBLISH_SECONDS", "0") or 0)
+
+    def __enter__(self):
+        self._real = EB.write_episode_bundle
+
+        def wrapper(*args, **kwargs):
+            self.entered.release()
+            if self._seconds:
+                time.sleep(self._seconds)
+            else:
+                self.release.wait(timeout=120)
+            path = self._real(*args, **kwargs)
+            self.paths.append(path)
+            self.published.set()
+            return path
+
+        EB.write_episode_bundle = wrapper
+        return self
+
+    def __exit__(self, *exc):
+        self.release.set()
+        EB.write_episode_bundle = self._real
+
+    @property
+    def hold_seconds(self):
+        return self._seconds
+
+
+def _cancellation(ident, reason="a law withdrew it"):
+    """The notification, exactly as the spec prints it."""
+    return {"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": ident, "reason": reason}}
+
+
+def _until(predicate, timeout=30, interval=0.005):
+    """Poll until `predicate` is truthy, and return whatever it last said.
+
+    Used only where the observation is of *another thread having got somewhere*
+    -- a cancellation processed on the reader, a request settled -- and never as
+    a substitute for a real signal. Every law that can wait on an event does.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    return predicate()
 
 
 # =========================================================== M1-M5: the wire
@@ -1310,10 +1463,15 @@ def test_m25_two_submissions_to_one_handle_score_exactly_once():
             if len(ids) == 1:
                 assert held.entered.acquire(timeout=30), \
                     "the first submission never reached the scoring work"
-        responses = []
-        for ident in ids:
-            responses.append(live.await_id(ident))
-            held.release.set()
+        # The overlap the law is about has already happened -- the first
+        # submission is *inside* the scoring work and the second has been sent --
+        # so the hold has done its job and is released here rather than after the
+        # first response arrives. Releasing later deadlocked the two against each
+        # other and the law passed only because `_HeldScoring`'s own 30-second
+        # wait expired, which cost the suite 30 seconds on every green run and
+        # would have cost more had that constant ever been raised.
+        held.release.set()
+        responses = [live.await_id(ident) for ident in ids]
 
     results = [_result(r) for r in responses]
     scored = [r for r in results if not r["isError"]]
@@ -1505,8 +1663,8 @@ def test_m30_the_transport_added_no_rung_no_verb_and_no_second_pipeline():
     simply produce a second set of answers that could drift from the first.
     """
     numbers = sorted(int(n.split("_")[1][1:]) for n in _law_names())
-    assert numbers == list(range(1, 32)), numbers
-    assert len(_law_names()) == 31
+    assert numbers == list(range(1, 41)), numbers
+    assert len(_law_names()) == 40
 
     # No new rung. `identity.py` does not know this transport exists, checked by
     # whole word so that a syllable inside `separators` cannot fail it.
@@ -1607,6 +1765,666 @@ def test_m31_a_cancelled_request_loses_its_report_but_not_its_result():
                                        ))["contents"][0]["text"])
     assert receipt["episode_id"] == detail["episode_id"]
     assert receipt["reward"] == 1.0
+
+
+# ==================== M32-M35: cancellation names a request, not a number
+def test_m32_a_cancellation_for_a_request_that_is_not_in_flight_is_ignored():
+    """Unknown, already-answered and malformed cancellations change nothing.
+
+    The spec permits a server to ignore a cancellation whose request "is
+    unknown" or whose "processing has already completed", and says invalid
+    cancellation notifications -- unknown ids, completed requests, malformed
+    notifications -- SHOULD be ignored. Ignoring is not laxity here; it is the
+    only answer that keeps `notifications/cancelled` a statement about a request
+    in progress rather than a standing instruction about an integer.
+
+    The first version of this transport recorded every cancelled id in a
+    permanent set with no check at all. That is the defect M33 names; this law
+    is its precondition -- a cancellation that names nothing must *record*
+    nothing, or the id is poisoned before there is anything to poison.
+    """
+    server = MS.McpStdioServer(_adapter())
+
+    # Never issued.
+    assert server._cancel(_cancellation(4242)) is False
+    assert server.in_flight() == {}
+
+    # Malformed: a request id is a String or a Number and this revision forbids
+    # the Null the base protocol merely discourages. An object, an array, a
+    # boolean or a missing field is not a request id, and an unhashable one must
+    # not become an exception in a code path whose whole job is not to have any.
+    for ident in ({}, [], True, False, None, ("t",)):
+        assert server._cancel(_cancellation(ident)) is False, ident
+    for message in ({"jsonrpc": "2.0", "method": "notifications/cancelled"},
+                    {"jsonrpc": "2.0", "method": "notifications/cancelled",
+                     "params": {}},
+                    {"jsonrpc": "2.0", "method": "notifications/cancelled",
+                     "params": "nope"}):
+        assert server._cancel(message) is False, message
+    assert server.in_flight() == {}
+
+    # Already answered, over real pipes: the id is settled the moment the answer
+    # is committed, so the cancellation that chases it finds nothing.
+    with _Live(_adapter()) as live:
+        _IDS[0] += 1
+        done = _IDS[0]
+        assert _result(live.request("tools/list", ident=done))["tools"]
+        assert _until(lambda: live.server.in_flight() == {}), \
+            "an answered request must not still be in flight"
+        live.send(_cancellation(done))
+        live.send(_cancellation(4242))
+        # A later request orders the stream: both cancellations are read before
+        # this one, so by the time its answer arrives they have been decided.
+        assert _result(live.request("tools/list"))["tools"]
+        assert live.server.in_flight() == {}, \
+            "a cancellation for an unknown id was recorded anyway"
+
+
+def test_m33_a_cancellation_cannot_poison_an_id_a_later_request_reuses():
+    """The regression. Cancel `7`, then send request `7`, and get an answer.
+
+    JSON-RPC ids are chosen by the client and are routinely small integers a
+    library hands out from a counter. A server that records cancelled ids
+    permanently and consults that record just before writing will, on the day a
+    client cancels id `7` and later reuses it, do the whole of the work and then
+    throw the answer away -- and the client waits forever for a message this
+    server already decided not to send. Nothing logs, nothing errors, and the
+    hang looks like a slow verifier.
+
+    Both directions are checked: a cancellation that *precedes* any such request
+    (which is a client bug, and must still be inert), and a cancellation that
+    genuinely withdrew an in-flight request whose id is later reused (which is
+    ordinary, correct client behaviour once the id is free again).
+    """
+    with _Live(_adapter()) as live:
+        # Sent before request 7 exists. The spec says a client MUST only cancel
+        # requests it has issued and believes in progress, so this notification
+        # is invalid -- and invalid cancellations are ignored, not remembered.
+        live.send(_cancellation(7))
+        live.send(_request("tools/list", ident=7))
+        assert _result(live.await_id(7, timeout=20))["tools"], \
+            "a pre-emptive cancellation suppressed a later request's response"
+
+    # And the same id after a real, honoured cancellation of an in-flight
+    # request. The scoring work is held open so the cancellation lands while the
+    # request is genuinely running, which is the only case the spec asks a
+    # server to honour at all.
+    adapter = _adapter()
+    session_id = _open(adapter)
+    with _Live(adapter) as live, _HeldScoring() as held:
+        live.send(_request("tools/call",
+                           {"name": "submit_candidate",
+                            "arguments": {"session_id": session_id,
+                                          "submission": _submission()}},
+                           ident=7))
+        assert held.entered.acquire(timeout=30), "never reached scoring"
+        live.send(_cancellation(7))
+        assert _until(lambda: live.server.in_flight().get(_key(7))
+                      == MS.CANCELLED), "the cancellation was not taken"
+        held.release.set()
+        assert _until(lambda: live.server.in_flight() == {}), \
+            "the cancelled request never released its id"
+        assert not live.has_id(7), "a cancelled request produced a message"
+
+        live.send(_request("tools/list", ident=7))
+        assert _result(live.await_id(7, timeout=20))["tools"], \
+            "the id stayed poisoned after the request that owned it finished"
+
+
+def test_m34_a_cancellation_affects_exactly_the_request_it_names():
+    """One request is withdrawn; its neighbours are answered as though nothing
+    happened, and every id is released whichever way it ended.
+
+    Two properties that a permanent cancelled-set gets wrong in opposite
+    directions. Scope: a cancellation is about *one* request, so a second request
+    in flight at the same moment -- and every request after it -- must be
+    unaffected. Release: an id that ends, by either route, must return to
+    unknown, because an id this server still owns is an id a later cancellation
+    can still act on.
+    """
+    adapter = _adapter()
+    session_id = _open(adapter)
+    other = _open(adapter)
+
+    def _submission_line(handle, ident):
+        return _request("tools/call",
+                        {"name": "submit_candidate",
+                         "arguments": {"session_id": handle,
+                                       "submission": _submission()}},
+                        ident=ident)
+
+    with _Live(adapter) as live, _HeldScoring() as held:
+        _IDS[0] += 1
+        doomed = _IDS[0]
+        live.send(_submission_line(session_id, doomed))
+        # Held inside the scoring work, so the withdrawal is unambiguously of a
+        # request in progress -- the only case the spec asks a server to honour.
+        assert held.entered.acquire(timeout=30), "never reached scoring"
+        live.send(_cancellation(doomed))
+        assert _until(lambda: live.server.in_flight().get(_key(doomed))
+                      == MS.CANCELLED), "the cancellation was not taken"
+
+        _IDS[0] += 1
+        spared = _IDS[0]
+        live.send(_submission_line(other, spared))
+        assert held.entered.acquire(timeout=30), \
+            "the second session never reached scoring"
+        held.release.set()
+
+        # The spared request is answered normally, and so is everything after.
+        assert _result(live.await_id(spared, timeout=60))["structuredContent"]
+        assert _result(live.request("tools/list"))["tools"]
+
+        assert _until(lambda: live.server.in_flight() == {}), \
+            "an id outlived its request"
+        assert not live.has_id(doomed), \
+            "the cancelled request produced a message anyway"
+
+    assert held.count == 2, \
+        "both sessions must still have scored; cancellation stops no work"
+
+
+def test_m35_cancel_and_complete_race_to_one_lock_and_the_id_is_freed_either_way():
+    """The race the spec names, resolved at a single commit point.
+
+    "Cancellation notifications may arrive after request processing has
+    completed, and potentially after a response has already been sent." The spec
+    permits either outcome -- a server SHOULD not answer a cancelled request, and
+    MAY ignore a cancellation whose request already completed -- but permitting
+    both outcomes is not permission to produce neither, or both.
+
+    So `_settle` and `_cancel` contend for one lock and whichever takes it first
+    decides. The commit point is the **write decision**, not the completion of
+    the work: this transport deliberately owns no part of the scoring, so "the
+    work finished" is not a moment it can observe, whereas "about to write" is a
+    line of code here. A cancellation landing while the answer is computed but
+    unwritten is therefore honoured -- the SHOULD branch rather than the MAY.
+
+    What is guaranteed in *every* interleaving is narrower and stronger than
+    either branch, and it is what this law checks: never both written and
+    suppressed, never neither, and the id never survives its request.
+    """
+    server = MS.McpStdioServer(_adapter())
+
+    # Order A -- the cancellation takes the lock first.
+    key = server._admit(11)
+    assert server.in_flight() == {_key(11): MS.RUNNING}
+    assert server._cancel(_cancellation(11)) is True
+    assert server.in_flight() == {_key(11): MS.CANCELLED}
+    assert server._settle(key) is False, "a cancelled response must be suppressed"
+    assert server.in_flight() == {}, "a suppressed response must still free its id"
+
+    # Order B -- the settle takes the lock first. Same request, same two calls,
+    # opposite order, and the other permitted outcome.
+    key = server._admit(12)
+    assert server._settle(key) is True, "an uncancelled response must be written"
+    assert server.in_flight() == {}
+    assert server._cancel(_cancellation(12)) is False, \
+        "a cancellation that lost the race must be ignored, not recorded"
+    assert server.in_flight() == {}
+
+    # And under a real race, over real pipes: every request is cancelled the
+    # instant after it is sent, so the notification lands somewhere unpredictable
+    # relative to the answer. Whatever it hits, no id may be left poisoned.
+    idents = []
+    with _Live(_adapter()) as live:
+        for _ in range(24):
+            _IDS[0] += 1
+            idents.append(_IDS[0])
+            live.send(_request("tools/list", ident=_IDS[0]))
+            live.send(_cancellation(_IDS[0]))
+        assert _until(lambda: live.server.in_flight() == {}, timeout=60), \
+            "a raced request left its id in flight"
+
+        answered = [i for i in idents if live.has_id(i)]
+        # Both outcomes are permitted, so the count is not the property. That
+        # each id ended *decided* is, and that is what the empty map above says.
+        for ident in answered:
+            assert _result(live._by_id[_key(ident)])["tools"]
+
+        # The proof: every one of those ids is reusable, including the ones whose
+        # cancellation won. A permanent set would answer none of the winners.
+        live.forget(idents)
+        for ident in idents:
+            live.send(_request("tools/list", ident=ident))
+        for ident in idents:
+            assert _result(live.await_id(ident, timeout=30))["tools"], ident
+
+
+# ============================ M36-M37: EOF must not abandon the publication
+def test_m36_eof_waits_for_the_publication_and_never_relies_on_a_daemon_thread():
+    """A publication in flight when stdin closes reaches disk before the loop ends.
+
+    `drain`'s own docstring argued this and the code did the opposite: it joined
+    each worker with a thirty-second deadline, returned regardless, and the
+    workers were daemon threads -- so the process exited and killed them. A
+    verifier plan that legitimately takes longer than thirty seconds, which on a
+    real repository is most of them, was abandoned mid-publication by the
+    **normal** EOF path, having already spent the candidate's one-shot session.
+
+    The publication here is held open by injection rather than by being slow, so
+    it outlasts not merely thirty seconds but any constant a `drain` could have
+    been written with. `TRVS_MCP_SLOW_PUBLISH_SECONDS=35` makes it a real
+    wall-clock wait instead, which is how the >30s case was observed directly.
+
+    `daemon=False` is asserted as *stated*, not merely observed, because
+    `threading.Thread` inherits the flag from its creator: these workers are
+    spawned from `_Live`'s serve thread, which is a daemon, so an omitted flag
+    would silently produce exactly the killable workers this law refuses.
+    """
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(MS.McpStdioServer.serve_forever)))
+    spawned = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+               and isinstance(n.func, ast.Attribute) and n.func.attr == "Thread"]
+    assert len(spawned) == 1, "one dispatch site, or this check is incomplete"
+    flags = [k.value for k in spawned[0].keywords if k.arg == "daemon"]
+    assert len(flags) == 1 and isinstance(flags[0], ast.Constant) \
+        and flags[0].value is False, \
+        "a worker must state daemon=False; the default inherits its creator's"
+
+    adapter = _adapter()
+    session_id = _open(adapter)
+    observed = []
+    with _HeldPublication() as held:
+        live = _Live(adapter,
+                     on_serve_return=lambda: observed.append(
+                         held.published.is_set()))
+        try:
+            _IDS[0] += 1
+            ident = _IDS[0]
+            live.send(_request("tools/call",
+                               {"name": "submit_candidate",
+                                "arguments": {"session_id": session_id,
+                                              "submission": _submission()}},
+                               ident=ident))
+            assert held.entered.acquire(timeout=60), \
+                "never reached the publication"
+
+            workers = list(live.server._threads)
+            assert workers, "the request is in flight but no worker is tracked"
+            for worker in workers:
+                assert not worker.daemon, \
+                    "a worker the interpreter may kill at exit: %s" % worker.name
+
+            live.eof()                       # the shutdown signal, on its own
+            assert live.server.draining.wait(timeout=60), "EOF did not drain"
+            assert not held.published.is_set(), \
+                "the publication finished before the law could hold it"
+            assert live.serve_alive(), \
+                "serve_forever returned while a publication was in flight"
+
+            held.release.set()
+            live.join_serve(timeout=120 + held.hold_seconds)
+            assert not live.serve_alive(), "the serve loop never returned"
+        finally:
+            live.close()
+
+    assert observed == [True], \
+        "serve_forever returned before the publication reached disk: %s" % observed
+    assert held.published.is_set()
+    path = held.paths[0]
+    assert os.path.isdir(path), path
+    assert os.path.isfile(os.path.join(path, "receipt.json")), path
+    assert os.path.basename(path).startswith("episode-"), path
+
+
+def test_m37_drain_has_no_deadline_and_an_explicit_one_reports_rather_than_abandons():
+    """A longer timeout was not the repair, because no constant is the repair.
+
+    Whatever number were chosen, this module would be asserting a bound on how
+    long a verifier plan may honestly take, and it has no basis for one. So the
+    default is the *absence* of a deadline, checked three ways: on the signature,
+    on the join `drain` actually performs at EOF, and on what a caller who does
+    pass one gets back.
+
+    The middle check is the one that could not be faked. Reading the default
+    proves what the code says; recording the argument of the real join proves
+    what it does. It also fails in milliseconds against the old `timeout=30`,
+    which is why the suite does not have to spend thirty seconds discovering it.
+
+    An explicit timeout stays available, because an operator supervising a
+    shutdown reasonably wants to be told about a wait that is not ending. It is a
+    *reporting* knob: `drain` names the unfinished requests, says on stderr that
+    they are not daemon threads, and the process still does not exit until they
+    finish. That is what keeps it from being the fixed deadline in disguise.
+    """
+    signature = inspect.signature(MS.McpStdioServer.drain)
+    assert signature.parameters["timeout"].default is None, \
+        "a drain with a default deadline is a drain that abandons on schedule"
+
+    # What it *does*: the join performed at a real EOF, recorded as it happens.
+    adapter = _adapter()
+    session_id = _open(adapter)
+    joins = []
+    with _HeldPublication() as held:
+        live = _Live(adapter)
+        try:
+            _IDS[0] += 1
+            live.send(_request("tools/call",
+                               {"name": "submit_candidate",
+                                "arguments": {"session_id": session_id,
+                                              "submission": _submission()}},
+                               ident=_IDS[0]))
+            assert held.entered.acquire(timeout=60), "never reached publication"
+
+            worker = live.server._threads[0]
+            real_join = worker.join
+
+            def spy(timeout=None):
+                joins.append(timeout)
+                return real_join(timeout)
+
+            worker.join = spy
+            live.eof()
+            assert _until(lambda: joins, timeout=60), \
+                "drain never joined the worker it was waiting for"
+            assert joins == [None], \
+                "drain joined with a deadline of %r" % (joins[0],)
+            held.release.set()
+            live.join_serve(timeout=120 + held.hold_seconds)
+        finally:
+            live.close()
+
+    # What an explicit timeout does: reports, and abandons nothing. The worker is
+    # still alive, still not a daemon, and still holds the process open.
+    notes = []
+    server = MS.McpStdioServer(_adapter(), log=notes.append)
+    stop = threading.Event()
+    worker = threading.Thread(target=stop.wait, daemon=False,
+                              name="mcp-request id=1 method='tools/call'")
+    server._threads.append(worker)
+    worker.start()
+    try:
+        unfinished = server.drain(timeout=0.05)
+        assert unfinished == [worker.name], unfinished
+        assert worker.is_alive() and not worker.daemon
+        assert any("not daemon threads" in n for n in notes), notes
+    finally:
+        stop.set()
+        worker.join(timeout=30)
+    assert server.drain(timeout=0.05) == [], \
+        "a finished worker must not be reported as outstanding"
+
+
+# ============================ M38-M39: the boundary, said rather than implied
+def test_m38_a_cursor_is_refused_by_every_paginated_method_and_null_is_absence():
+    """Pagination is not implemented, so a cursor is refused rather than dropped.
+
+    The failure this closes is invisible by construction. A cursor arrived, was
+    never read, and the client got page one of a one-page result -- which is
+    *byte-identical* to the response it would have got had the cursor been
+    honoured and the page been the last. No field distinguishes them, so no
+    client can. "Your request was silently reinterpreted" is exactly the
+    divergence this repo exists to make refusable.
+
+    `-32602` is the pagination spec's own code for a cursor a server will not
+    take. The claim here is stronger than "invalid": the only way to obtain a
+    cursor is a `nextCursor`, this server emits none, so every cursor it can
+    possibly be sent is one the client invented.
+
+    **The law iterates the methods rather than naming one**, and then checks the
+    enumeration itself from the other end: every `/list` method the dispatch
+    table routes must appear in `PAGINATED_METHODS`. A law written per handler
+    would pass forever while a fifth list method shipped uncovered, because the
+    symptom of an uncovered method is a response that looks right.
+
+    **`cursor: null` is absence**, and the law pins the strong form of that: the
+    result is not merely successful, it is *identical* to the result of the
+    request that omitted the key. The spec permits exactly one determination from
+    a cursor value -- "whether a non-null value was provided" -- and it is that
+    same rule that makes `""` a real cursor, which is why the empty string is
+    refused alongside everything else.
+
+    **The key is named once.** `PAGINATION_PARAM` claims to be the one place the
+    key is written, so this law sends `{M.PAGINATION_PARAM: ...}` rather than a
+    literal of its own -- a law that hardcoded `"cursor"` would keep passing
+    while the server checked some other key, which is precisely the disagreement
+    the constant exists to prevent. The single literal below is the other half:
+    it pins the constant's *value* to the specification, so a rename cannot pass
+    by carrying every law along with it.
+    """
+    adapter = _adapter()
+
+    # The enumeration is the specification's, transcribed. Asserted literal so
+    # that dropping one is a failure rather than a silently narrower boundary.
+    assert set(M.PAGINATED_METHODS) == {
+        "tools/list", "resources/list", "resources/templates/list",
+        "prompts/list"}, M.PAGINATED_METHODS
+
+    # The one literal in this law: the spec's key name. Everything after this
+    # line goes through the constant.
+    assert M.PAGINATION_PARAM == "cursor", M.PAGINATION_PARAM
+    param = M.PAGINATION_PARAM
+
+    # ...and complete with respect to what this server actually routes. This is
+    # the clause that cannot fall out of date when a method is added.
+    routed = _dispatched_methods(inspect.getsource(M.McpAdapterV1._dispatch))
+    assert routed, "the dispatch table was not parsed"
+    uncovered = {m for m in routed if m.endswith("/list")} - set(M.PAGINATED_METHODS)
+    assert not uncovered, \
+        "these list methods take a cursor nobody refuses: %s" % sorted(uncovered)
+
+    for method in M.PAGINATED_METHODS:
+        if method not in routed:
+            continue  # in the spec, not served here: unreachable, not a defect.
+
+        # Absent: unchanged, which is the half that must not regress.
+        plain = _result(_call(adapter, method))
+        assert "nextCursor" not in plain, \
+            "%s returned a cursor it will not accept back" % method
+
+        # Explicitly null: the *same* request, not merely a successful one.
+        explicit = _result(_call(adapter, method, {param: None}))
+        assert explicit == plain, \
+            "%s treated an explicit null cursor as a different request" % method
+
+        # Anything non-null, including the empty string the spec calls a valid
+        # cursor, and a value of the wrong type.
+        for cursor in ("eyJwYWdlIjogM30=", "", 7, {"page": 3}):
+            error = _error(_call(adapter, method, {param: cursor}))
+            assert error["code"] == M.ERR_INVALID_PARAMS, \
+                "%s / %r gave %s" % (method, cursor, error)
+            assert "pagination" in error["message"].lower(), error["message"]
+            assert error["data"]["method"] == method, error["data"]
+            assert error["data"]["param"] == param, error["data"]
+            assert error["data"]["supportsPagination"] is False, error["data"]
+
+    # Scoped to where the protocol puts a cursor. On a method that has none, the
+    # key is an unknown parameter and a different complaint -- refusing it here
+    # would mean this check had stopped describing pagination.
+    assert "server/discover" not in M.PAGINATED_METHODS
+    _result(_call(adapter, "server/discover", {param: "anything"}))
+
+    # And the boundary is stated, not only enforced. A server that knows where
+    # its capability stops and says nothing has made the client find out by
+    # failing.
+    profile = _result(_call(adapter, "server/discover"))["com.traaviis/profile"]
+    assert profile["supports_pagination"] is M.SUPPORTS_PAGINATION is False, \
+        "the declaration and the refusal must be the same fact"
+
+
+def test_m39_the_episode_uri_is_described_as_the_receipt_it_actually_returns():
+    """A description that promises the bundle when the read yields the receipt.
+
+    These are different artifacts. `write_episode_bundle` produces a directory --
+    manifest, task, reward spec, snapshot, trace, verifier evidence -- and the
+    receipt is *one document inside it*. `trvs://episode/{id}` serves that one
+    document. A description saying the URI is "the published, content-addressed
+    episode bundle -- replay it offline with `trvs verify-episode`" tells a
+    language model that reading the URI gets it everything it needs to replay,
+    and it does not: replay reads the directory on the server's disk.
+
+    Offline replay is this product's headline claim, so an overclaim about it is
+    the most expensive wording defect available here.
+
+    Two halves, and neither is sufficient alone. **The bytes**: what the URI
+    returns is exactly `receipt.json` and is strictly smaller than the bundle,
+    proved by reading both off disk rather than by trusting either description.
+    **The words**: of the two artifact nouns, the description of that URI must
+    name `receipt` *first*, because the first artifact a description names is the
+    one it is about. That rule fails the old sentence and passes a sentence that
+    says "the receipt ... the full bundle is on disk" -- which is the distinction
+    that had to survive, since naming the bundle in order to disclaim it is
+    exactly what an honest description does.
+    """
+    out = _out("m39-episodes")
+    adapter = _adapter(output=out)
+    scored = _episode(adapter)
+    root = os.path.join(out, scored["episode_id"])
+
+    # --- the bytes ---------------------------------------------------------
+    with open(os.path.join(root, "episode-bundle.json"), "rb") as fh:
+        members = json.loads(fh.read().decode("utf-8"))["members"]
+    with open(os.path.join(root, "receipt.json"), "rb") as fh:
+        on_disk = json.loads(fh.read().decode("utf-8"))
+
+    served = _result(_call(adapter, "resources/read",
+                           {"uri": scored["episode_uri"]}))
+    body = json.loads(served["contents"][0]["text"])
+    assert body == on_disk, "the URI did not serve receipt.json"
+
+    others = set(members) - {"receipt"}
+    assert len(others) >= 4, members
+    assert "trace" in others and "task" in others and "snapshot" in others, members
+
+    # None of the rest is addressable, which is what makes "receipt, not bundle"
+    # a fact about this transport and not a wording preference.
+    for member in sorted(others):
+        probe = "%s/%s" % (scored["episode_uri"], member)
+        assert _error(_call(adapter, "resources/read", {"uri": probe}))["code"] \
+            == M.ERR_INVALID_PARAMS, probe
+
+    # --- the words ---------------------------------------------------------
+    def _names_the_receipt_first(text, where):
+        low = text.lower()
+        assert "receipt" in low, "%s never says what it returns: %r" % (where, text)
+        if "bundle" in low:
+            assert low.index("receipt") < low.index("bundle"), \
+                "%s is about the bundle, but the URI yields the receipt: %r" \
+                % (where, text)
+
+    link = [b for b in _result(_submit(adapter, _open(adapter)))["content"]
+            if b.get("type") == "resource_link"]
+    assert len(link) == 1, link
+    assert link[0]["uri"].startswith("trvs://episode/")
+    _names_the_receipt_first(link[0]["description"], "the resource_link")
+
+    template = _result(_call(adapter, "resources/templates/list"))["resourceTemplates"]
+    episode = [t for t in template if "episode" in t["uriTemplate"]]
+    assert len(episode) == 1, template
+    _names_the_receipt_first(episode[0]["title"] + " " + episode[0]["description"],
+                             "the resource template")
+
+    # The instructions may lead with the bundle -- there, the subject is the
+    # publication and the bundle really is what is published. What they may not
+    # do is name the URI without saying what reading it returns.
+    instructions = _result(_call(adapter, "server/discover"))["instructions"]
+    tail = instructions[instructions.index("://episode/"):]
+    assert "receipt" in tail.lower(), \
+        "the instructions publish the URI without saying it serves a receipt"
+
+
+# ============================ M40: a defensive settle releases only its own hold
+def test_m40_a_failed_write_releases_only_the_holder_that_failed():
+    """`_run_one`'s second `_settle` used to release an id it did not hold.
+
+    The old comment said *"settling again is harmless"*. That is true while
+    `count == 1`, and `_admit` counts precisely because it can be more. A client
+    that reuses an id while the first request is still running is violating
+    JSON-RPC -- and this server is on the far side of a pipe from it, so being
+    violated is a case it has to be correct in, not a case it can forbid. Two
+    holders, one key, `count == 2`.
+
+    Then: worker A finishes, settles (2 -> 1, and the entry correctly stays, for
+    B), and A's `_write` raises -- a client that closed the pipe, a full disk.
+    `_run_one` caught that and settled again, unconditionally: 1 -> 0, entry
+    deleted. The id worker B still holds is now *unknown*.
+
+    Both halves of the cancellation contract break at once, and neither is
+    visible from A's side:
+
+    - a cancellation for B is ignored, because an unknown id is one the spec
+      says a server ignores -- and it is unknown only because of A's failure;
+    - B's own `_settle` finds no entry and returns `True`, since an untracked id
+      is not a cancelled one, so B writes an answer for a request that was
+      withdrawn.
+
+    The fix is not "settle less often". A dispatch that raised *before* the
+    release still has to release, or the id is poisoned forever -- the failure
+    the counting was introduced to prevent. So `_dispatch` records the release
+    in a one-shot ledger and `_run_one` settles only when that ledger is empty:
+    exactly one release per holder, whichever way the dispatch ended.
+
+    Driven through the lifecycle methods rather than through two real threads.
+    The interleaving being asserted is a *specific* one -- A's settle, then A's
+    failed write, then the cancellation, then B -- and a law that spawned threads
+    and hoped for it would pass for the wrong reason most runs.
+    """
+    notes = []
+    server = MS.McpStdioServer(_adapter(), log=notes.append)
+    ident = 4040
+
+    key_a = server._admit(ident)
+    key_b = server._admit(ident)
+    assert key_a == key_b, "the whole case is two holders of one key"
+    assert server.in_flight() == {_key(ident): MS.RUNNING}
+
+    # Worker A: settles, then its write fails.
+    attempted = []
+
+    def explode(message):
+        attempted.append(message)
+        raise IOError("the client went away mid-write")
+
+    server._write = explode
+    server._run_one(_request("tools/list", ident=ident), key_a)
+    assert attempted, \
+        "the write was never reached; this law would assert nothing"
+    assert any("dispatch failed" in n for n in notes), notes
+
+    # The id is B's now, and still in flight. This is the assertion the defect
+    # broke: A's failure released a hold that was not A's.
+    assert server.in_flight() == {_key(ident): MS.RUNNING}, \
+        "a failed write released the surviving holder's id"
+
+    # ...so a cancellation arriving now names a request in progress, and is
+    # taken rather than ignored.
+    assert server._cancel(_cancellation(ident)) is True, \
+        "the cancellation was ignored, because the id had been freed early"
+    assert server.in_flight() == {_key(ident): MS.CANCELLED}
+
+    # And B's answer is suppressed. Under the defect this wrote a response for a
+    # cancelled request -- the one thing the spec forbids outright.
+    written = []
+    server._write = written.append
+    server._dispatch(_request("tools/list", ident=ident), key_b)
+    assert written == [], "a cancelled request was answered"
+
+    # Released exactly once per holder: the id is free, and reusable.
+    assert server.in_flight() == {}
+
+    # The ordinary single-holder path is unchanged: a failed write still frees
+    # its id, because leaving one in flight forever is the failure the counting
+    # exists to prevent and this fix must not have reintroduced it.
+    solo = server._admit(ident)
+    server._write = explode
+    server._run_one(_request("tools/list", ident=ident), solo)
+    assert server.in_flight() == {}, "a failed write poisoned its own id"
+
+    # And a dispatch that fails *before* the release still releases. The ledger
+    # is empty on that path, so `_run_one` settles exactly as it always did --
+    # the fix narrows a double release, it does not add a way to skip one.
+    early = server._admit(ident)
+    original = server._dispatch
+    try:
+        def die(message, key, settled=None):
+            raise IOError("failed before anything was released")
+        server._dispatch = die
+        server._run_one(_request("tools/list", ident=ident), early)
+    finally:
+        server._dispatch = original
+    assert server.in_flight() == {}, \
+        "an id whose dispatch died before the release was left in flight"
 
 
 def main():

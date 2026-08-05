@@ -149,6 +149,46 @@ it — the adapter builds the `RunResult`, never the client — so if it ever re
 a client it is a defect in this server, and `-32603` is the only honest code.
 Reporting it as `isError: true` would invite a model to "correct" an input it
 does not have.
+
+Pagination: not implemented, therefore refused
+-----------------------------------------------
+
+`2026-07-28` gives four operations an optional `cursor` — `tools/list`,
+`resources/list`, `resources/templates/list`, `prompts/list` — and an optional
+`nextCursor` in the reply. This server implements neither half. The catalog is
+one environment, a handful of tasks and one prompt, fixed at admission; a page
+boundary would be a boundary invented for its own sake.
+
+What is *not* acceptable is the shape that omission had first. A cursor arrived,
+was never read, and the client received page one of a single-page result with no
+field distinguishing that from the page it asked for. A client cannot tell
+"your cursor was honoured and this is the last page" from "your cursor was
+discarded" — the two produce byte-identical responses. That is the failure this
+repo exists to refuse: a divergence that is silent rather than refusable.
+
+So a **supplied** cursor is `-32602`, which is the code the pagination spec
+itself names for one ("Invalid cursors SHOULD result in an error with code
+-32602"). The claim is stronger than "invalid": the only way a client can come by
+a cursor for this server is a `nextCursor` this server never emits, so **every**
+cursor it could be sent is one the client invented. Refusing the whole class is
+therefore not a restriction on what a well-behaved client can do — a
+well-behaved client has nothing to send — it is a statement of where the
+capability stops.
+
+`cursor: null` is treated as **absent** and answered normally. The spec's own
+only-permitted determination on a cursor value is null-versus-not ("Don't make
+any determination based on cursor value other than whether a non-null value was
+provided"), and it turns on that distinction to rule that `""` is a real cursor.
+A JSON `null` in an optional field is what a typed client emits for "I have no
+cursor"; refusing it would refuse a request for page one on the grounds that it
+said so explicitly. The empty string is refused with everything else, because the
+spec says in as many words that it is a cursor.
+
+`PAGINATED_METHODS` is enumerated from the specification's own list of operations
+supporting pagination, not from this module's dispatch table, and the check runs
+once for all of them rather than per handler. Enumerating from the code would
+make the boundary describe the implementation instead of the protocol, and would
+go quietly wrong the moment a list method was added without one.
 """
 
 import json
@@ -171,6 +211,9 @@ __all__ = [
     "META_SERVER_INFO",
     "TOOLS",
     "PROMPT_NAME",
+    "PAGINATED_METHODS",
+    "PAGINATION_PARAM",
+    "SUPPORTS_PAGINATION",
     "McpError",
     "McpRefusal",
     "McpAdapterV1",
@@ -240,6 +283,37 @@ TOOL_CLOSE_SESSION = "close_session"
 TOOLS = (TOOL_LIST_TASKS, TOOL_OPEN_SESSION, TOOL_SUBMIT, TOOL_CLOSE_SESSION)
 
 PROMPT_NAME = "residency_task"
+
+#: The operations `2026-07-28` gives a `cursor`, transcribed from the
+#: specification's "Operations Supporting Pagination" list and in its order. This
+#: is deliberately **not** derived from `_dispatch`: the set is a property of the
+#: protocol, and one read off this module's own routing would describe what this
+#: server happens to implement while claiming to describe MCP. A method here that
+#: this server does not serve is harmless (it is unreachable); a method this
+#: server serves that is missing from here is the defect, and a law checks for it
+#: by parsing the dispatch table rather than by trusting this tuple.
+PAGINATED_METHODS = ("resources/list", "resources/templates/list",
+                     "prompts/list", "tools/list")
+
+#: Whether this revision of this server pages. It does not — and because a cursor
+#: can only be obtained from a `nextCursor` that is never emitted, "does not page"
+#: and "accepts no cursor" are the same statement. Declared on `server/discover`
+#: under this project's own prefix so the boundary is *readable* rather than only
+#: discoverable by tripping over it.
+SUPPORTS_PAGINATION = False
+
+#: The parameter name that carries a page position. One place, so the refusal and
+#: the law that drives it cannot disagree about which key is being checked: M38
+#: builds every request it sends through this name rather than through a literal
+#: of its own, which is what makes "one place" true rather than merely asserted.
+#:
+#: The value is still pinned to the specification by exactly *one* literal, in
+#: M38. That literal is not a duplicate of this line, it is the other half of the
+#: claim: without it, renaming this constant would rename the key this server
+#: checks and every law would stay green while the server stopped implementing
+#: the spec's pagination. With it, a rename is a failure — and a *relocation* of
+#: the key is still one edit, which is the property the constant is for.
+PAGINATION_PARAM = "cursor"
 
 #: Typed refusals that mean **this server is broken**, and the JSON-RPC code each
 #: becomes. Everything not listed here is the caller's to fix and becomes a tool
@@ -354,9 +428,11 @@ class McpAdapterV1(object):
                 "it exactly once and returns a verifiable reward, close_session "
                 "releases it. There is no observation between steps and no "
                 "retry — a spent handle is refused, not re-scored. Every episode "
-                "is published as a content-addressed bundle readable at "
-                "%s://episode/<episode_id> and replayable offline with "
-                "`trvs verify-episode`."
+                "is published to disk as a content-addressed bundle, replayable "
+                "offline with `trvs verify-episode`; %s://episode/<episode_id> "
+                "serves that bundle's sealed receipt, which is one document "
+                "inside it. This server does not paginate: no list method "
+                "returns a nextCursor, and a cursor sent to one is refused."
                 % (desc.get("env_id"), desc.get("substrate_profile"),
                    URI_SCHEME)),
             "ttlMs": TTL_CATALOG_MS,
@@ -376,6 +452,12 @@ class McpAdapterV1(object):
                 "submission_version": desc.get("submission_version"),
                 "env_id": desc.get("env_id"),
                 "operations": desc.get("operations", {}),
+                # Stated, because a boundary a client can only find by tripping
+                # over it is a boundary this server knows about and did not say.
+                # Not an MCP capability — the schema has no flag for pagination,
+                # and inventing one under the reserved prefix would be a claim
+                # in somebody else's vocabulary.
+                "supports_pagination": SUPPORTS_PAGINATION,
             },
         }
 
@@ -456,7 +538,8 @@ class McpAdapterV1(object):
                 "description":
                     "Spend a session handle: submit one finding and patch, have "
                     "the server score them against the packed environment, and "
-                    "receive the reward plus a link to the published episode. "
+                    "receive the reward plus a link to the sealed receipt of "
+                    "the published episode. "
                     "A handle may be submitted exactly ONCE — a second call is "
                     "refused, not re-scored. Do not send a reward, status, "
                     "verifier outcome, execution fact or identifier; those are "
@@ -488,7 +571,12 @@ class McpAdapterV1(object):
                         "reward": {"type": ["number", "null"]},
                         "finished": {"type": "boolean"},
                         "evidence_member": {"type": "string"},
-                        "episode_uri": {"type": "string"},
+                        "episode_uri": {
+                            "type": "string",
+                            "description":
+                                "reads back the episode's sealed receipt, not "
+                                "its bundle",
+                        },
                     },
                 },
             },
@@ -628,8 +716,12 @@ class McpAdapterV1(object):
             "uri": episode_uri(episode_id),
             "name": episode_id,
             "description":
-                "the published, content-addressed episode bundle — replay it "
-                "offline with `trvs verify-episode`",
+                "the sealed, content-addressed receipt for this episode: "
+                "reward, status, validity, signals and verifier versions. "
+                "Reading it returns the receipt document alone. The full "
+                "bundle — task, reward spec, snapshot, trace and verifier "
+                "evidence — is on the server's disk under this id, and it is "
+                "the bundle, not this URI, that `trvs verify-episode` replays.",
             "mimeType": "application/json",
         })
         return self._ok(blocks, structured)
@@ -728,7 +820,9 @@ class McpAdapterV1(object):
             "description":
                 "the sealed EpisodeReceiptV1 for a scored submission. "
                 "Content-addressed, so the id is a derivation of the receipt "
-                "and cannot name a different one later.",
+                "and cannot name a different one later. The receipt only: the "
+                "bundle it was sealed into — task, reward spec, snapshot, "
+                "trace, verifier evidence — is not served over this scheme.",
             "mimeType": "application/json",
         }]
 
@@ -904,6 +998,7 @@ class McpAdapterV1(object):
                                    "params must be an object")
         try:
             self._check_meta(params)
+            self._check_cursor(method, params)
             result = self._dispatch(method, params)
         except McpError as exc:
             return _error_response(ident, exc.code, exc.message, exc.data)
@@ -958,6 +1053,44 @@ class McpAdapterV1(object):
                 "_meta[%r] is required on every request"
                 % META_CLIENT_CAPABILITIES,
                 {"required": [META_CLIENT_CAPABILITIES]})
+
+    def _check_cursor(self, method, params):
+        """Refuse a page position this server has no page to put it in.
+
+        One check for every paginated method, driven off `PAGINATED_METHODS`
+        rather than written into four handlers. Per-handler is where this goes
+        wrong: a fifth list method arrives, its handler is written from the
+        nearest neighbour, and the omission is invisible because the symptom of
+        the omission is *a correct-looking response*.
+
+        Refusing only where the spec puts a cursor — rather than refusing the key
+        everywhere — keeps the message true. On `tools/list` a `cursor` is a
+        parameter the protocol defines and this revision does not implement; on
+        `tools/call` it is a parameter nobody defines, which is a different
+        complaint and belongs to whatever checks that method's arguments.
+
+        `None` is absence. The spec permits exactly one determination from a
+        cursor value — whether a non-null one was provided — and reaching a
+        different conclusion from `null` than from an omitted key would be a
+        second determination, made against the only rule stated about the value.
+        """
+        if method not in PAGINATED_METHODS:
+            return
+        if PAGINATION_PARAM not in params:
+            return
+        cursor = params[PAGINATION_PARAM]
+        if cursor is None:
+            # Explicitly "no cursor". The same request as one that omitted it.
+            return
+        raise McpError(
+            ERR_INVALID_PARAMS,
+            "pagination is not supported by this server revision: %s takes no "
+            "%s. This server never returns a nextCursor, so any cursor sent to "
+            "it names a position it did not issue." % (method, PAGINATION_PARAM),
+            {"method": method,
+             "param": PAGINATION_PARAM,
+             "supportsPagination": SUPPORTS_PAGINATION,
+             "paginatedMethods": list(PAGINATED_METHODS)})
 
     def _dispatch(self, method, params):
         if method == "server/discover":
