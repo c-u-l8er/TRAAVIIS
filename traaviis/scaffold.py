@@ -20,8 +20,13 @@ different subjects, not a renamed copy of one skeleton:
 
 Scaffold laws (the mutation battery in `test/test_scaffold.py`):
 
-    L1  invents no identity   no artifact id key, and no `<prefix>-<hex>` literal,
-                              appears anywhere in the emitted bytes
+    L1  invents no identity   no artifact id key, and no id-shaped literal,
+                              appears anywhere in the emitted bytes. The literal
+                              half fails CLOSED (`id_tokens`): a rung-prefixed
+                              token that does not parse as a digest is a
+                              violation, not a silence -- with two exemptions
+                              that `id_tokens` names and L1g pins, because a
+                              guard that also flags `env-vars` gets switched off
     L2  deterministic         scaffolding twice yields byte-identical trees
     L3  substrate-distinct    templates differ in profile AND in seeded subject
     L4  declared versions     every emitted document declares a frozen schema
@@ -50,6 +55,8 @@ __all__ = [
     "materialize",
     "identity_violations",
     "SCAFFOLD_FILE_MODE",
+    "ID_RUNGS",
+    "id_tokens",
 ]
 
 # --- frozen schema versions --------------------------------------------------
@@ -84,11 +91,220 @@ IDENTITY_KEYS = frozenset({
     "trace_id", "patch_id", "finding_id", "semantic_artifact_id",
 })
 
-# `<prefix>-<hex>` literals, e.g. sem-8ae91fe9..., snap-c66198ab...
-_ID_LITERAL = re.compile(
-    r"\b(?:env|bundle|snap|task|rew|episode|trace|patch|finding|sem|scen|replay)"
-    r"-[0-9a-f]{8,}\b"
+# --- the id-literal guard ----------------------------------------------------
+#
+# Three call sites scan text for artifact ids and refuse what they find:
+# `identity_violations` below, `test_eval_split.py`'s E5 and `test_compare.py`'s
+# C20. All three used to carry their own `<prefix>-<hex>` regex, which made two
+# things possible that a *guard* must not permit.
+#
+#   1. The rung list was written out three times, so a tenth rung added
+#      tomorrow would silently escape all three. It is written once here now,
+#      and `test_scaffold.py`'s L1c derives the same list from `identity.py`'s
+#      minting functions and refuses any prefix this tuple has not heard of --
+#      so the duplication is closed by a check, not by a convention.
+#
+#   2. The regexes were **fail-open**. `[0-9a-f]{8,}` matches a well-formed
+#      digest and nothing else, so a rung-prefixed token the pattern did not
+#      understand -- `snap-abcdef12ZZZ`, `rew-ABCDEF1234567890`, or the same id
+#      under any future grammar (`episode-jcs1-<hex>`) -- produced *no match*,
+#      and a guard that finds no id reports no violation. A typo and a scheme
+#      change would both read as "clean". The guard now recognises the **rung
+#      prefix first** and then asks whether the remainder parses; a rung-
+#      prefixed token that does not parse is `"malformed"`, which is a violation
+#      in its own right rather than silence.
+#
+# Both directions matter and they are different checks: `"malformed"` catches a
+# *known* rung wearing an unrecognised shape, `"unknown"` catches a *new* rung
+# minted by something that had no business minting one (there is no
+# `evaluation-...` or `compare-...` rung).
+#
+# What they do NOT do is catch everything. The first version of this guard said
+# they did -- "together they leave no token that is both id-shaped and
+# unreported" -- and that sentence was false in two directions at once, which is
+# why the guard now states its silence instead of denying it (L1g):
+#
+#   * It was NARROWER than the regex it replaced. A lookbehind refused to start
+#     a token after `-` or `.`, so `prev-episode-42d0bb07e5f83e9e` and
+#     `run.episode-42d0bb07e5f83e9e` -- both of which the old `\b`-anchored
+#     regex reported -- became `[]`. That was a real, well-formed id going
+#     completely unreported. It is reported again: position no longer gates the
+#     `"id"` verdict, only the `"malformed"` one (see `_classify`).
+#
+#   * It was WIDER on prose. Every hyphenated phrase whose first word happened
+#     to be a rung name -- `env-vars`, `task-oriented`, `patch-apply` -- was
+#     reported as a malformed id. A guard that cries wolf is switched off by the
+#     next person to trip it, which is fail-open by a slower route.
+#
+# The discrimination that resolves both is the REMAINDER's shape and the token's
+# POSITION, not position alone. `_classify` states the three rules and why each
+# one is the shape it is.
+
+#: Every id prefix in the system, written once. The nine ladder rungs of RFC
+#: Artifacts §1 (which `identity.py` mints, and which L1c pins against it), plus
+#: the TRVM substrate identities `sem-`/`scen-`/`replay-`, which are substrate
+#: ids rather than ladder rungs (ARCHITECTURE.md) but are just as much an
+#: identity a scaffold must not assert.
+#:
+#: It lives *here* rather than in `identity.py` because `identity.py` mints ids
+#: and never parses one, and because this module already owns the parallel
+#: `IDENTITY_KEYS` -- the same ladder named by field instead of by prefix. The
+#: two belong side by side. If it is ever moved next to the minters, the import
+#: direction is safe in both files: `identity` imports nothing from this
+#: package, so `scaffold -> identity` cannot cycle. Either way L1c is what
+#: keeps the list true, so the placement is a readability choice and not a
+#: correctness one.
+ID_RUNGS = (
+    "env", "bundle", "snap", "task", "rew", "episode", "trace", "patch",
+    "finding", "sem", "scen", "replay",
 )
+
+#: The remainder of a well-formed id: lowercase hex, at least
+#: `_ID_DIGEST_FLOOR` of it. `identity._id` always emits a full 64-character
+#: sha256, but prose and memos abbreviate (`snap-c66198ab…`) and an abbreviated
+#: id is still an asserted identity, so the floor is 8 -- the same floor the
+#: original regex used, deliberately unchanged. Measured, not assumed: swept over
+#: this repository and its build artifacts, the number of literals the original
+#: `<rung>-[0-9a-f]{8,}` regex reports and this guard does not is zero.
+#:
+#: It does a second job in `_classify`: a remainder shorter than this cannot be
+#: even an abbreviated id, so it cannot be a *malformed* one either.
+_ID_DIGEST_FLOOR = 8
+_ID_DIGEST = re.compile(r"[0-9a-f]{%d,}\Z" % _ID_DIGEST_FLOOR)
+
+#: How long a run of characters has to be before it stops being readable as a
+#: *word* and starts being readable as an *identity*. It does two jobs, and they
+#: are the same judgement seen from two sides:
+#:
+#:  * a digest this long under an unrecognised prefix is an invented rung
+#:    (`evaluation-<32 hex>`), not ordinary hyphenated text (`cpython-3.11`);
+#:  * a lowercase-alphabetic segment this long is not an English word, so it
+#:    does not qualify for the prose exemption in `_classify`.
+#:
+#: 16 is the threshold both id batteries already used for the first job; the
+#: longest prose segment in this repository's own scaffolded bytes is
+#: `completeness` (12), so it has headroom for the second.
+_IDENTITY_RUN_FLOOR = 16
+
+#: A maximal run of identifier-ish characters. Runs must *end* on an
+#: alphanumeric or underscore, so a trailing `-` or `.` is a separator rather
+#: than part of the token: `trvs-bundle-law-` is the tempdir prefix
+#: `trvs-bundle-law`, not the `bundle` rung carrying the remainder `law-`.
+_ID_RUN = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?")
+
+#: Segments joined by hyphens, every one of them lowercase letters: the shape of
+#: ordinary hyphenated English (`one-shot`, `completeness-impl`, `task-oriented`).
+_WORDS = re.compile(r"[a-z]+(?:-[a-z]+)*\Z")
+
+
+def _classify(prefix, remainder, embedded):
+    """One token's verdict, or `None` for "this is not an identity claim".
+
+    `embedded` is true when the prefix is not the first segment of its dotted
+    name -- when something came before it and that something was a `-` or a `.`.
+
+    Three rules decide whether a *known rung with a remainder that is not a
+    digest* is a malformed id or ordinary text. Each is here because dropping it
+    reports something real as a violation:
+
+      1. **Length.** A remainder shorter than `_ID_DIGEST_FLOOR` cannot be even
+         an abbreviated id, by this guard's own floor. `task-b` -- a real task
+         filename in a packed `env.json` -- is not a truncated `task-…`.
+
+      2. **Shape.** A remainder that is lowercase words joined by hyphens, none
+         of them long enough to be an identity, is prose: `env-vars`,
+         `task-oriented`, `patch-apply`, `sem-ver`, `bundle-path`.
+
+      3. **Position.** An *embedded* rung is a segment of a longer compound
+         name unless it carries a real digest. `traaviis.finding-completeness-
+         impl.v1` is the frozen verifier version present in every `ComparisonV1`
+         this repository produces (it failed `test_compare`'s C20 the first time
+         this guard ran); `traaviis-snap-01uu24ob` is a mkdtemp name. Neither is
+         an identity claim, and neither is distinguishable from one by shape
+         alone once it sits inside a compound.
+
+    Note what position does *not* gate: a well-formed digest is an `"id"`
+    wherever it appears, so `prev-episode-<hex>` and `run.episode-<hex>` are
+    reported -- which is the coverage the lookbehind this replaced had silently
+    traded away.
+
+    Rules 1-3 buy the absence of false positives at a price, and the price is
+    stated rather than hidden: see `id_tokens`'s "deliberately not reported"
+    paragraph, which L1g pins.
+    """
+    digest = _ID_DIGEST.match(remainder) is not None
+    if prefix in ID_RUNGS:
+        if digest:
+            return "id"
+        if embedded:
+            return None
+        if len(remainder) < _ID_DIGEST_FLOOR:
+            return None
+        if _WORDS.match(remainder) and all(
+                len(seg) < _IDENTITY_RUN_FLOOR for seg in remainder.split("-")):
+            return None
+        return "malformed"
+    if digest and len(remainder) >= _IDENTITY_RUN_FLOOR:
+        return "unknown"
+    return None
+
+
+def id_tokens(text):
+    """Every id-shaped token in `text`, as `[(prefix, remainder, kind)]`.
+
+    `kind` is one of:
+
+        ``"id"``         a known rung carrying a well-formed digest -- an id.
+                         Reported wherever it appears, including inside a longer
+                         name (`prev-episode-<hex>`, `run.episode-<hex>`).
+        ``"malformed"``  a known rung whose remainder is *not* a digest but is
+                         not readable as ordinary text either. This is the
+                         fail-closed case: the token names a rung, so it is
+                         making an identity claim, and the claim does not parse.
+        ``"unknown"``    an unrecognised prefix carrying a well-formed digest --
+                         something minted a rung that is not in `ID_RUNGS`.
+
+    **Deliberately not reported**, and this is a trade, not an oversight:
+
+      * a rung followed by lowercase words of ordinary length -- `env-vars`,
+        `task-oriented`, and equally `episode-nonsense`. Nothing in the two
+        strings differs: `nonsense` and `oriented` are both eight lowercase
+        letters. There is no lexical discrimination between a typo'd id whose
+        remainder happens to be word-shaped and a hyphenated English phrase, so
+        this guard reports neither and says so. What bounds the silence is that
+        a *digest-shaped* remainder is still an `"id"`, an over-long segment
+        (>= `_IDENTITY_RUN_FLOOR`) is still `"malformed"`, and any digit or
+        uppercase letter takes the token out of the exemption entirely --
+        `snap-abcdef12ZZZ`, `rew-ABCDEF1234567890` and `episode-jcs1-<hex>` are
+        all reported. A mangled sha256 keeps its digits; an English word does
+        not have any.
+      * a rung *embedded* in a longer compound name and not carrying a digest
+        (`traaviis.finding-completeness-impl.v1`, `traaviis-snap-01uu24ob`).
+
+    Both silences are pinned by L1g, so they are visible in the battery rather
+    than only in this docstring, and a future widening has to move a law.
+
+    The single scan is shared by all three call sites so they cannot drift apart
+    again. The text is walked as runs of identifier characters rather than by one
+    regex because a rung can begin at *any* hyphen inside a run, and a single
+    non-overlapping `finditer` lets the first segment swallow the rest: on
+    `prev-episode-<hex>` it matches the prefix `prev` with the whole of
+    `episode-<hex>` as its remainder, so simply deleting the lookbehind would
+    have left that id just as unreported as before.
+    """
+    out = []
+    for run in _ID_RUN.finditer(text):
+        for depth, chunk in enumerate(run.group(0).split(".")):
+            parts = chunk.split("-")
+            for i in range(len(parts) - 1):
+                prefix, remainder = parts[i], "-".join(parts[i + 1:])
+                if not prefix[:1].isalpha() or not remainder[:1].isalnum():
+                    continue
+                kind = _classify(prefix, remainder, embedded=(i > 0 or depth > 0))
+                if kind is not None:
+                    out.append((prefix, remainder, kind))
+                    break  # the rest of the chunk is this token's remainder
+    return out
 
 
 class ScaffoldError(Exception):
@@ -659,8 +875,20 @@ def identity_violations(files):
 
     Returns `[(path, reason)]` -- empty for a lawful scaffold. Checks both the
     structural form (an id *key* in a JSON document, at any depth) and the
-    textual form (a `<prefix>-<hex>` literal anywhere in the bytes, including
-    prose and comments).
+    textual form (an id-shaped literal anywhere in the bytes, including prose
+    and comments).
+
+    The textual half is **fail-closed** (see `id_tokens`): a rung-prefixed token
+    whose remainder is not a hex digest and not readable as ordinary text is
+    reported as a malformed id literal rather than passing as "no id here", and
+    an unrecognised prefix carrying a digest is reported as an invented rung. A
+    scaffold that wants to *talk* about an id writes the elision form
+    (`snap-...`), which asserts nothing and is not a token -- and so is ordinary
+    hyphenated prose (`set the env-vars first`), which a template is free to
+    contain.
+
+    `id_tokens` names the two shapes it deliberately does not report, and L1g
+    pins them; this function inherits both silences.
     """
     out = []
     for path in sorted(files):
@@ -669,8 +897,17 @@ def identity_violations(files):
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        for m in _ID_LITERAL.finditer(text):
-            out.append((path, "id literal %r" % m.group(0)))
+        for prefix, remainder, kind in id_tokens(text):
+            literal = "%s-%s" % (prefix, remainder)
+            if kind == "id":
+                out.append((path, "id literal %r" % literal))
+            elif kind == "malformed":
+                out.append((path, "malformed id literal %r: %r names the %r "
+                                  "rung but does not parse as a digest"
+                                  % (literal, remainder, prefix)))
+            else:
+                out.append((path, "id literal %r under the unknown rung %r"
+                                  % (literal, prefix)))
         if path.endswith(".json"):
             try:
                 doc = json.loads(text)

@@ -17,6 +17,7 @@ Run under pytest:  pytest test/test_eval_split.py
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -246,13 +247,62 @@ def test_evaluation_index_carries_no_identity_of_its_own():
         forbidden = ("evaluation_id", "eval_id", "run_id", "split_id", "bundle_id")
         for key in forbidden:
             assert key not in report, "the index invented %s" % key
-        # No `<prefix>-<hex>` literal anywhere except the ids it *reports*
-        # (env-, task-, episode-, snap-), each of which is derived elsewhere.
-        import re
-        allowed = {"env", "task", "episode", "snap", "sem"}
+
+        # No id literal anywhere except the ids it *reports* (env-, task-,
+        # episode-, snap-, sem-), each of which is derived elsewhere.
+        #
+        # This scan is fail-closed, and that is the whole point of routing it
+        # through `scaffold.id_tokens` instead of a local regex. The regex this
+        # replaced matched a well-formed digest and nothing else, so an id the
+        # pattern could not parse -- `snap-abcdef12ZZZ`, or the same id under
+        # any future grammar (`episode-jcs1-<hex>`) -- yielded an empty match
+        # set and the assertion below passed *vacuously*. The law would have
+        # gone green and blind on the same day. `id_tokens` recognises the rung
+        # prefix first and reports a token that then fails to parse as
+        # `"malformed"`, so an unreadable id is a failure here rather than a
+        # silence. What it deliberately does NOT report is named in its
+        # docstring and pinned by `test_scaffold`'s L1g; this law inherits both
+        # silences, and the plants below are the two shapes that would otherwise
+        # slip through the guards that shipped before it.
         blob = json.dumps(report)
-        for prefix in set(re.findall(r"\b([a-z]+)-[0-9a-f]{16,}", blob)):
-            assert prefix in allowed, "unexpected id family %r in the index" % prefix
+        allowed = {"env", "task", "episode", "snap", "sem"}
+
+        def verdict(text):
+            """This law, as a function, so a planted id can show it go red."""
+            return [(p, r, k) for p, r, k in S.id_tokens(text)
+                    if k != "id" or p not in allowed]
+
+        for prefix, remainder, kind in verdict(blob):
+            if kind == "malformed":
+                raise AssertionError(
+                    "unparseable id literal %r-%r in the index" % (prefix, remainder))
+            if kind == "unknown":
+                raise AssertionError("the index invented the %r rung" % prefix)
+            raise AssertionError("unexpected id family %r in the index" % prefix)
+
+        # Non-vacuity on the REAL index, not on a constructed string. Two
+        # plants, each of which a guard that shipped could not see:
+        # `episode-jcs1-<hex>` is invisible to the `<rung>-[0-9a-f]{8,}` regex
+        # this replaced, and `run.evaluation-<hex>` -- an invented rung one dot
+        # deep -- was invisible to the lookbehind rewrite that followed it. If
+        # either passed, this law would be green on an index carrying an
+        # identity nobody can re-derive.
+        legacy = re.compile(r"\b(?:%s)-[0-9a-f]{8,}\b" % "|".join(sorted(S.ID_RUNGS)))
+        lookbehind = re.compile(
+            r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_]*)-([0-9A-Za-z][0-9A-Za-z_-]*)")
+
+        def lookbehind_saw(text):
+            return [m.group(0) for m in lookbehind.finditer(text)
+                    if m.group(1) in S.ID_RUNGS or len(m.group(2)) >= 16]
+
+        for planted, blind in (("episode-jcs1-" + "b" * 64, {"legacy"}),
+                               ("run.evaluation-" + "c" * 64,
+                                {"legacy", "lookbehind"})):
+            doctored = json.dumps(dict(report, planted=planted))
+            assert verdict(doctored), \
+                "%r planted in a real evaluation index went unreported" % planted
+            assert (legacy.findall(planted) == []) == ("legacy" in blind), planted
+            assert (lookbehind_saw(planted) == []) == ("lookbehind" in blind), planted
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

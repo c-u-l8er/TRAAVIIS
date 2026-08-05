@@ -610,17 +610,42 @@ def test_c19_the_written_report_is_atomic_and_complete():
 # --- C20/C21: a comparison is a reading, not an artifact -------------------
 
 #: Every id prefix a `ComparisonV1` is allowed to quote. The identity ladder
-#: (RFC Artifacts §1) plus the two Residency output ids. A comparison may quote
-#: any of these; it may mint none of them, and it may not introduce a rung of
-#: its own.
-_LADDER = ("snap-", "task-", "rew-", "trace-", "episode-", "env-",
-           "finding-", "patch-", "sem-", "bundle-")
+#: (RFC Artifacts §1) plus the Residency/TRVM substrate id `sem-`. A comparison
+#: may quote any of these; it may mint none of them, and it may not introduce a
+#: rung of its own. Named here as bare rungs and pinned against
+#: `scaffold.ID_RUNGS` below, so a rung this list misspells -- or one added to
+#: the system and not to this list -- is a failure rather than a silent
+#: widening.
+_LADDER = frozenset({"snap", "task", "rew", "trace", "episode", "env",
+                     "finding", "patch", "sem", "bundle"})
 
 
 def test_c20_the_comparison_mints_no_identity_of_its_own():
     """There is no `compare-…` rung. Everything in the report is already
     addressed by the ids it quotes, so a comparison is not an artifact anyone
-    needs to re-derive."""
+    needs to re-derive.
+
+    The scan is fail-closed. It used to be `re.findall` over
+    `"([a-z_]+-)[0-9a-f]{16,}"` asserting the result was a subset of the
+    ladder -- and a subset assertion is satisfied by the empty set, so *every*
+    id the pattern could not parse made this law pass by finding nothing. The
+    check now runs through `scaffold.id_tokens`, which recognises the rung
+    prefix first and then asks whether the remainder is a digest: a rung-
+    prefixed token that does not parse is `"malformed"` and fails here, and a
+    digest under a prefix that is not a rung at all is `"unknown"` and fails
+    here too. Those are the two ways this report could carry an identity nobody
+    can re-derive, and neither is now expressible as silence.
+
+    This report is also the corpus that keeps the scan honest in the other
+    direction. `traaviis.finding-completeness-impl.v1` is in every `ComparisonV1`
+    this repository produces, and the first fail-closed rewrite read it as the
+    `finding` rung and failed this law -- a declared verifier version is not an
+    identity claim. It is exempt on the shape of its remainder now, not on a
+    lookbehind, which is why the planted ids below are still caught at exactly
+    the positions the lookbehind used to blind (`test_scaffold`'s L1f).
+    """
+    assert _LADDER <= set(S.ID_RUNGS), _LADDER - set(S.ID_RUNGS)
+
     f = _fixture()
     report = _compare(f["ok"], f["nofix"])
     assert "comparison_id" not in report, report.keys()
@@ -629,8 +654,57 @@ def test_c20_the_comparison_mints_no_identity_of_its_own():
     assert "compare-" not in blob
     assert "eval-" not in blob
 
-    minted = set(re.findall(r'"([a-z_]+-)[0-9a-f]{16,}"', blob))
-    assert minted <= set(_LADDER), minted
+    # The version string this law once tripped over really is in the report.
+    assert "traaviis.finding-completeness-impl.v1" in blob, \
+        "the false-positive corpus is gone; this law no longer proves it is exempt"
+
+    def verdict(text):
+        """This law, as a function, so a planted id can show it go red."""
+        return [(p, r, k) for p, r, k in S.id_tokens(text)
+                if k != "id" or p not in _LADDER]
+
+    for prefix, remainder, kind in verdict(blob):
+        if kind == "malformed":
+            raise AssertionError(
+                "unparseable id literal %r-%r in the comparison" % (prefix, remainder))
+        if kind == "unknown":
+            raise AssertionError("the comparison minted the %r rung" % prefix)
+        raise AssertionError(
+            "the comparison quotes the %r rung, which is not in the ladder" % prefix)
+
+    # Non-vacuity, on the real report rather than on a constructed string. Each
+    # plant is an identity nobody can re-derive, written into the report the way
+    # a future bug would write it, and each is invisible to a guard that shipped:
+    #
+    #   episode-jcs1-<hex>   a changed grammar. The `<rung>-[0-9a-f]{8,}` regex
+    #                        that predates this guard sees nothing (`j` is not
+    #                        hex), so C20 passed on a report carrying it.
+    #   run.compare-<hex>    an invented rung one dot deep. The lookbehind
+    #                        rewrite that followed refused to start a token
+    #                        after `.`, so C20 passed on that too.
+    #
+    # Both are red now, and the law is asserted to have been green before -- not
+    # merely asserted to work.
+    legacy = re.compile(r"\b(?:%s)-[0-9a-f]{8,}\b" % "|".join(sorted(S.ID_RUNGS)))
+    lookbehind = re.compile(
+        r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_]*)-([0-9A-Za-z][0-9A-Za-z_-]*)")
+
+    def lookbehind_saw(text):
+        return [m.group(0) for m in lookbehind.finditer(text)
+                if m.group(1) in S.ID_RUNGS or len(m.group(2)) >= 16]
+
+    plants = [("regrammared", "episode-jcs1-" + "b" * 64, {"legacy"}),
+              ("invented", "run.compare-" + "c" * 64, {"legacy", "lookbehind"})]
+    for field, planted, blind in plants:
+        doctored = json.dumps(dict(report, planted=planted), sort_keys=True)
+        assert verdict(doctored), \
+            "%s: %r planted in a real ComparisonV1 went unreported" % (field, planted)
+        assert (legacy.findall(planted) == []) == ("legacy" in blind), \
+            "%s: the legacy regex's verdict on %r is not what is claimed" \
+            % (field, planted)
+        assert (lookbehind_saw(planted) == []) == ("lookbehind" in blind), \
+            "%s: the lookbehind rewrite's verdict on %r is not what is claimed" \
+            % (field, planted)
 
 
 def test_c21_comparing_does_not_disturb_the_episodes():
