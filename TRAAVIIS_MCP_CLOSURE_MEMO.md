@@ -3,8 +3,10 @@
 **Slice:** `trvs serve --mcp`. Give the Episode Kernel its **second** transport:
 the same kernel, the same admission, the same receipts, behind the Model Context
 Protocol's wire vocabulary (tools / resources / prompts).
-**Status:** shipped, with one ruled law expired and a re-scoping *proposed, not
-applied* (§12).
+**Status:** shipped. ~~with one ruled law expired and a re-scoping *proposed, not
+applied* (§12)~~ — **superseded: the §12 re-scoping has been applied**, and O25
+passes on it. §12 is kept as the record of the argument, which does not expire
+with the edit.
 
 **MCP specification revision: `2026-07-28`.** Named in `mcp.MCP_PROTOCOL_VERSION`,
 refused by name if a client asks for anything else, and asserted by M1. A
@@ -12,10 +14,27 @@ transport that does not name its protocol revision is making an unfalsifiable
 claim — "it supports MCP" cannot be wrong, because there is no stated thing to
 check it against.
 
-**Battery.** M1–M31: **31 passed / 0 skipped / 0 failed**. `test_ors.py`:
-**29 passed / 1 failed** — the one failure is O25, and §12 argues it is an
-expired clause rather than a regression, with the observed evidence.
+**Battery.** M1–M40: **40 passed / 0 skipped / 0 failed** (~0.6 s). `test_ors.py`:
+**31 passed / 0 failed**.
+
+~~`test_ors.py`: **29 passed / 1 failed** — the one failure is O25, and §12 argues
+it is an expired clause rather than a regression.~~ **Superseded.** The §12 edit
+that §12 itself left *proposed, not applied* has since been applied, so O25 now
+passes on its re-scoped clause; the battery also gained O31. The clause's
+argument stands unchanged and is kept in §12 as the record of why the law was
+re-scoped rather than deleted — what expired is the *count*, not the reasoning.
 `test_kernel.py` + `test_cli.py`: **40 passed / 0 failed**.
+
+The battery grew three times after the slice shipped, and every addition was a
+review finding rather than a new feature. M32–M37 replaced the cancellation
+mechanism and the EOF shutdown (§11 and §14.12, both recorded as superseded
+rather than rewritten). M38–M39 close two accuracy defects: a `cursor` was
+**ignored** where it should have been refused, and one resource description
+promised a *bundle* where the read returns a *receipt* (§18). M40 closes a
+release defect in the cancellation lifecycle M32–M35 introduced: `_run_one`'s
+defensive second `_settle` was unconditional, so when two holders shared one id
+a failed `_write` in the first released the second's hold — after which a
+cancellation for the survivor was ignored and its answer written anyway (§19).
 
 ---
 
@@ -259,9 +278,15 @@ exactly the serialization K15/K16 exist to prevent, one layer up: the kernel
 stays linearizable and the **server** scores one episode at a time, so the
 property is preserved on paper and lost in fact.
 
-So each request is dispatched on its own daemon thread and only the **writes** are
+So each request is dispatched on its own thread and only the **writes** are
 serialized, under a lock held just long enough to put one complete line on the
 stream.
+
+(This sentence said **daemon** thread until 2026-08-04, and it was accurate when
+written. The threads are no longer daemon threads, and the reason is a shutdown
+property rather than a concurrency one — see §14.12. Nothing in this section
+depends on which it is: the concurrency argument is about *dispatch*, and the
+daemon flag governs only what the interpreter is permitted to kill at exit.)
 
 The three laws are the kernel's K19–K26 seen through a second wire:
 
@@ -328,6 +353,47 @@ M31 pins the honest statement: **a cancelled submission loses its report, not it
 result.** The episode is still published, and the next submission on that handle
 is refused with a link to it — the same recovery §6 provides, reached from a
 different direction.
+
+### The mechanism described above is superseded — the claim above is not
+
+**Superseded 2026-08-04.** Everything to this point still holds; M31 still passes
+unchanged. What changed is the machinery underneath it, and the reason is worth
+keeping rather than overwriting.
+
+**What was believed.** The first version recorded every cancelled request id in a
+permanent `set` and consulted it just before writing a response. The reasoning
+was that the write is the last moment at which suppression is still possible,
+which is true, and that a set of ids is the cheapest thing that could answer "was
+this cancelled?", which is also true. The design was checked against the question
+it asked.
+
+**What was actually true.** The question was wrong. A permanent set makes
+cancellation a fact about a **number**, not about a request in progress, and
+three separate defects follow from that — only one of which was visible:
+
+1. it accepted a cancellation for a request that did not exist;
+2. it never released an id when the request finished;
+3. and therefore — because JSON-RPC ids are chosen by the client and are
+   routinely small integers — a `notifications/cancelled` for id `7` sent before
+   any request `7` existed would silently suppress the response to **every** later
+   request numbered `7`. The work ran, the episode published, and the answer was
+   thrown away while the client waited forever for a message this server had
+   already decided not to send.
+
+The spec permits ignoring a cancellation for an unknown or already-completed
+request. It does not permit remembering one.
+
+**What replaced it.** A three-state lifecycle — `unknown → running → unknown`,
+with `cancelled` as a branch that rejoins — held in a map from request id to
+state, with `unknown` as both the initial and the terminal state. Admission
+happens **on the reader thread, in stream order**, so a client's cancellation of
+its own request cannot race the worker's start; `notifications/cancelled` is
+handled on the reader for the same reason. `_settle` and `_cancel` contend for
+one lock, which names a single commit point: the response is never both written
+and suppressed, never neither, and **the id never survives its request**. Laws
+M32–M35 pin those four properties; the argument in full is in
+`mcp_server.py`'s module docstring, which is the design record for the mechanism
+as this section is for the claim.
 
 ## 12. A law that expired, and one that did not — with the evidence
 
@@ -410,7 +476,13 @@ rather than buried in a transport slice. It has been executed and passes:
     assert {a.dest for a in groups[0]._group_actions} == {"ors", "mcp"}
 ```
 
-Until it is applied, `test_ors.py` is **29 passed / 1 failed**.
+~~Until it is applied, `test_ors.py` is **29 passed / 1 failed**.~~ **Superseded:
+it has been applied.** O25 now carries the re-scoped clause above and passes;
+`test_ors.py` is **31 passed / 0 failed** (the other addition since is O31, an
+undecodable request body — §19). The proposed edit is left printed above rather
+than deleted, because it is the record of *what* was changed in a ruled law and
+of the argument for changing it, and that record does not expire when the edit
+lands.
 
 ## 13. Two corrections this slice made to its own laws
 
@@ -498,6 +570,64 @@ is autonomous. These are the choices a reviewer should look at first.
     The client is gone and will never read the answer; the evidence is the part
     worth waiting for.
 
+    **Superseded 2026-08-04 — the argument stood, the implementation did not.**
+    As written above, and as first shipped, this entry described behaviour that
+    did not happen. `drain()` joined each worker with a **30-second deadline** and
+    returned regardless, and the workers were **daemon** threads, so the process
+    then exited and killed them. A verifier plan that legitimately takes longer
+    than thirty seconds — which is most of them, on a real repository — was
+    abandoned mid-publication by the *normal* shutdown path, having already spent
+    the candidate's one-shot session. The paragraph and the code disagreed, and
+    the paragraph was the one telling the truth about the intent.
+
+    Raising the number was rejected as a repair: whatever constant were chosen,
+    this module would be asserting a bound on how long a verifier plan may
+    honestly take, and it has no basis for one. Two changes, neither of them a
+    number:
+
+    - **the workers are no longer daemon threads**, which is the load-bearing
+      half — durability now depends on the interpreter's own shutdown, which
+      joins non-daemon threads unconditionally, rather than on a wait completing;
+    - **`drain()` has no deadline by default** (`timeout=None`, the *absence* of
+      a bound, not a large one). A caller may still pass a finite timeout, but it
+      is a **reporting** knob: it names the unfinished requests on stderr and the
+      process still does not exit, because of the first change.
+
+    The remaining cost is stated rather than hidden: a genuinely hung verifier now
+    hangs the shutdown instead of silently discarding a scored episode. M36 and
+    M37 pin both halves — M37 records the argument of the join `drain` actually
+    performs, because reading the default proves what the code says and only
+    recording the real call proves what it does.
+
+    ~~"a hang is visible" was the whole of the stated cost.~~ **Superseded — it
+    understated it**, and the understatement is on the operator's side of the
+    boundary. The cost is not a visible wait: it is that **the process becomes
+    unkillable by Ctrl-C**. SIGINT raises `KeyboardInterrupt` on the main thread,
+    which can break out of the join in `drain` — but the *interpreter's own*
+    shutdown then joins every non-daemon thread unconditionally, and that join
+    takes no signal and honours no interrupt. So the second Ctrl-C does nothing
+    either, and the operator's only remaining move is `SIGKILL` — which is
+    exactly the abrupt termination mid-publication that `daemon=False` was chosen
+    to prevent, now reachable only by a deliberate act instead of by default.
+
+    The design is unchanged, because the trade it makes is still the right one: a
+    shutdown the operator has to escalate is recoverable, and an episode
+    abandoned between `fsync` and `rename` is not. What changes is that the price
+    is now stated in the terms the operator will actually meet it in. The honest
+    summary is *"an unkillable-by-Ctrl-C process"*, not *"a visible hang"*.
+13. **A supplied `cursor` is refused rather than paginated or ignored**, on every
+    paginated method, from an enumeration transcribed from the spec rather than
+    read off the dispatch table (§18.1). The contestable half is that this
+    *narrows* what the server accepts: a client that today sends a cursor and gets
+    a usable answer will tomorrow get an error. That is the intent — the answer it
+    gets today is not the one it asked for.
+14. **`cursor: null` is treated as absence**, not as a cursor (§18.1). The
+    alternative — refuse anything the key is present with, including `null` — is
+    defensible on "the client shouldn't send the key at all", and was rejected
+    because a typed client serialising an empty optional field is not making a
+    pagination request. The empty string is refused, because the spec says it is a
+    valid cursor.
+
 ## 15. Live end-to-end
 
 A fresh scaffold, no fixtures, driven by a real MCP client over a real pipe:
@@ -547,10 +677,19 @@ it is a malformed message from a server the client otherwise trusts.
 
 ## 16. Cost
 
-Two new modules (`traaviis/mcp.py` 1012, `traaviis/mcp_server.py` 291), one new
-battery (`test/test_mcp.py` 1578, M1–M31), and `cli.py` +168/−25 (a mutually
+Two new modules (`traaviis/mcp.py` 1145, `traaviis/mcp_server.py` 632), one new
+battery (`test/test_mcp.py` 2450, M1–M40), and `cli.py` +168/−25 (a mutually
 exclusive protocol group, `_Explicit`, `_admission_inputs`, and `cmd_serve` split
 into `_serve_ors` / `_serve_mcp`).
+
+~~1135 / 598 / 2333 with M1–M39~~ — superseded by the §19 round, which is the
+only change since.
+
+At the moment the slice first shipped those files were 1012 / 291 / 1578 with
+M1–M31. The growth since is all review work: the cancellation lifecycle and the
+EOF shutdown (`mcp_server.py`, roughly doubled, over half of it the docstring
+that is now the design record for the mechanism — §11), the two accuracy findings
+in §18, and the release defect in §19.
 
 **No new dependency** — `json`, `sys`, `threading` are standard library, as the
 kernel and the ORS transport are. No `mcp` pip package. No new identity rung, no
@@ -576,10 +715,24 @@ change to any existing episode**.
   versions in that error; it currently does not.
 - **Pagination is not implemented.** `nextCursor` is never returned. Correct for a
   catalog of one environment and a handful of tasks; untested for a package large
-  enough to need it, and a client that *sends* a `cursor` is silently ignored
-  rather than refused.
+  enough to need it. **Amended 2026-08-04:** the second half of this entry used to
+  read "and a client that *sends* a `cursor` is silently ignored rather than
+  refused". That is no longer true — a supplied cursor is now `-32602` on every
+  paginated method (§18.1, M38). Real, opaque cursors remain unimplemented and
+  unbuilt; what changed is that the gap is now refusable instead of silent.
 - **`MAX_LINE_BYTES` is not exercised.** An 8 MiB line cap exists; no law drives a
   message to it.
+- **`_decode` still catches only `(ValueError, UnicodeDecodeError)`** around
+  `json.loads`, and `RecursionError` is a `RuntimeError`. So a client line that is
+  valid JSON but nested past the decoder's stack — 200 000 nested arrays is
+  400 kB, well inside the 8 MiB cap, which bounds *length* and not *depth* — does
+  not become the `-32700` parse error the surrounding code is written to produce.
+  Same class as O31 and §19.3, **left open here on purpose**: the five sites fixed
+  in §19.3 all had a caller holding a typed refusal to return, and this one is on
+  the reader thread, where the consequence of the escape (what happens to the loop,
+  and whether the connection survives) is a design question rather than a
+  clause-widening. Added 2026-08-04; unrepaired, and stated rather than left to be
+  rediscovered.
 - **Windows.** `os.pipe`, `readline` framing and EOF shutdown are POSIX-tested
   only.
 
@@ -596,3 +749,232 @@ change to any existing episode**.
   loopback default is still the answer there.
 - The REPL, `EvaluationV2`, `eval-…`, `agent-…`, and batch-evidence distribution
   identity remain deferred.
+
+## 18. Two accuracy findings from external review (2026-08-04)
+
+Both are cheap. Both are the same defect in different clothing: **this server knew
+something the client could not find out.** Neither adds a capability; each turns a
+silent one into a stated one.
+
+### 18.1 A cursor was ignored where it should have been refused
+
+`cursor` appeared nowhere in `mcp.py`. A client that sent one received page one of
+a single-page result — **byte-identical** to the response it would have received
+had the cursor been honoured and the page been the last, because the two differ in
+no field. So "your cursor was discarded" was not merely undocumented; it was
+*unobservable*. A divergence that cannot be detected cannot be refused, which is
+the whole property this codebase is built to have.
+
+A supplied `cursor` is now `-32602`, which is the code the pagination spec names
+for one ("Invalid cursors **SHOULD** result in an error with code -32602"). The
+claim is stronger than "invalid": the only way to obtain a cursor is a
+`nextCursor`, and this server emits none, so every cursor it can be sent is one
+the client invented. Refusing the class costs a well-behaved client nothing.
+
+**The methods** — `resources/list`, `resources/templates/list`, `prompts/list`,
+`tools/list` — are transcribed from the specification's "Operations Supporting
+Pagination" list into `mcp.PAGINATED_METHODS`, deliberately **not** derived from
+this module's dispatch table. A set read off the code would describe what this
+server implements while claiming to describe MCP. The check runs **once, over the
+enumeration**, rather than in four handlers: per-handler is where this goes wrong,
+because a fifth list method's omission shows up as a *correct-looking response*.
+M38 closes the loop from the other end too — it parses `_dispatch` and asserts
+every `/list` method it routes is in `PAGINATED_METHODS`, so the coverage cannot
+silently go stale when a method is added.
+
+**`cursor: null` is absence**, and M38 pins the strong form: the result is not
+merely successful, it is *identical* to the result of the request that omitted the
+key. The justification is the spec's own — it permits exactly one determination
+from a cursor value, "whether a non-null value was provided", and reaching a
+different conclusion from `null` than from an omitted key would be a second
+determination made against the only rule stated about the value. It is also the
+same sentence that makes `""` a real cursor, so the empty string is refused with
+everything else.
+
+The boundary is additionally **declared**: `com.traaviis/profile` on
+`server/discover` gains `supports_pagination: false`. Under this project's own
+prefix, not as an MCP capability — the schema has no flag for pagination, and
+inventing one under the reserved prefix would be a claim in somebody else's
+vocabulary. M38 asserts the declaration and the refusal are the same fact, because
+a stated boundary that could drift from the enforced one is worse than none.
+
+Real pagination is **not** implemented and was not attempted. Refusing now and
+implementing opaque cursors later is the right order: the refusal is compatible
+with any future cursor format, whereas a cursor format shipped to serve four
+tasks is a format that has to be lived with.
+
+### 18.2 A description promised a bundle where the read returns a receipt
+
+`mcp.py` described the `resource_link` returned by `submit_candidate` as *"the
+published, content-addressed episode bundle — replay it offline with `trvs
+verify-episode`"*, while the resource template correctly titled the same URI
+*"Published episode receipt"* and `resources/read` returns the receipt.
+
+These are different artifacts and the difference is not pedantic.
+`write_episode_bundle` produces a **directory** — `episode-bundle.json`,
+`receipt.json`, `task.json`, `reward.json`, `snapshot.json`,
+`evidence/trace.json`, `evidence/verifiers/*.json`, `evidence/finding.json`,
+`evidence/process/policy-violations.json` — and the receipt is *one document
+inside it*. Offline replay reads the directory. So the sentence told a language
+model that reading one URI gets it everything it needs to replay, and it does not.
+**Offline replay is this product's headline claim**, which makes an overclaim
+about it the most expensive wording defect available here.
+
+Every conflation found in the neighbourhood, changed or not:
+
+| where | said | verdict |
+|---|---|---|
+| `resource_link` description | "the published, content-addressed episode bundle — replay it offline with `trvs verify-episode`" | **wrong, fixed.** Now names the receipt, lists what it contains, and says the bundle is on the server's disk and is what `verify-episode` replays. |
+| `describe()` instructions | "Every episode is published as a content-addressed bundle **readable at** `trvs://episode/<episode_id>` and replayable offline" | **wrong, fixed.** Two true facts welded into a false one: the episode *is* published as a bundle, and the URI *is* readable, but the URI does not read the bundle. Now separates publication from URI. |
+| `submit_candidate` description | "a link to the published episode" | loose, tightened to "a link to the sealed receipt of the published episode" — the model reads this before it reads the link. |
+| `episode_uri` output schema property | no description | gained one: "reads back the episode's sealed receipt, not its bundle". |
+| resource template title + description | "Published episode receipt" / "the sealed EpisodeReceiptV1…" | **already correct.** Extended with one clause naming what is *not* served, since that is the question a reader arrives with. |
+| module docstring §"adapter not a second kernel" | "no receipt builder, no `write_episode_bundle` call" | **correct as written** — it is naming two seams it deliberately does not cross, and they are genuinely two different things. |
+| `_read_episode` docstring | "Only the receipt… The bundle also holds the task, the reward spec, the snapshot, the trace and the verifier evidence" | **correct as written**, and is where the distinction was already stated properly. |
+| `README.md` MCP section | resources are "`trvs://episode/{episode_id}`… a different receipt would have a different name" | **correct as written**; one clause added to say the URI serves the receipt and not the bundle. |
+
+M39 pins it in two halves, and neither is sufficient alone. **The bytes**: what
+the URI returns is exactly `receipt.json`, proved by reading both off disk, and
+none of the bundle's other members is addressable through the scheme. **The
+words**: of the two artifact nouns, the description of that URI must name
+`receipt` *first*, because the first artifact a description names is the one it is
+about. That rule fails the old sentence and passes a sentence that says "the
+receipt … the full bundle is on disk" — which is the distinction that had to
+survive, since naming the bundle in order to disclaim it is exactly what an honest
+description does. A substring ban on "bundle" would have failed the fix.
+
+### 18.3 Should a bundle resource exist? — considered, not built
+
+Offline replay *is* the headline claim, so "the client can only get the receipt"
+is a real limitation, not a technicality. Recommending against it anyway:
+
+**What it would cost.**
+
+1. **A second reader of the bundle.** §14.5 already rules that serving reward
+   specs and snapshots would make `mcp.py` "a second, partial implementation of
+   `verify-episode`'s reader, which has an opinion about closure that a resource
+   read must not quietly approximate". A bundle resource is that objection at full
+   strength: `episode_bundle.read_episode_bundle` verifies closure, and a resource
+   read that skipped verification would hand a client bytes the verifier would
+   have rejected — under a URI whose whole promise is content addressing.
+2. **It breaks M30.** `mcp.py` may not name `episode_bundle`. That constraint is
+   the structural form of "this module translates, it does not re-implement", and
+   loosening it for a convenience read is exactly the kind of erosion M30 exists
+   to make expensive.
+3. **A resource is one document.** MCP's `contents` is a list of URI-addressed
+   blobs; a bundle is a *directory with a manifest and relative member paths*.
+   Serving it means either N resources under `trvs://episode/{id}/{member}` — a
+   namespace whose members are not independently content-addressed, so the long
+   `ttlMs` stops being earned — or one inlined JSON blob, which is a re-encoding
+   of the bundle that `verify-episode` cannot read and that nothing else in the
+   stack produces. Both are new artifacts.
+4. **Scope.** Bundles carry the trace and the verifier evidence. Episodes are
+   already `cacheScope: private` for a weaker reason (a submitter's finding and
+   patch); a bundle read hands over the full execution record, and the scoping
+   question deserves an answer rather than an inherited default.
+
+**What it would buy.** Only the case where the client and the server are on
+different machines *and* the client wants to replay independently. On stdio the
+client is the parent process and the bundle is on the same filesystem: the
+`resource_link` already names the id, and `trvs verify-episode <output>/<id>` is
+the supported path. The remote case is Streamable HTTP, which is deferred (§10) —
+so the transport this feature would serve does not exist yet.
+
+**If it is ever built**, the shape should be `trvs://bundle/{episode_id}` as a
+distinct authority rather than a mode of `episode/`, it should re-verify closure
+before serving (delegating, never re-implementing), and it should ship with
+`archive-bundle`'s canonical archive rather than a bespoke JSON encoding — so that
+what a client receives is byte-identical to what `verify-bundle` already admits.
+That is a slice, not a wording fix, and it is recorded here as a decision to defer
+rather than an oversight.
+
+## 19. A second round of external review (2026-08-04)
+
+Two findings against this transport (19.1, 19.2), and one class found in the
+neighbourhood and fixed outside these memos (19.3).
+
+### 19.1 A defensive `_settle` released an id it did not hold — M40
+
+`_run_one` wrapped `_dispatch` and, on any exception out of it, settled the id a
+second time. The comment said *"settling again is harmless and an id that is
+never settled could never be reused."* The second half is right and load-bearing.
+The first half is true **only while `count == 1`**, and `_admit` counts precisely
+because it need not be.
+
+The reachable sequence, all of it on the wrong side of a pipe from a client this
+server cannot constrain:
+
+1. a client reuses an id while the first request is still running — a JSON-RPC
+   violation, and `_admit` therefore records `count == 2` rather than refusing,
+   because two answers for one id are indistinguishable afterwards and the
+   invariant worth keeping is *the id is released when the **last** holder
+   settles*;
+2. worker A finishes and settles: `2 → 1`, and the entry correctly stays, for B;
+3. A's `_write` raises — a closed pipe, a full disk;
+4. `_run_one` settles again, unconditionally: `1 → 0`, **entry deleted**.
+
+Worker B is still running and its id is now unknown. Both halves of the
+cancellation contract break, and neither is visible from A:
+
+- a `notifications/cancelled` for B is **ignored**, because an unknown id is one
+  the spec says a server ignores — and it is unknown only because A failed;
+- B's own `_settle` finds no entry and returns `True`, since an untracked id is
+  not a cancelled one, so **B writes an answer for a withdrawn request** — the
+  one thing the spec forbids outright.
+
+It needs a protocol violation *and* a write failure, which is why it had not been
+seen. That is a statement about how often it fires, not about whether it is
+correct: this server's whole cancellation design assumes the id map is exact, and
+a release performed on behalf of a still-running holder makes it inexact.
+
+**The fix is not "settle less often."** A dispatch that dies *before* the release
+must still release, or the id is poisoned forever — the failure the counting was
+introduced to prevent in the first place. So `_dispatch` appends to a one-shot
+ledger the moment it releases, and `_run_one` settles only on an empty one:
+exactly one release per holder, whichever way the dispatch ended. M40 drives the
+specific interleaving through the lifecycle methods rather than spawning two
+threads and hoping for it, and pins the two paths the fix must not have broken —
+a single holder whose write fails still frees its id, and a dispatch that raises
+before releasing still releases.
+
+### 19.2 `PAGINATION_PARAM` claimed a property it did not have
+
+The constant's comment read *"One place, so the refusal and the law that drives
+it cannot disagree about which key is being checked."* M38 hardcoded the literal
+`{"cursor": …}` in every request it sent, and `PAGINATION_PARAM` was not in
+`mcp.__all__` — unlike `PAGINATED_METHODS` and `SUPPORTS_PAGINATION`, its two
+siblings. So the two *could* disagree: renaming the constant would have changed
+the key the server checks while every law kept passing against the old one.
+
+Made true rather than removed, because the property is worth having. M38 now
+builds every request through `M.PAGINATION_PARAM`, and asserts the returned
+`data.param` against it. The value is still pinned to the specification, by
+**exactly one literal**, in M38 — that literal is not a duplicate of the
+constant, it is the other half of the claim: without it a rename would carry
+every law along with it, and with it a rename fails while a *relocation* of the
+key stays one edit. `PAGINATION_PARAM` is now exported.
+
+### 19.3 Also found in the neighbourhood, and fixed outside this memo
+
+The `except (ValueError, UnicodeDecodeError)` clause around `json.loads` that O31
+closed in `ors_server._body` was found at five further sites —
+`batch.load_candidate_set`, `bundle.read_manifest`, `verify_bundle`'s
+`environment.json` read, `evalsplit.open_environment` and
+`evalsplit._read_member`. `RecursionError` is a `RuntimeError`, so a *legal* JSON
+document nested past the decoder's stack escaped all five as an untyped crash
+(measured: 200 000 nested arrays is 400 kB of ordinary bytes). All five now
+refuse with the code each module already declared; the laws are B31 and D41.
+
+`mcp_server._decode` carries the same clause and is **not** fixed here. It is
+recorded as open in §17 instead, because the other five all had a caller holding a
+typed refusal to hand back, and this one sits on the reader thread where what
+should happen to the loop is a design question rather than a clause to widen. It
+is the same class: a client's line reaches `json.loads`, and `MAX_LINE_BYTES`
+bounds length, not depth.
+
+Five further sites of the same clause remain outside both memos and are recorded
+here so the sweep's boundary is stated rather than implied: `pack._read_json`,
+`substrates._read_json`, `comparison._read_receipt`, `cli._load_json` and
+`episode_bundle._load_json`. Three of them (`comparison`, `cli`,
+`episode_bundle`) name only `ValueError`, so they are narrower still. None was
+examined in this round.

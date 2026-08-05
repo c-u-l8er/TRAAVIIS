@@ -447,7 +447,11 @@ newline-delimited JSON-RPC on stdin/stdout and answers `server/discover`.
   name, so staleness is not merely unlikely, it is unrepresentable. Episodes are
   reached by the `resource_link` a submission returns and by the template, not by
   listing, because `resources/list` must not change as a side effect of other
-  requests.
+  requests. **`trvs://episode/…` serves the sealed *receipt*, not the bundle.**
+  The bundle is the directory on the server's disk — receipt, task, reward spec,
+  snapshot, trace, verifier evidence — and it is the bundle, not the URI, that
+  `trvs verify-episode` replays. Serving the rest through a resource read would
+  make this a second, partial implementation of that reader.
 * **A session is neither.** It is mutable, ephemeral, and minted from randomness
   rather than content. `trvs://session/…` does not exist and will not: it would
   put a thing with none of a resource's properties into the namespace whose whole
@@ -496,6 +500,18 @@ the kernel linearizable while quietly serializing the server to one episode at a
 time. Two different sessions really do score simultaneously; two submissions to
 one handle score exactly once, and the loser is refused by name.
 
+**Pagination is not implemented, so a cursor is refused rather than dropped.**
+No list method returns a `nextCursor`, and a `cursor` sent to one of the four
+methods the spec gives one — `tools/list`, `resources/list`,
+`resources/templates/list`, `prompts/list` — is `-32602`. Ignoring it would have
+been worse than unimplemented: the client gets page one of a one-page result,
+which is byte-identical to the response it would have got had the cursor been
+honoured and the page been the last, so no client can tell the two apart. The
+only way to *obtain* a cursor for this server is a `nextCursor` it never emits,
+so every cursor it can be sent is one the client invented. An explicit
+`"cursor": null` is absence and answers normally; `""` is refused, because the
+spec says an empty string is a valid cursor.
+
 **No network surface at all.** Stdio has no port, no bind address and no
 `--allow-remote`, which is strictly stronger than ORS's loopback default —
 `--host`, `--port` and `--allow-remote` are *refused* with `--mcp` rather than
@@ -514,7 +530,7 @@ trvs verify-episode episodes/episode-29690223ea13acab06c04e551ecbb171…
 #   verified   ✓ closed
 ```
 
-See `TRAAVIIS_MCP_CLOSURE_MEMO.md` for the full design record, laws M1–M31, and
+See `TRAAVIIS_MCP_CLOSURE_MEMO.md` for the full design record, laws M1–M39, and
 what is unproven.
 
 ### Comparing two candidates

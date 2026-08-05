@@ -58,8 +58,75 @@ So the scaffold emits **references**, and packing is the substitution:
 
 That is why `init` needs no engine and `pack` does. It also makes L1 mechanically
 checkable: `scaffold.identity_violations()` scans every emitted document for an
-identity *key* at any depth **and** every emitted byte for a `<prefix>-<hex>`
-literal, so a future template cannot quietly bake one in — including in prose.
+identity *key* at any depth **and** every emitted byte for an id-shaped literal,
+so a future template cannot quietly bake one in — including in prose.
+
+The literal half fails **closed**. It used to be a `<prefix>-[0-9a-f]{8,}` regex,
+which matches a well-formed digest and *nothing else*: a rung-prefixed token it
+could not parse — `snap-abcdef12ZZZ`, `rew-ABCDEF1234567890`, or the same id
+under a changed grammar (`episode-jcs1-…`) — produced no match, and a guard that
+finds no id reports no violation, so a typo and a scheme change both read as
+"clean". `scaffold.id_tokens` now recognises the **rung prefix first** (from the
+one `ID_RUNGS` list, which `test_scaffold`'s L1c pins against the ids
+`identity.py` actually mints) and then asks whether the remainder is a digest.
+Three verdicts: `id`, `malformed` (a known rung whose remainder does not parse)
+and `unknown` (a digest under a rung nobody should have minted). All three are
+violations. The elision form `snap-…` is deliberately *not* a token — writing
+"an id goes here" asserts none.
+
+### What the guard does not report, and why that is written down
+
+The first version of this rewrite claimed the three verdicts "leave no token
+that is both id-shaped and unreported". That sentence was false in **both**
+directions, and each direction is a way a guard stops guarding:
+
+* It was **narrower than the regex it replaced**. A lookbehind refused to begin
+  a token after `-` or `.`, so `prev-episode-42d0bb07e5f83e9e` and
+  `run.episode-42d0bb07e5f83e9e` — which the old `\b`-anchored regex reported —
+  came back as `[]`. A real, well-formed id, completely unreported. The
+  lookbehind was standing in for something genuine (`traaviis.finding-
+  completeness-impl.v1` is a declared verifier version present in every
+  `ComparisonV1`, and reading it as the `finding` rung failed `test_compare`'s
+  C20), but it paid for that with coverage and no law recorded the trade.
+* It was **wider on prose**. Every hyphenated phrase whose first word happened
+  to be a rung name — `env-vars`, `task-oriented`, `patch-apply`, `sem-ver`,
+  `bundle-path` — was reported as a malformed id. A guard that cries wolf is
+  switched off by the next person to trip it, which is fail-open by a slower
+  route. Swept over this repository plus its build artifacts and sealed bundles
+  (~56,000 documents), the rewrite produced **419** non-`id` verdicts where the
+  current guard produces **29**. The ~60 distinct tokens it dropped are all
+  prose or identifiers — `episode-bundle`, `snap-fixture`, `sem-ver`,
+  `patch-fail` — including **`task-b`, which appears in real packed `env.json`
+  and `TRAAVIIS_BUNDLE.json` documents**: the rewrite called a task *filename* a
+  malformed id. What survives as `malformed` is `*-PLACEHOLDER`,
+  `snap-abcdef12ZZZ`, `rew-ABCDEF1234567890` and `episode-jcs1-…` — every one an
+  id-shaped token, and none of them prose.
+
+The first defect is not visible as a count, and saying so is part of the record:
+committed text almost never writes an id inside a compound, which is exactly why
+nobody noticed it was no longer being read. It is demonstrated instead by
+planting — `prev-episode-<64 hex>` written into a real scaffolded template and
+into a real `ComparisonV1`, where the legacy regex reports it, the rewrite
+reports nothing, and the current guard reports it again.
+
+The discrimination that keeps both properties is the **remainder's shape**, with
+position gating only the `malformed` verdict and never the `id` one:
+
+| | reported |
+| --- | --- |
+| a well-formed digest, anywhere — `prev-episode-<hex>`, `run.episode-<hex>` | **yes**, as `id` |
+| a rung + a remainder bearing a digit, an uppercase letter, or a run ≥ 16 | **yes**, as `malformed` |
+| a rung + lowercase words of ordinary length — `env-vars`, `episode-nonsense` | no |
+| a rung *embedded* in a compound name without a digest — `traaviis.finding-completeness-impl.v1`, `traaviis-snap-01uu24ob` | no |
+
+The third row is a **stated trade, not a discrimination**: `nonsense` and
+`oriented` are both eight lowercase letters with the same hex-letter density,
+and no lexical rule separates a typo'd id whose remainder happens to be
+word-shaped from an English phrase. What bounds the silence is that one edit in
+any direction — a digit, an uppercase letter, a longer run, an actual digest —
+puts the token back in scope. A mangled sha256 keeps its digits; a word has
+none. Both silences are pinned by `test_scaffold`'s **L1g**, and the boundary by
+**L1e**, so widening either has to move a law rather than a comment.
 
 ## 3. `pack` follows §6's order literally
 
