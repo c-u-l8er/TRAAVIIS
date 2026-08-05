@@ -42,7 +42,8 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from . import (admission, execfacts, identity, patchapply, reward as _reward,
                signals as _signals)
 from .evalone import (EVALUATION_RUN_VERSION, VERIFIER_EVIDENCE_VERSION,
-                      build_receipt_v1, _evidence_object, _evidence_ref)
+                      build_receipt_v1, resolve_signal,
+                      _evidence_object, _evidence_ref)
 from .paths import PathError, safe_join, safe_relposix
 from .vcontext import VerifierContextV1, VerifierResult
 
@@ -797,12 +798,18 @@ def verify_episode_bundle(
             return _available(sig)
         return _available(sig)  # non-scored: wire whatever is available
 
-    def _resolve(sig):
-        v = _effective_verifier(sig)
-        return v(context) if v is not None else VerifierResult(_reward.NOT_APPLICABLE)
-
+    # Resolved through `evalone.resolve_signal` — the SAME guarded seam the live
+    # evaluation used, for the same reason `build_receipt_v1` is shared: an
+    # episode whose verifier raised is sealed with `verifier_exception` evidence,
+    # and replay must reproduce that evidence byte-for-byte or the bundle cannot
+    # reopen. A local `v(context)` here would instead let the raise escape
+    # `verify_episode_bundle` outright — and since `write_episode_bundle` verifies
+    # the staged tree before publishing it, that would make an error episode
+    # unpersistable, i.e. erase the grade one layer further down. One idiom, two
+    # callers, no second copy of the classification rule.
     signal_ids = set(scored) | set(required) | set(declared_na) | set(_PSEUDO_SIGNALS)
-    replay_results = {sig: _resolve(sig) for sig in signal_ids}
+    replay_results = {sig: resolve_signal(sig, _effective_verifier(sig), context)
+                      for sig in sorted(signal_ids)}
     replay_state = {sig: r.state for sig, r in replay_results.items()}
 
     # Reconstruct the substrate-run-failure override from the SAVED trace + manifest
@@ -878,6 +885,15 @@ def verify_episode_bundle(
             required=required,
             tampered=tampered,
             execution_facts=derived_ef,
+            # Replay reproduces the *stored* document, so it must be shaped as
+            # the version that document declares -- never as the version this
+            # build happens to mint today. Without this argument, moving
+            # `evalone.EPISODE_VERSION` would make every already-sealed bundle
+            # report "derived receipt differs from stored" over evidence that is
+            # completely intact: a verifier declaring good evidence bad. An
+            # unknown declared version is refused by `identity.episode_scheme`
+            # a moment later, when the id is sealed. Pinned by test_evalone B4.
+            episode_version=receipt.get("episode_version"),
         )
     except ValueError as exc:
         reward_detail = "cannot rebuild receipt: %s" % exc

@@ -670,6 +670,19 @@ def cmd_eval_one(engine, args):
         for sig in sorted(verification):
             print("  %-*s %s" % (width, sig, verification[sig]))
 
+    # Printed directly under the reward it qualifies. `--json` deliberately does
+    # NOT carry it: that flag's contract is "print the receipt", and a receipt
+    # with an extra key is not a receipt — a consumer re-deriving `episode-…`
+    # from what we printed would get a different id. Machine-readable coverage
+    # comes from `verify-episode --json` over the saved bundle, where the
+    # document being printed is a report and not an identity-bearing artifact.
+    # `eval-one` holds the evidence in memory, so the origin is available here
+    # without re-reading a bundle — and is available even when `--output` was not
+    # given and no bundle exists. `artifacts` is None for an invalid-config
+    # episode, which ran no verifier and therefore has no origin to report.
+    _print_coverage(receipt, reward_spec, task,
+                    (run.get("artifacts") or {}).get("verifier_evidence"))
+
     outputs = receipt.get("outputs") or {}
     if outputs.get("finding_id") or outputs.get("patch_id"):
         print()
@@ -705,6 +718,80 @@ def _closure_summary(report):
     signals = report.get("checks", {}).get("signals") or {}
     failed += ["signal:" + s for s, c in signals.items() if not c.get("ok")]
     return ", ".join(failed) or "unknown"
+
+
+def _episode_documents(bundle):
+    """The four sealed documents the coverage reading needs, or ``None``.
+
+    ``verify_episode_bundle`` opens these already but does not hand them back, and
+    reaching into its report for them would couple this to its internals. It
+    re-reads them instead, through the bundle's own manifest and the bundle's own
+    containment-checked member resolver, so a manifest that points outside the
+    bundle is refused here exactly as it is there.
+
+    Returns ``None`` on any problem rather than raising: verifier response coverage
+    is a *reading*, and a reading that cannot be produced must never turn a
+    verdict about a bundle's closure into a crash. The closure checks are the
+    verdict; this is commentary printed beside it.
+    """
+    from . import episode_bundle
+
+    try:
+        root_real = os.path.realpath(bundle)
+        manifest = episode_bundle._load_json(
+            os.path.join(root_real, "episode-bundle.json"), "manifest")
+        members = manifest["members"]
+        documents = tuple(
+            episode_bundle._load_json(
+                episode_bundle._member(root_real, members[key], key), key)
+            for key in ("receipt", "reward", "task"))
+        # The sealed verifier evidence, which is what carries `error_origin`.
+        # The receipt pins this evidence only by *digest*, so `verifier_exception`
+        # and `verifier_protocol` are not recoverable from the receipt alone --
+        # without these documents an errored signal reports an undetermined
+        # origin, and the shipped command reported exactly that for every episode
+        # the taxonomy was built to explain. Read through the same
+        # containment-checked resolver as the rest, and treated the same way: a
+        # member that will not open leaves the map empty rather than failing the
+        # reading, because the origin is commentary and closure is the verdict.
+        evidence = {}
+        for sig, rel in (members.get("verifiers") or {}).items():
+            try:
+                evidence[sig] = episode_bundle._load_json(
+                    episode_bundle._member(root_real, rel, sig), sig)
+            except (episode_bundle.EpisodeBundleError, TypeError, OSError):
+                continue
+        return documents + (evidence,)
+    except (episode_bundle.EpisodeBundleError, KeyError, TypeError, OSError):
+        return None
+
+
+def _print_coverage(receipt, reward_spec, task, verifier_evidence=None):
+    """Print the verifier response coverage block, if it can be computed.
+
+    Same posture as ``_episode_documents``: a malformed document makes the reading
+    unavailable, never fatal. A reward number printed without its coverage is the
+    status quo, which is worse but not wrong; a command that dies while reporting
+    coverage would be.
+
+    ``verifier_evidence`` is passed straight through and is never reconstructed
+    here. This command *displays* what was sealed; it does not infer. Deriving an
+    origin from the state string would put the plausible answer
+    (``verifier_reported``) on a signal a substrate override set, which is the
+    precise false sentence the taxonomy exists to remove -- so an origin that was
+    not sealed stays undetermined all the way to the screen.
+    """
+    from . import coverage as _coverage
+
+    try:
+        reading = _coverage.response_coverage(
+            receipt, reward_spec, task, verifier_evidence)
+    except (ValueError, KeyError, TypeError):
+        return None
+    print()
+    for line in _coverage.coverage_lines(reading):
+        print("  " + line)
+    return reading
 
 
 def _wire_episode_verifiers(engine):
@@ -748,7 +835,20 @@ def cmd_verify_episode(engine, args):
         episode_bundle.OUTCOME_UNAVAILABLE: EXIT_UNAVAILABLE,
     }.get(outcome, EXIT_UNAVAILABLE)
 
+    # Verifier response coverage: a derived reading of the same sealed bytes, not
+    # a check. It is attached beside `checks`, never inside it, and never feeds
+    # `outcome` or the exit code — a bundle that closes with 55% of its rubric
+    # unanswered still closes, and saying so is the point.
+    documents = _episode_documents(bundle)
+
     if args.json:
+        if documents is not None:
+            from . import coverage as _coverage
+            try:
+                report = dict(report)
+                report["coverage"] = _coverage.response_coverage(*documents)
+            except (ValueError, KeyError, TypeError):
+                pass
         print(json.dumps(report, indent=2))
         raise SystemExit(exit_code)
 
@@ -779,6 +879,9 @@ def cmd_verify_episode(engine, args):
         c = checks.get(stage) or {}
         label = "episode-id" if stage == "episode_id" else stage
         print(_field(label, "%s %s" % (_mark_check(c), c.get("detail", ""))))
+
+    if documents is not None:
+        _print_coverage(*documents)
 
     print()
     if outcome == episode_bundle.OUTCOME_CLOSED:

@@ -20,6 +20,16 @@ touch substrate: ``tests`` needs the controlled runner (subprocess) and
 ``identity`` needs the Forge re-lower (TRVM). Per §10a a **missing or malformed
 agent output is a ``fail``**, never an ``error``; ``error`` is reserved for
 substrate unavailability, of which these pure verifiers have none.
+
+Three states, not four, is therefore the contract these three keep: each returns
+``pass`` or ``fail`` and never ``error``. That is a promise about what they
+*return*, and it is not a promise that they cannot fail — any Python function can
+raise, and one of these walking a citation span or a candidate diff is walking
+bytes the candidate chose. What happens then is not this module's business:
+``evalone.resolve_signal`` is the boundary, and it classifies a raise as
+``error`` with ``verifier_exception`` evidence rather than letting it escape and
+erase the episode. Nothing here should grow a defensive ``try`` of its own; a
+second boundary would be a second classification rule, and the two would drift.
 """
 
 from typing import Any, Mapping

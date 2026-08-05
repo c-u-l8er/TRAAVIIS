@@ -891,11 +891,23 @@ def test_k18_the_ladder_the_cli_and_the_earlier_laws_are_untouched():
         assert hasattr(E, name), name
 
     # The public surface of `evalone` did not change.
+    # Amended, not weakened. The list below grew when `evalone` gained the
+    # guarded verifier seam (`resolve_signal` + the error-origin vocabulary it
+    # seals), which `episode_bundle` imports so that a live receipt and a
+    # replayed one classify a failing verifier the same way. That is a
+    # deliberate surface addition by a later slice; what these two laws pin is
+    # that the *kernel* slice added none, and an exact-equality pin still says
+    # so -- any further growth fails here and has to be argued for.
     assert E.__all__ == [
-        "eval_one", "evaluate", "build_receipt_v1",
+        "eval_one", "evaluate", "build_receipt_v1", "resolve_signal",
         "EPISODE_VERSION", "EVALUATION_RUN_VERSION", "VERIFIER_EVIDENCE_VERSION",
+        "ERROR_ORIGIN_VERIFIER_EXCEPTION", "ERROR_ORIGIN_VERIFIER_PROTOCOL",
+        "ERROR_CODE_VERIFIER_RAISED", "ERROR_CODE_INVALID_VERIFIER_RESULT",
+        "RESULT_VIOLATIONS",
         "UnsupportedPolicyError",
     ]
+    # ...and the kernel still does not reach for any of it.
+    assert "resolve_signal" not in _identifiers(inspect.getsource(K))
 
 
 # ------------------------------------------------- K19-K28: linearization
@@ -1395,11 +1407,23 @@ def test_k28_the_linearization_added_no_identity_and_no_surface():
     ], codes
 
     # The public surface of `evalone` still did not change.
+    # Amended, not weakened. The list below grew when `evalone` gained the
+    # guarded verifier seam (`resolve_signal` + the error-origin vocabulary it
+    # seals), which `episode_bundle` imports so that a live receipt and a
+    # replayed one classify a failing verifier the same way. That is a
+    # deliberate surface addition by a later slice; what these two laws pin is
+    # that the *kernel* slice added none, and an exact-equality pin still says
+    # so -- any further growth fails here and has to be argued for.
     assert E.__all__ == [
-        "eval_one", "evaluate", "build_receipt_v1",
+        "eval_one", "evaluate", "build_receipt_v1", "resolve_signal",
         "EPISODE_VERSION", "EVALUATION_RUN_VERSION", "VERIFIER_EVIDENCE_VERSION",
+        "ERROR_ORIGIN_VERIFIER_EXCEPTION", "ERROR_ORIGIN_VERIFIER_PROTOCOL",
+        "ERROR_CODE_VERIFIER_RAISED", "ERROR_CODE_INVALID_VERIFIER_RESULT",
+        "RESULT_VIOLATIONS",
         "UnsupportedPolicyError",
     ]
+    # ...and the kernel still does not reach for any of it.
+    assert "resolve_signal" not in _identifiers(inspect.getsource(K))
 
 
 def main():

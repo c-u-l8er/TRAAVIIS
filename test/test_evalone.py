@@ -7,10 +7,16 @@ the §7 floor, a tampered (policy-violation) invalid episode, a required-but-
 deferred verifier producing invalid-config, and episode-identity stability vs.
 movement.
 
+V1-V9 close the fourth route into the grade-erasure class: a verifier that raises
+(or returns a malformed result) is classified as `error` evidence and the episode
+is emitted and reopenable, instead of escaping uncaught and leaving nothing
+behind. B1/B4/B5 pin the identity-versioning cutover.
+
 Runs with pytest, or standalone: `python3 test/test_evalone.py`.
 """
 
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -665,6 +671,827 @@ def test_task_referencing_wrong_valid_snapshot_is_rejected():
     raise AssertionError("expected AdmissionError for a mis-referenced snapshot_id")
 
 
+# --------------------------------------------------------------------------- #
+# B1 identity versioning: the minting default, and the cost of moving it       #
+# --------------------------------------------------------------------------- #
+
+REPO = os.path.dirname(HERE)
+GOLDEN_EPISODE = os.path.join(
+    REPO, "examples", "eval-one", "episodes",
+    "episode-42d0bb07e5f83e9e57518bf5cd3717e2a1e3aa45aa5821e36ac19206a3d73299")
+
+
+def _isolated_traaviis(*edits):
+    """A private copy of `traaviis/` with literal source edits, importable.
+
+    Same instrument as `test_canonical.isolated_package`, duplicated rather than
+    imported because these two batteries do not import each other and a test
+    helper shared across files is a coupling that outlives the reason for it.
+    Returns `(package module, cleanup callable)`.
+    """
+    import shutil
+    _COUNTER[0] += 1
+    name = "traaviis_cutover_%d" % _COUNTER[0]
+    root = tempfile.mkdtemp(prefix="trvs-cutover-")
+    shutil.copytree(os.path.join(REPO, "traaviis"), os.path.join(root, name),
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for relpath, old, new in edits:
+        path = os.path.join(root, name, relpath)
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        assert old in text, "edit target absent from %s: %r" % (relpath, old)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text.replace(old, new, 1))
+    sys.path.insert(0, root)
+
+    def cleanup():
+        if root in sys.path:
+            sys.path.remove(root)
+        for key in [k for k in sys.modules if k.split(".")[0] == name]:
+            del sys.modules[key]
+        shutil.rmtree(root, ignore_errors=True)
+
+    try:
+        package = __import__(
+            name, fromlist=["episode_bundle", "evalone", "wiring"])
+        for submodule in ("episode_bundle", "evalone", "wiring"):
+            __import__(name + "." + submodule)
+    except Exception:
+        cleanup()
+        raise
+    return package, cleanup
+
+
+_COUNTER = [0]
+
+
+class Skip(Exception):
+    """A law whose substrate is not present in this environment.
+
+    Same shape as `test_canonical.Skip` and `test_kernel.Skip`. It exists here
+    because the two cutover laws replay the golden episode, which scored an
+    `identity` signal, and that signal needs the Forge engine. With no engine
+    the replay answers `not_applicable` where the receipt says `pass` and the
+    bundle reports a mismatch -- a true statement about a runtime that cannot
+    answer, and not a fact about identity versioning.
+    """
+
+
+def _engine_backed_verifiers_or_skip(wiring_module):
+    """`_episode_verifiers`, refusing to pretend when the engine is absent.
+
+    `accept_packet.py` runs the battery twice, once with `TRVS_FORGE_DIR` unset
+    in a temporary extraction with no TRVM checkout above it. That is a real
+    absence, and G5 requires every engine-dependent law to skip rather than
+    fail -- *and* requires at least one to skip, on the grounds that a law which
+    sails through an absent engine was never testing it.
+    """
+    wired = _episode_verifiers(wiring_module)
+    if "identity" not in wired:
+        raise Skip("Forge engine not locatable; set TRVS_FORGE_DIR")
+    return wired
+
+
+def _episode_verifiers(wiring_module):
+    """The verifier set a replay is offered, built without going through the CLI.
+
+    ``cmd_verify_episode`` offers everything the runtime has, because a replay
+    does not know which signals an episode scored until it opens the bundle.
+    That set is built here from ``wiring.default_registry`` directly rather than
+    through ``cli._wire_episode_verifiers``: a law that reaches through a CLI
+    helper to obtain a runtime dependency is testing the command layer's wiring
+    as a side effect, and it breaks the next time that helper is refactored.
+    Same registry, same implementations, one fewer thing depended on.
+    """
+    registry = wiring_module.default_registry(None)
+    return {signal: registry.get(signal) for signal in registry.available()}
+
+
+def test_b1_the_minting_default_is_v1_and_the_golden_episode_closes():
+    """The cutover decision, pinned where it is taken.
+
+    `EPISODE_VERSION` governs **newly minted** receipts only; legacy receipts
+    declare what they were minted with and verify under it forever. This law
+    pins that the default is still `v1` and that the shipped golden episode --
+    the one whose id is quoted in memos and shipped inside both `dist/` packets
+    -- still closes with every signal answered and reward 1.0.
+
+    Both halves matter. The default being v1 is a decision; the golden episode
+    closing is the evidence that the decision costs nothing to the artifacts
+    that already exist.
+    """
+    if not os.path.isdir(GOLDEN_EPISODE):
+        return                                  # not in this checkout
+    from traaviis import episode_bundle as EB
+    from traaviis import wiring
+    assert E.EPISODE_VERSION == "traaviis.episode.v1"
+    assert I.EPISODE_SCHEMES[E.EPISODE_VERSION] == I.SCHEME_LEGACY
+
+    report = EB.verify_episode_bundle(
+        GOLDEN_EPISODE,
+        extra_verifiers=_engine_backed_verifiers_or_skip(wiring))
+    assert report["outcome"] == EB.OUTCOME_CLOSED, report.get("checks")
+    assert report["episode_id"] == os.path.basename(GOLDEN_EPISODE)
+    assert report["checks"]["reward"]["ok"], report["checks"]["reward"]
+    assert report["checks"]["receipt"]["ok"], report["checks"]["receipt"]
+    signals = report["checks"]["signals"]
+    assert len(signals) == 7, sorted(signals)
+    assert all(entry["ok"] for entry in signals.values()), signals
+
+
+def test_b4_a_v1_bundle_still_closes_under_a_v2_minting_default():
+    """**The assertion the whole cutover rests on: replay follows the document.**
+
+    `build_receipt_v1` is shared by live evaluation and by verification replay --
+    `episode_bundle.verify_episode_bundle` rebuilds the receipt through it and
+    requires byte equality with the stored one. So the version replay stamps
+    decides whether a sealed bundle still closes. It must be the version the
+    *stored receipt declares*, never the version this build happens to mint
+    today, and `episode_bundle.py` passes exactly that.
+
+    This law flips `EPISODE_VERSION` to v2 in an isolated copy of the package --
+    the cutover, performed -- and requires the shipped golden v1 bundle to close
+    anyway, with its id unmoved, while new episodes under that same build are
+    sealed under RFC 8785. That is the property: **the minting default and the
+    verification of history are independent.**
+
+    Non-vacuity is by source-level deletion, pointed at the one argument that
+    makes it true: a second isolated copy has the same flip *and* the
+    `episode_version=` argument removed from the `build_receipt_v1` call, and
+    under it the golden bundle must fail with "derived receipt differs from
+    stored". If it closes anyway, this law is measuring nothing and says so.
+
+    **Superseded form, recorded rather than replaced.** ~~`test_b4_flipping_the_
+    default_alone_breaks_every_sealed_episode`~~ -- an earlier version of this
+    law asserted the *defect*: that flipping `EPISODE_VERSION` alone made every
+    sealed v1 bundle stop closing. That was true when written, because the
+    argument below did not yet exist; it named the prerequisite for the cutover
+    while the prerequisite was still outstanding. It inverted the moment
+    `episode_bundle.py` started passing the stored version, and a law that
+    pins the presence of a bug either fails on the day the bug is fixed or,
+    worse, gets "repaired" later by someone who does not realise it had flipped
+    sides. So the body was rewritten to assert the property rather than the
+    defect, with the deletion proof aimed at the fix. Same shape as C18 in
+    `test_canonical.py`, which had asserted the *absence* of a domain check and
+    had to be rewritten two-sided rather than deleted when checks were added.
+
+    What survives the supersession, and is the reason to keep reading the old
+    claim: the failure it described is real and is the worst shape this product
+    can produce -- a verifier reporting a mismatch on evidence nobody touched,
+    because it re-derived under its own current defaults instead of under the
+    document's. The deletion half below reproduces exactly that, on purpose.
+    """
+    if not os.path.isdir(GOLDEN_EPISODE):
+        return
+    flip = ('EPISODE_VERSION = "traaviis.episode.v1"',
+            'EPISODE_VERSION = "traaviis.episode.v2"')
+    drop_argument = (
+        "episode_bundle.py",
+        '            episode_version=receipt.get("episode_version"),\n',
+        "")
+
+    # (a) the cutover, performed: a v1 bundle must still close under a v2 default
+    cutover, cleanup = _isolated_traaviis(("evalone.py",) + flip)
+    try:
+        assert cutover.evalone.EPISODE_VERSION == "traaviis.episode.v2", \
+            "the edit did not apply; this law would prove nothing"
+        report = cutover.episode_bundle.verify_episode_bundle(
+            GOLDEN_EPISODE, extra_verifiers=_engine_backed_verifiers_or_skip(cutover.wiring))
+        assert report["outcome"] == cutover.episode_bundle.OUTCOME_CLOSED, \
+            report.get("checks")
+        assert report["checks"]["receipt"]["ok"], report["checks"]["receipt"]
+        assert report["episode_id"] == os.path.basename(GOLDEN_EPISODE), \
+            "the v1 episode's id moved under a v2 minting default"
+        # and a *new* episode under that build really is sealed under the JCS
+        # profile. Deliberately a *literal*, not `identity.SCHEME_RFC8785` --
+        # comparing the constant to itself would assert nothing, and the point
+        # here is that v2 maps to the JCS scheme at all. The literal moved once
+        # already: `rfc8785-v1` overclaimed unrestricted RFC 8785 numerics, and
+        # the profile was renamed when the admitted numeric domain was closed to
+        # safe integers. That rename is identity-moving, which is pinned on its
+        # own by `test_canonical.py`'s C52; this law only pins the mapping.
+        assert cutover.evalone.identity.EPISODE_SCHEMES[
+            cutover.evalone.EPISODE_VERSION] == "JCS_CLOSED_NUMBER_PROFILE_V1"
+    finally:
+        cleanup()
+
+    # (b) the same flip with the one argument deleted from the source
+    blind, cleanup = _isolated_traaviis(("evalone.py",) + flip, drop_argument)
+    try:
+        report = blind.episode_bundle.verify_episode_bundle(
+            GOLDEN_EPISODE, extra_verifiers=_engine_backed_verifiers_or_skip(blind.wiring))
+        assert report["outcome"] != blind.episode_bundle.OUTCOME_CLOSED, \
+            "removing `episode_version=` from the replay did NOT break the " \
+            "golden bundle -- (a) is therefore not measuring that argument, " \
+            "and this law proves nothing as written"
+        assert not report["checks"]["receipt"]["ok"], report["checks"]["receipt"]
+    finally:
+        cleanup()
+
+
+def test_b5_a_v2_receipt_is_minted_shaped_and_reproducible():
+    """The builder emits a well-formed v2 receipt, through the real path.
+
+    Not a hand-written dict: `_assemble_receipt` is the single point where a
+    receipt is shaped, so a v2 receipt has to come out of it or the shape is
+    untested. Checks that the `canonicalization` field appears only for the
+    scheme that requires it, that the id is reproducible, and that the grammar
+    is byte-for-byte the same shape as v1's.
+    """
+    parts = dict(
+        substrate_profile="residency.repository.v1",
+        task_id="task-" + "0" * 64, reward_id="rew-" + "1" * 64,
+        snapshot_id="snap-" + "2" * 64, trace_id="trace-" + "3" * 64,
+        outputs={"finding_id": None, "patch_id": None},
+        verification={"tests": "pass"}, verification_evidence={},
+        verifier_versions={}, execution_facts={},
+        score={"reward": 1.0, "status": "pass", "validity": "valid"},
+    )
+    v1 = E._assemble_receipt(**parts)
+    v2 = E._assemble_receipt(episode_version="traaviis.episode.v2", **parts)
+
+    assert v1["episode_version"] == "traaviis.episode.v1"
+    assert "canonicalization" not in v1, \
+        "a v1 receipt grew a field no v1 receipt on disk has"
+    assert v2["episode_version"] == "traaviis.episode.v2"
+    assert v2["canonicalization"] == I.SCHEME_RFC8785
+    assert list(v2)[:2] == ["episode_version", "canonicalization"]
+
+    for receipt in (v1, v2):
+        prefix, _, body = receipt["episode_id"].partition("-")
+        assert prefix == "episode" and len(body) == 64
+        assert all(c in "0123456789abcdef" for c in body)
+        without = {k: v for k, v in receipt.items() if k != "episode_id"}
+        assert I.episode_id(without) == receipt["episode_id"], "not reproducible"
+    assert v1["episode_id"] != v2["episode_id"]
+
+    # an unknown version is refused at the seal, not stamped and forgotten
+    try:
+        E._assemble_receipt(episode_version="traaviis.episode.v7", **parts)
+    except I.IdentityError as ex:
+        assert ex.code == I.EPISODE_SCHEME_UNKNOWN, ex.code
+    else:
+        raise AssertionError("the builder minted a receipt under an unknown scheme")
+
+
+# --------------------------------------------------------------------------- #
+# V1-V10: a verifier that fails must not erase the episode                     #
+# --------------------------------------------------------------------------- #
+#
+# The fourth route into the grade-erasure class. The first three were the
+# candidate's own bytes reaching the identity spine (a malformed citation, a
+# 200 000-deep result, a non-UTF-8 filename the evaluator's own rescan picked
+# up); each was closed by *classifying* the input instead of letting the refusal
+# escape `eval_one`. This one is the checker rather than the candidate: before
+# `evalone.resolve_signal`, `{sig: verifier(context) for sig in signal_ids}` had
+# no exception boundary and none upstream, so a verifier that raised took the
+# whole episode with it -- no receipt, no bundle, nothing persisted -- and
+# `batch`/`compare` issue a pair refusal when nothing was persisted. A bad score
+# that never existed cannot be argued with.
+#
+# The acceptance bar, in one sentence: a verifier can throw, EVERY OTHER
+# VERIFIER STILL REPORTS, the episode becomes error/invalid with reward null,
+# and the evidence bundle reopens to the same derived receipt.
+
+_ALL_SIGNALS = ["citations", "patch", "tests", "identity", "finding_completeness"]
+_SCORED_REQUIRED = ["citations", "patch", "tests", "identity"]
+
+
+class VerifierBoom(Exception):
+    """A verifier-owned failure with a stable, qualified type name.
+
+    Defined at module scope on purpose: `_qualified_exception_type` reads
+    `__module__` + `__qualname__`, and a class defined inside a function body
+    would still be qualified but would read as `<locals>`-suffixed noise in the
+    sealed evidence. Nothing about it is host-dependent either way.
+    """
+
+
+def _boom_tests(context):
+    raise VerifierBoom("the checker fell over")
+
+
+def _value_error_tests(context):
+    raise ValueError("a builtin, to pin the bare-name spelling")
+
+
+def _memory_error_tests(context):
+    raise MemoryError()
+
+
+def _interrupt_tests(context):
+    raise KeyboardInterrupt()
+
+
+def _not_a_result_tests(context):
+    return "pass"                      # a bare string: not a VerifierResult
+
+
+def _unknown_state_tests(context):
+    return VerifierResult("probably")  # a VerifierResult, but not one of the four
+
+
+def _detail_not_mapping_tests(context):
+    return VerifierResult(R.PASS, ["not", "a", "mapping"])
+
+
+def _unhashable_detail(VR):
+    """A verifier returning a *valid* state with a detail the spine refuses.
+
+    Parameterised by the `VerifierResult` class so the same factory works inside
+    an isolated package copy, where `traaviis_probe_N.vcontext.VerifierResult` is
+    a different class object and `isinstance` against this process's would fail
+    for the wrong reason.
+
+    This is the violation that is not merely hygiene. `NaN` is a legal Python
+    float and an ordinary thing for a verifier to put in a detail; it reaches
+    `_evidence_ref` -> `identity.canonical_bytes`, which refuses it
+    (`CANONICAL_NON_FINITE`) -- **inside `build_receipt_v1`, after the seam and
+    outside every guard.** Without the protocol check it erases the episode
+    exactly as a raising verifier did, one function later.
+    """
+    def verifier(context):
+        return VR(R.PASS, {"score": float("nan")})
+    verifier.version = "residency.tests.v1"
+    return verifier
+
+
+for _fn in (_boom_tests, _value_error_tests, _memory_error_tests, _interrupt_tests,
+            _not_a_result_tests, _unknown_state_tests, _detail_not_mapping_tests):
+    # A *required* signal demands a wired verifier carrying an implementation
+    # version, or F4 preflight refuses the config and the agent never runs. These
+    # are wired and versioned; what they are not is well-behaved. That is the
+    # whole point: the failures below are post-preflight, which is precisely the
+    # window in which nothing used to survive.
+    _fn.version = "residency.tests.v1"
+
+
+def _run_with(extra, mode="ok", required=None):
+    """One episode with a chosen verifier set. Returns `(EvaluationRunV1, task)`.
+
+    Returns the task too because writing a bundle needs the *same* task object
+    the receipt was sealed against, and `_evaluate` above builds one internally.
+    """
+    task = _task(list(_SCORED_REQUIRED if required is None else required))
+    task["agent_run_policy"]["environment"]["TRAAVIIS_STUB_MODE"] = mode
+    run = E.evaluate(task, CONTENT, AGENT, REWARD_SPEC, snapshot=_snapshot(),
+                     extra_verifiers=extra, platform="linux-x86_64",
+                     toolchain=TOOLCHAIN)
+    return run, task
+
+
+def _bundle(run, task, extra, name):
+    """Persist the run and re-verify it. Returns `(path, report)`.
+
+    `write_episode_bundle` *itself* stages the tree, runs the full
+    `verify_episode_bundle` over it, and refuses to publish anything that does
+    not close -- so merely getting a path back is already half the round-trip
+    proof. The explicit re-verification afterwards is the other half: it opens
+    the published directory cold, exactly as a third party would.
+    """
+    from traaviis import episode_bundle as EB
+    root = os.path.join(_tmp(), "bundles", name)
+    path = EB.write_episode_bundle(
+        run, task=task, reward_spec=REWARD_SPEC, snapshot=_snapshot(),
+        content=CONTENT, dest_root=root, extra_verifiers=extra)
+    return path, EB.verify_episode_bundle(path, extra_verifiers=extra)
+
+
+def test_v1_a_raising_verifier_leaves_every_other_verifier_reporting():
+    """The acceptance bar's first two clauses, on the real pipeline.
+
+    `tests` raises. The episode still exists, and the four verifiers that did not
+    raise still say what they found -- `citations`, `patch` and
+    `finding_completeness` from the pure module, `identity` from an injected
+    stand-in. A boundary that caught the exception but abandoned the remaining
+    signals would satisfy "no crash" and still be wrong: it would delete evidence
+    about a *candidate* in order to describe a fault in the *evaluator*, and it
+    would leave `reward.score`'s totality precondition violated. TAP's `Bail
+    out!` is that convention, and it is the wrong one for a rubric.
+    """
+    run, _task_doc = _run_with({"tests": _boom_tests, "identity": _pass_identity})
+    r = run["receipt"]
+
+    assert r["verification"]["tests"] == R.ERROR
+    for sig in ("citations", "patch", "finding_completeness", "identity"):
+        assert r["verification"][sig] == R.PASS, (sig, r["verification"])
+    assert r["verification"]["native"] == R.NOT_APPLICABLE
+
+    # ...and the episode is error/invalid with a null reward (reward.score F2).
+    assert r["status"] == R.STATUS_ERROR
+    assert r["validity"] == R.INVALID
+    assert r["reward"] is None, "an error episode must score None, never 0"
+
+    # The receipt was emitted, the trace retained, the outputs still named.
+    assert r["episode_id"].startswith("episode-")
+    assert r["trace_id"].startswith("trace-")
+    assert r["outputs"]["finding_id"].startswith("finding-")
+    assert r["outputs"]["patch_id"].startswith("patch-")
+    assert run["artifacts"] is not None
+    assert run["artifacts"]["trace"]["trace_id"] == r["trace_id"]
+
+    # Every declared signal sealed evidence, including the one that failed.
+    evidence = run["artifacts"]["verifier_evidence"]
+    assert sorted(evidence) == sorted(_ALL_SIGNALS)
+    assert sorted(r["verification_evidence"]) == sorted(_ALL_SIGNALS)
+
+    detail = evidence["tests"]["detail"]
+    assert detail["error_origin"] == E.ERROR_ORIGIN_VERIFIER_EXCEPTION
+    assert detail["error_code"] == E.ERROR_CODE_VERIFIER_RAISED
+    assert detail["exception_type"] == E._qualified_exception_type(VerifierBoom)
+    assert detail["verifier_implementation"] == "residency.tests.v1"
+
+
+def test_v2_a_builtin_exception_seals_its_bare_name():
+    """`ValueError`, not `builtins.ValueError`.
+
+    The spelling is the one JUnit XML has used for `<error type=…>` since Ant
+    ("the full class name of the exception") and SARIF for `exception.kind`, with
+    the builtins module elided because prefixing every ordinary exception with
+    `builtins.` carries no information and would differ across Python 2/3
+    spellings of the same module.
+    """
+    run, _t = _run_with({"tests": _value_error_tests, "identity": _pass_identity})
+    detail = run["artifacts"]["verifier_evidence"]["tests"]["detail"]
+    assert detail["exception_type"] == "ValueError"
+    assert "." not in detail["exception_type"]
+    # and a package-defined exception keeps its module path
+    assert "." in E._qualified_exception_type(E.UnsupportedPolicyError)
+
+
+def test_v3_a_raise_and_a_malformed_return_are_different_facts():
+    """`verifier_exception` and `verifier_protocol` must not collapse.
+
+    They are different failures with different remedies: a raise means the
+    checker broke *during* its procedure, a malformed return means it broke its
+    *contract* while believing it had succeeded. The second is the more dangerous
+    of the two -- one of its shapes (`detail_not_canonical`) would have killed
+    receipt construction downstream, and another (`unknown_state`) would have
+    reached `reward.score` as an unscoreable map.
+
+    Pinned three ways: different origin, different code, and different sealed
+    evidence digests, so the distinction survives into `episode-…` and is not
+    merely a nicer log line.
+    """
+    raised, _t = _run_with({"tests": _boom_tests, "identity": _pass_identity})
+
+    seen = {}
+    for label, verifier in (
+        ("not_a_verifier_result", _not_a_result_tests),
+        ("unknown_state", _unknown_state_tests),
+        ("detail_not_mapping", _detail_not_mapping_tests),
+        ("detail_not_canonical", _unhashable_detail(VerifierResult)),
+    ):
+        run, _t2 = _run_with({"tests": verifier, "identity": _pass_identity})
+        detail = run["artifacts"]["verifier_evidence"]["tests"]["detail"]
+        assert run["receipt"]["verification"]["tests"] == R.ERROR, label
+        assert run["receipt"]["status"] == R.STATUS_ERROR, label
+        assert run["receipt"]["reward"] is None, label
+        assert detail["error_origin"] == E.ERROR_ORIGIN_VERIFIER_PROTOCOL, label
+        assert detail["error_code"] == E.ERROR_CODE_INVALID_VERIFIER_RESULT, label
+        assert detail["violation"] == label, (label, detail)
+        # ...and the siblings answered even here
+        assert run["receipt"]["verification"]["citations"] == R.PASS, label
+        seen[label] = run["receipt"]["verification_evidence"]["tests"]["digest"]
+
+    assert sorted(seen) == sorted(E.RESULT_VIOLATIONS), \
+        "every named violation must be reachable, or the enumeration is fiction"
+
+    raised_detail = raised["artifacts"]["verifier_evidence"]["tests"]["detail"]
+    assert raised_detail["error_origin"] != E.ERROR_ORIGIN_VERIFIER_PROTOCOL
+    assert raised_detail["error_code"] != E.ERROR_CODE_INVALID_VERIFIER_RESULT
+    raised_digest = raised["receipt"]["verification_evidence"]["tests"]["digest"]
+    assert raised_digest not in seen.values()
+    # the four violations are distinguishable from each other, not just from a raise
+    assert len(set(seen.values())) == 4, seen
+
+
+def test_v4_no_message_no_path_and_no_traceback_reaches_identity():
+    """Identity hygiene, proved by moving the message and watching the id hold.
+
+    An exception message is host- and run-dependent -- it routinely carries
+    absolute paths, temp-directory names, pids and object addresses -- so sealing
+    one would make `episode-…` a function of the machine. Two episodes are run
+    whose verifiers differ ONLY in the text they raise, and the two receipts must
+    be byte-identical. That is a stronger statement than "the string does not
+    appear in the receipt", because it also rules out any digest of the message
+    having been folded in.
+
+    This is why no *sanitized-message digest* was added, though the option was
+    open. A digest is only worth sealing if it is provably host-independent, and
+    that proof cannot be given: the set of host-dependent substrings an arbitrary
+    exception message can carry is open-ended, so any sanitizer is a heuristic,
+    and a heuristic that misses one case moves an episode id nondeterministically
+    -- the exact failure the hygiene rule exists to prevent. Prior art does not
+    rescue it either: SARIF keeps `exception.stack`, `threadId` and `timeUtc` on
+    the *notification*, structurally outside the `result` that gets
+    fingerprinted, and nothing published normalizes error text for digesting. The
+    full message and traceback go where SARIF puts them -- see V5.
+    """
+    import uuid
+
+    def _noisy(token):
+        def verifier(context):
+            raise VerifierBoom(
+                "failed at %s (pid %d) token=%s"
+                % (os.path.abspath(__file__), os.getpid(), token))
+        verifier.version = "residency.tests.v1"
+        return verifier
+
+    secret_a = uuid.uuid4().hex
+    secret_b = uuid.uuid4().hex
+    a, _t1 = _run_with({"tests": _noisy(secret_a), "identity": _pass_identity})
+    b, _t2 = _run_with({"tests": _noisy(secret_b), "identity": _pass_identity})
+
+    assert a["receipt"]["episode_id"] == b["receipt"]["episode_id"], \
+        "the exception message moved the episode id"
+    assert I.canonicalize_episode(a["receipt"]) == I.canonicalize_episode(b["receipt"])
+    assert (a["artifacts"]["verifier_evidence"]["tests"]
+            == b["artifacts"]["verifier_evidence"]["tests"])
+
+    # ...and, separately, none of the volatile text is anywhere in what is sealed.
+    sealed = json.dumps([a["receipt"], a["artifacts"]["verifier_evidence"]])
+    for volatile in (secret_a, os.path.abspath(__file__), str(os.getpid()),
+                     "Traceback", "the checker fell over"):
+        assert volatile not in sealed, volatile
+
+    # What IS sealed is exactly four stable facts, and nothing else.
+    assert sorted(a["artifacts"]["verifier_evidence"]["tests"]["detail"]) == [
+        "error_code", "error_origin", "exception_type", "verifier_implementation"]
+
+
+def test_v5_the_operator_gets_the_traceback_and_the_bundle_does_not():
+    """Full diagnostics for a human, zero of them on disk.
+
+    SARIF's placement, adopted: the volatile parts of a failure live on the
+    notification, never on the result. Here they live in
+    `artifacts["verifier_diagnostics"]`, which `episode_bundle._populate` does not
+    write (and `_verify_tree_closure` would reject if something did, since the
+    manifest must be the complete closure). So the operator can debug and the
+    identity cannot move -- the split is enforced by two different mechanisms,
+    not by remembering.
+    """
+    run, task_doc = _run_with({"tests": _boom_tests, "identity": _pass_identity})
+    diag = run["artifacts"]["verifier_diagnostics"]
+    assert sorted(diag) == ["tests"], "only the failing signal is diagnosed"
+    assert diag["tests"]["error_origin"] == E.ERROR_ORIGIN_VERIFIER_EXCEPTION
+    assert diag["tests"]["message"] == "the checker fell over"
+    assert "Traceback (most recent call last)" in diag["tests"]["traceback"]
+    assert "_boom_tests" in diag["tests"]["traceback"]
+
+    path, _report = _bundle(run, task_doc, {"tests": _boom_tests,
+                                            "identity": _pass_identity}, "v5")
+    for dirpath, _dirs, files in os.walk(path):
+        for name in files:
+            with open(os.path.join(dirpath, name), "rb") as fh:
+                blob = fh.read()
+            assert b"Traceback" not in blob, os.path.join(dirpath, name)
+            assert b"the checker fell over" not in blob, os.path.join(dirpath, name)
+
+    # A clean episode carries an empty map rather than no key: a consumer should
+    # not have to distinguish "no verifier failed" from "this build is older".
+    clean, _t = _run_with(ALL_PASS)
+    assert clean["artifacts"]["verifier_diagnostics"] == {}
+
+
+def test_v6_the_evidence_bundle_reopens_to_the_same_derived_receipt():
+    """**The acceptance bar's last clause.** Round-trip, cold, through the real bundle.
+
+    `verify_episode_bundle` re-derives the whole receipt from the saved evidence
+    through the same `build_receipt_v1` the live run used and requires byte
+    equality -- so a replay that classified the raise differently, or that let it
+    escape, cannot pass here. It could not even have got this far:
+    `write_episode_bundle` verifies the *staged* tree before publishing, so an
+    error episode whose replay crashed would be unpersistable, which is the
+    grade-erasure defect one layer further down.
+
+    That is why `episode_bundle` calls `evalone.resolve_signal` rather than
+    carrying its own `v(context)`: one classification rule, two callers, no
+    second copy to drift.
+    """
+    from traaviis import episode_bundle as EB
+    extra = {"tests": _boom_tests, "identity": _pass_identity}
+    run, task_doc = _run_with(extra)
+    path, report = _bundle(run, task_doc, extra, "v6")
+
+    assert report["outcome"] == EB.OUTCOME_CLOSED, report["checks"]
+    assert report["episode_id"] == run["receipt"]["episode_id"]
+    assert report["checks"]["receipt"]["ok"], report["checks"]["receipt"]
+    assert report["checks"]["reward"]["ok"], report["checks"]["reward"]
+    assert report["checks"]["episode_id"]["ok"], report["checks"]["episode_id"]
+
+    entry = report["checks"]["signals"]["tests"]
+    assert entry["replayed"] == R.ERROR and entry["receipt"] == R.ERROR
+    assert entry["evidence_match"] is True, "the error evidence did not re-derive"
+    assert all(e["ok"] for e in report["checks"]["signals"].values()), \
+        report["checks"]["signals"]
+
+    # The saved evidence file on disk really is the error evidence, and it is what
+    # the receipt's digest pins.
+    with open(os.path.join(path, "evidence", "verifiers", "tests.json"),
+              encoding="utf-8") as fh:
+        saved = json.load(fh)
+    assert saved["state"] == R.ERROR
+    assert saved["detail"]["error_code"] == E.ERROR_CODE_VERIFIER_RAISED
+    assert (E._evidence_ref(saved)["digest"]
+            == run["receipt"]["verification_evidence"]["tests"]["digest"])
+
+    # ...and the same holds for a malformed *return*, not only for a raise.
+    extra2 = {"tests": _unhashable_detail(VerifierResult), "identity": _pass_identity}
+    run2, task2 = _run_with(extra2)
+    _p2, report2 = _bundle(run2, task2, extra2, "v6b")
+    assert report2["outcome"] == EB.OUTCOME_CLOSED, report2["checks"]
+    assert report2["checks"]["signals"]["tests"]["evidence_match"] is True
+
+
+def test_v7_memory_error_is_caught_and_keyboard_interrupt_is_not():
+    """The `MemoryError` ruling, and the `BaseException` line, in one law.
+
+    **Divergence from precedent, recorded.** `runner._read_result`,
+    `batch.load_candidate_set` and `bundle.read_manifest` all deliberately EXCLUDE
+    `MemoryError` from their narrow clauses, on the grounds that whether a
+    document exhausts memory is a fact about the host, so catching it would score
+    the same submission differently on different machines. That argument turns on
+    *what the catch produces*: there, a caught refusal becomes the empty finding,
+    which the verifiers score `fail` -- a number. Here it produces `error`, which
+    is this system's existing word for "the host could not answer" and which
+    `reward.score` gives `reward = None`, never `0`; downstream aggregation drops
+    `None` rather than averaging it in. So the same submission does not score
+    differently on two machines -- it scores on one and declines to score on the
+    other, which is true. The engine already does exactly that for a timeout, also
+    a host fact, also sealed as `error`, in the same function.
+
+    The precedent's second leg ("it would close nothing anyway": `fh.read()` had
+    already loaded the file) also inverts. Here it closes the hole this change
+    exists to close, and the hole is candidate-reachable: a verifier walks the
+    finding, the patch and the patched tree, all built from bytes the candidate
+    chose.
+
+    `KeyboardInterrupt` is the other side of the line and stays uncaught.
+    Interruption must interrupt; an operator pressing ^C must not silently mint
+    and persist an `error` episode in which a verifier is recorded as having had
+    an opinion.
+    """
+    run, _t = _run_with({"tests": _memory_error_tests, "identity": _pass_identity})
+    r = run["receipt"]
+    assert r["verification"]["tests"] == R.ERROR
+    assert r["status"] == R.STATUS_ERROR and r["reward"] is None
+    assert r["verification"]["citations"] == R.PASS
+    detail = run["artifacts"]["verifier_evidence"]["tests"]["detail"]
+    assert detail["exception_type"] == "MemoryError"
+    assert detail["error_code"] == E.ERROR_CODE_VERIFIER_RAISED
+
+    try:
+        _run_with({"tests": _interrupt_tests, "identity": _pass_identity})
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError(
+            "KeyboardInterrupt was swallowed; shutdown lost its meaning")
+
+
+def test_v8_a_raising_verifier_is_not_an_invalid_configuration():
+    """Ruled disposition, checked against the code rather than assumed.
+
+    "A **required** signal with no wired implementation before execution is an
+    invalid configuration; do not run" -- and `_required_config_error` implements
+    exactly that and no more: it asks whether a verifier is wired and whether it
+    declares an implementation version. A wired, versioned verifier that will
+    later raise passes preflight, the agent runs, and the failure is a *runtime*
+    error episode, not an invalid-config refusal. The two must not be confused:
+    invalid config produces no artifacts at all (`artifacts is None`, nothing to
+    persist), while an error episode produces the full evidence set. Only the
+    second is reopenable, and only the second is what a raise should yield.
+    """
+    run, _t = _run_with({"tests": _boom_tests, "identity": _pass_identity})
+    assert run["receipt"]["status"] == R.STATUS_ERROR
+    assert run["receipt"]["status"] != R.STATUS_INVALID
+    assert run["artifacts"] is not None
+    assert run["receipt"]["execution_facts"] is not None
+
+    # ...and the genuinely invalid config still refuses, for contrast.
+    unwired, _t2 = _run_with({"identity": _pass_identity},
+                             required=["citations", "patch", "tests"])
+    assert unwired["receipt"]["status"] == R.STATUS_INVALID
+    assert unwired["artifacts"] is None
+
+
+def test_v9_the_laws_go_red_when_the_guard_is_deleted_from_the_source():
+    """Non-vacuity, by source-level deletion in isolated copies of the package.
+
+    Four probes, each removing exactly one thing and asserting the law that
+    claims it inverts. Deletion rather than monkeypatching, because a patched
+    module proves the test can be made to fail, not that the shipped source is
+    what makes it pass.
+    """
+    import shutil  # noqa: F401  (kept beside _isolated_traaviis's own import)
+
+    def _episode(pkg, extra, required=None):
+        task = _task(list(_SCORED_REQUIRED if required is None else required))
+        return pkg.evalone.evaluate(
+            task, CONTENT, AGENT, REWARD_SPEC, snapshot=_snapshot(),
+            extra_verifiers=extra, platform="linux-x86_64", toolchain=TOOLCHAIN)
+
+    # (a) the boundary itself. `except ()` is a legal empty tuple that matches
+    #     nothing, so the try/except stays syntactically intact and semantically
+    #     absent -- the pre-fix behaviour exactly: the raise escapes `evaluate`,
+    #     there is no receipt, and the grade is erased.
+    no_boundary = (
+        "evalone.py",
+        "    except Exception as exc:  # noqa: BLE001 -- NOT BaseException; "
+        "see the docstring",
+        "    except () as exc:  # noqa: BLE001 -- NOT BaseException; "
+        "see the docstring")
+    pkg, cleanup = _isolated_traaviis(no_boundary)
+    try:
+        try:
+            _episode(pkg, {"tests": _boom_tests, "identity": _pass_identity})
+        except VerifierBoom:
+            pass
+        else:
+            raise AssertionError(
+                "the verifier exception did NOT escape with the boundary "
+                "deleted -- V1 is measuring something other than that boundary")
+    finally:
+        cleanup()
+
+    # (b) the siblings. Stop the loop at the first error and the verification map
+    #     is no longer total, which `reward.score` refuses outright -- so
+    #     "continue resolving the remaining signals" is load-bearing, not tidy.
+    stop_early = (
+        "evalone.py",
+        "        results[sig] = resolve_signal(sig, wired, context, "
+        "diagnostics=diagnostics)\n",
+        "        results[sig] = resolve_signal(sig, wired, context, "
+        "diagnostics=diagnostics)\n"
+        "        if results[sig].state == reward.ERROR:\n"
+        "            break\n")
+    pkg, cleanup = _isolated_traaviis(stop_early)
+    try:
+        try:
+            out = _episode(pkg, {"tests": _boom_tests, "identity": _pass_identity})
+        except ValueError:
+            pass                      # reward.score refused the partial map
+        else:
+            missing = sorted(set(_ALL_SIGNALS) - set(out["receipt"]["verification"]))
+            raise AssertionError(
+                "abandoning the loop after the first error cost nothing visible "
+                "(missing: %s) -- V1's sibling clause proves nothing" % missing)
+    finally:
+        cleanup()
+
+    # (c) the protocol check. A NaN detail is a valid state with an unsealable
+    #     payload; without the check it reaches `identity.canonical_bytes` inside
+    #     `build_receipt_v1`, one function past every guard.
+    no_protocol = ("evalone.py",
+                   "    violation = _result_violation(result)",
+                   "    violation = None")
+    pkg, cleanup = _isolated_traaviis(no_protocol)
+    try:
+        try:
+            _episode(pkg, {"tests": _unhashable_detail(pkg.evalone.VerifierResult),
+                           "identity": _pass_identity})
+        except pkg.identity.IdentityError as exc:
+            assert exc.code == pkg.identity.CANONICAL_NON_FINITE, exc.code
+        else:
+            raise AssertionError(
+                "an unsealable verifier detail did NOT erase the episode with "
+                "the protocol check deleted -- V3 proves nothing")
+    finally:
+        cleanup()
+
+    # (d) the two origins must stay two. Collapse the constant and V3's first
+    #     assertion inverts.
+    collapse = ("evalone.py",
+                'ERROR_ORIGIN_VERIFIER_PROTOCOL = "verifier_protocol"',
+                'ERROR_ORIGIN_VERIFIER_PROTOCOL = "verifier_exception"')
+    pkg, cleanup = _isolated_traaviis(collapse)
+    try:
+        raised = _episode(pkg, {"tests": _boom_tests, "identity": _pass_identity})
+        returned = _episode(pkg, {"tests": _not_a_result_tests,
+                                  "identity": _pass_identity})
+        a = raised["artifacts"]["verifier_evidence"]["tests"]["detail"]["error_origin"]
+        b = returned["artifacts"]["verifier_evidence"]["tests"]["detail"]["error_origin"]
+        assert a == b, "the collapse did not apply; (d) proves nothing"
+    finally:
+        cleanup()
+
+    # And with everything restored, each of those inverts back.
+    def _origin(verifier):
+        run, _t = _run_with({"tests": verifier, "identity": _pass_identity})
+        return run
+
+    raised = _origin(_boom_tests)
+    returned = _origin(_not_a_result_tests)
+    assert sorted(raised["receipt"]["verification"]) == \
+        sorted(_ALL_SIGNALS + ["native", "oracle"])          # (a) + (b) restored
+    for run in (raised, returned):
+        assert run["receipt"]["episode_id"].startswith("episode-")   # (c) restored
+    assert (raised["artifacts"]["verifier_evidence"]["tests"]["detail"]["error_origin"]
+            != returned["artifacts"]["verifier_evidence"]["tests"]["detail"][
+                "error_origin"])                                     # (d) restored
+
+
 def _main():
     tests = sorted(
         (name, obj)
@@ -672,14 +1499,24 @@ def _main():
         if name.startswith("test_") and callable(obj)
     )
     failures = []
+    skipped = 0
     for name, fn in tests:
         try:
             fn()
             print(f"PASS  {name}")
+        except Skip as exc:
+            # `tools/run_battery.py` counts a leading SKIP, and
+            # `accept_packet.py` G5 requires engine-dependent laws to *notice*
+            # the engine is gone rather than pass regardless. A law that
+            # returned early instead would be counted as passing, which is the
+            # fail-open shape this repository removed from three id guards.
+            skipped += 1
+            print(f"SKIP  {name} ({exc})")
         except AssertionError as exc:
             failures.append((name, exc))
             print(f"FAIL  {name}: {exc}")
-    print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
+    print(f"\n{len(tests) - len(failures) - skipped}/{len(tests)} passed"
+          f", {skipped} skipped")
     return 1 if failures else 0
 
 

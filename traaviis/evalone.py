@@ -46,6 +46,18 @@ GPT-5.6 Eval-One Closure rulings implemented here:
     list or scalar (not an object) never crashes finding construction — it yields an
     empty finding, which the verifiers score as ``fail``.
 
+  * **A verifier that fails cannot erase the episode (``resolve_signal``).** Every
+    verifier call goes through one guarded seam. A verifier that *raises*, or that
+    *returns* something the ``VerifierResult`` contract refuses, becomes verification
+    ``error`` with structured evidence naming which of the two happened — and the
+    remaining signals are still resolved, so the verification map stays total. The
+    episode is then ``status = error`` / ``validity = invalid`` / ``reward = None``
+    by ``reward.score``'s existing F2 rule, **and it is emitted**: receipt, trace,
+    per-signal evidence and bundle all survive. This is the fourth route into the
+    grade-erasure class, closed the same way the first three were (malformed
+    citations, deep JSON, non-UTF-8 filename): *the failure is classified and
+    scored, never escalated into a crash that leaves nothing behind.*
+
   * **Substrate run failure → error (§6a, exit-code semantics).** A timeout,
     truncated output, or an exit code outside ``allowed_exit_codes`` (default
     ``[0]``) is substrate unavailability: the run-dependent signals report ``error``
@@ -60,6 +72,7 @@ episode tampered (``reward = 0`` / ``validity = invalid``).
 """
 
 import hashlib
+import traceback
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 from . import admission, execfacts, identity, patchapply, reward, runner, signals, verifiers
@@ -68,11 +81,40 @@ from .execfacts import UnsupportedPolicyError
 from .vcontext import VerifierContextV1, VerifierResult
 
 __all__ = [
-    "eval_one", "evaluate", "build_receipt_v1",
+    "eval_one", "evaluate", "build_receipt_v1", "resolve_signal",
     "EPISODE_VERSION", "EVALUATION_RUN_VERSION", "VERIFIER_EVIDENCE_VERSION",
+    "ERROR_ORIGIN_VERIFIER_EXCEPTION", "ERROR_ORIGIN_VERIFIER_PROTOCOL",
+    "ERROR_CODE_VERIFIER_RAISED", "ERROR_CODE_INVALID_VERIFIER_RESULT",
+    "RESULT_VIOLATIONS",
     "UnsupportedPolicyError",
 ]
 
+#: The episode schema **newly minted** receipts declare, and therefore the
+#: canonicalization they are sealed under (`identity.EPISODE_SCHEMES` maps one
+#: to the other). Legacy receipts keep declaring whatever they were minted with
+#: and keep verifying under it forever; this constant governs new episodes only.
+#:
+#: **It is deliberately still `v1`, and the reason is a measured prerequisite
+#: rather than caution.** `build_receipt_v1` is shared by live evaluation *and*
+#: by verification replay (`episode_bundle.verify_episode_bundle` rebuilds the
+#: receipt through it and requires byte equality with the stored one). Replay
+#: does not pass a version, so it stamps whatever this constant says. Flip this
+#: line alone and every already-sealed v1 bundle stops closing: the derived
+#: receipt would say `v2`, the stored one `v1`, and `checks["receipt"]` would
+#: report "derived receipt differs from stored" on evidence that is perfectly
+#: intact. Verified by execution, not by reading — see `test_evalone.py` E-B4,
+#: which flips the constant in an isolated copy of the package and watches the
+#: golden episode fail to close.
+#:
+#: So the cutover is one line *plus* one: `episode_bundle` must pass the stored
+#: receipt's own declared `episode_version` into `build_receipt_v1`, so that
+#: replay reproduces the document it is checking rather than the document this
+#: build would mint today. That is the correct shape regardless — a verifier
+#: that re-derives under its own current defaults is checking the wrong thing —
+#: and `episode_bundle.py` is outside this change's ownership. The parameter it
+#: needs already exists below; the caller is what is missing. E-B4 fails the
+#: moment this constant moves without that caller, so the prerequisite cannot be
+#: skipped by someone who only reads this comment.
 EPISODE_VERSION = "traaviis.episode.v1"
 
 # EvaluationRunV1: the *complete* internal result of one episode — the receipt plus
@@ -86,6 +128,65 @@ EVALUATION_RUN_VERSION = "traaviis.evaluation-run.v1"
 # the receipt's ``verification_evidence[sig].digest`` pins (and thus what enters
 # episode-), so the saved evidence file cannot drift while the episode id holds.
 VERIFIER_EVIDENCE_VERSION = "traaviis.verifier-evidence.v1"
+
+# --- Error origin: WHICH LAYER failed, sealed as evidence ---------------------
+#
+# `reward` freezes exactly four verifier *states* — `pass | fail | not_applicable
+# | error` — and this module adds none. **Origin is an orthogonal axis over the
+# single state `error`**: it says which layer stopped working, while the state
+# says what the rubric may conclude. Four origins are named in
+# `traaviis.coverage`; two of them are *produced* here, and only those two are
+# ever written into evidence:
+#
+#   verifier_exception   a wired verifier raised while evaluating
+#   verifier_protocol    a wired verifier returned an object the result contract
+#                        refuses (wrong type, unknown state, unhashable detail)
+#
+# The other two — `verifier_reported` (the verifier itself returned
+# `VerifierResult(ERROR)`) and `substrate_override` (the run-level rule in
+# `_finish_episode` overwrote every non-pseudo signal) — are **derived** by the
+# reader from the receipt plus the task, and are deliberately NOT stamped into
+# any evidence detail. That is not tidiness: stamping them would add bytes to the
+# evidence of episodes that already exist, and every one of those bytes is inside
+# `episode-…`. Because the two origins below are produced only on inputs that
+# previously escaped as an uncaught exception, **no episode that has ever been
+# sealed can gain them**, and no id can move. Same argument as
+# `_finding_artifact`'s fallback.
+#
+# Prior art. JUnit XML has drawn exactly this line since Ant: `<failure>` is "a
+# condition which the code has explicitly failed by using the mechanisms for that
+# purpose", while `<error>` is "an unanticipated problem ... or a problem with
+# the implementation of the test" — i.e. checker-side defects belong to `error`,
+# never to `failure`. Its `type` attribute holds "the full class name of the
+# exception", which is what `exception_type` is here. SARIF v2.1.0 makes the same
+# split structural (a `notification` "describes a condition relevant to the tool
+# itself, as opposed to being relevant to a target being analyzed by the tool")
+# and, decisively for this design, keeps the volatile parts — `exception.stack`,
+# `threadId`, `timeUtc` — on the notification, never on the `result` that gets
+# fingerprinted. `_diagnostics` below is that same placement.
+ERROR_ORIGIN_VERIFIER_EXCEPTION = "verifier_exception"
+ERROR_ORIGIN_VERIFIER_PROTOCOL = "verifier_protocol"
+
+#: The stable, host-independent code sealed for each. A *code*, not a message:
+#: it names the law broken and nothing about the run that broke it.
+ERROR_CODE_VERIFIER_RAISED = "VERIFIER_RAISED"
+ERROR_CODE_INVALID_VERIFIER_RESULT = "INVALID_VERIFIER_RESULT"
+
+#: How a returned object can fail the ``VerifierResult`` contract. One frozen
+#: enumeration, sealed as ``violation`` beside the single ``INVALID_VERIFIER_RESULT``
+#: code, so the four are distinguishable without four codes to keep in sync.
+#: ``detail_not_canonical`` is the one that is not merely hygiene: a detail the
+#: canonicalizer refuses would raise inside ``build_receipt_v1``, *after* this
+#: seam and outside every guard, and erase the episode exactly as a raising
+#: verifier did. It is caught here, at the boundary, by offering the detail to the
+#: real hasher rather than re-deriving its rules — the same discipline as
+#: ``_finding_artifact``.
+RESULT_VIOLATIONS = (
+    "not_a_verifier_result",   # not a VerifierResult at all
+    "unknown_state",           # a VerifierResult whose state is not one of the four
+    "detail_not_mapping",      # .detail is not a mapping
+    "detail_not_canonical",    # .detail cannot be sealed by identity.canonical_bytes
+)
 
 Verifier = Callable[[VerifierContextV1], VerifierResult]
 
@@ -336,6 +437,206 @@ def _impl_version(verifier: Optional[Verifier]) -> Optional[str]:
     return version if isinstance(version, str) else None
 
 
+# --- The guarded verifier seam ----------------------------------------------
+#
+# One function, called by BOTH the live evaluation (`_finish_episode`) and the
+# verification replay (`episode_bundle.verify_episode_bundle`), for exactly the
+# same reason `build_receipt_v1` is shared by both: a receipt derived live and a
+# receipt re-derived on replay must be byte-identical whenever the evidence
+# agrees, and two copies of a classification rule are two chances to disagree.
+# A raising verifier that were classified here and not there would produce a
+# bundle that cannot be reopened, which is the acceptance bar failing quietly.
+
+
+def _qualified_exception_type(cls: Any) -> str:
+    """``"ValueError"`` for a builtin, ``"pkg.mod.Name"`` for anything else.
+
+    **Host-independent by construction.** A class's ``__module__`` and
+    ``__qualname__`` are properties of the source that defined it, not of the
+    machine running it — unlike the exception's *message*, which routinely
+    carries absolute paths, temp-directory names, pids and object addresses.
+    That is the whole reason the type is sealed and the message is not. SARIF
+    v2.1.0's ``exception.kind`` is the same choice ("the fully qualified type
+    name of an object that was thrown"), as is JUnit's ``<error type=…>`` ("the
+    full class name of the exception").
+
+    The one residual: a class defined in a script run as ``__main__`` reports
+    module ``"__main__"``, and the same class imported as a module would report
+    its dotted path. That is a property of how the *verifier* was loaded, and it
+    is stable within any one process — which is all replay requires, since a
+    bundle is re-derived by the code that wired the verifier. A verifier defined
+    in ``__main__`` is not a shipping configuration; the wiring registry imports
+    every real implementation by module path.
+    """
+    name = getattr(cls, "__qualname__", None) or getattr(cls, "__name__", "") or ""
+    module = getattr(cls, "__module__", "") or ""
+    if module in ("builtins", "__builtin__", "exceptions", ""):
+        return name
+    return "%s.%s" % (module, name)
+
+
+def _result_violation(result: Any) -> Optional[str]:
+    """Which ``RESULT_VIOLATIONS`` clause ``result`` breaks, or ``None`` if it is sound.
+
+    Checked in the order a reader would: is it the right kind of object, does it
+    carry one of the four frozen states, is its detail a mapping, and can that
+    detail actually be sealed. The last check runs the *real* canonicalizer over
+    the real detail rather than re-deriving what it accepts, so this stays correct
+    as ``identity.py`` tightens.
+    """
+    if not isinstance(result, VerifierResult):
+        return "not_a_verifier_result"
+    if result.state not in reward.STATES:
+        return "unknown_state"
+    if not isinstance(result.detail, Mapping):
+        return "detail_not_mapping"
+    try:
+        identity.canonical_bytes(dict(result.detail))
+    except (ValueError, TypeError, RecursionError):
+        # The same three names, for the same three reasons, as
+        # `_finding_artifact`: IdentityError/UnicodeEncodeError are ValueError,
+        # TypeError is an unserializable value, RecursionError is a document the
+        # emitter cannot re-emit.
+        return "detail_not_canonical"
+    return None
+
+
+def _safe_str(obj: Any) -> str:
+    """``str(obj)`` that cannot itself raise out of the guard.
+
+    A handler that can raise is not a boundary. This only ever feeds *noncanonical*
+    diagnostics, so a degraded string costs nothing and a propagating one would
+    reopen the hole the guard exists to close.
+    """
+    try:
+        return str(obj)
+    except Exception:  # noqa: BLE001 -- deliberately total; see the docstring
+        return "<unprintable>"
+
+
+def _verifier_error(
+    sig: str, verifier: Verifier, origin: str, code: str,
+    sealed: Mapping[str, Any], diagnostics: Optional[Dict[str, Any]],
+    operator: Mapping[str, Any],
+) -> VerifierResult:
+    """Build the ``error`` result for a failed verifier, splitting sealed from operator.
+
+    ``sealed`` enters canonical evidence and therefore ``episode-…``: stable code,
+    stable origin, the qualified type, the verifier's own implementation version.
+    ``operator`` does not — it goes to ``diagnostics``, which is returned in the
+    ``EvaluationRunV1`` artifacts for a human and is written to no bundle member.
+    """
+    detail: Dict[str, Any] = {
+        "error_origin": origin,
+        "error_code": code,
+        # The version of the code that failed. Redundant with the receipt's
+        # `verifier_versions[sig].implementation` and deliberately so: it makes
+        # `evidence/verifiers/<sig>.json` answer "which build raised?" on its own,
+        # and the two cannot disagree because both read `_impl_version` of the
+        # same wired object.
+        "verifier_implementation": _impl_version(verifier),
+    }
+    detail.update(sealed)
+    if diagnostics is not None:
+        record = {"signal": sig, "error_origin": origin, "error_code": code}
+        record.update(sealed)
+        record.update(operator)
+        diagnostics[sig] = record
+    return VerifierResult(reward.ERROR, detail)
+
+
+def resolve_signal(
+    sig: str,
+    verifier: Optional[Verifier],
+    context: VerifierContextV1,
+    *,
+    diagnostics: Optional[Dict[str, Any]] = None,
+) -> VerifierResult:
+    """Resolve one signal through a verifier that is allowed to fail. Never raises.
+
+    ``verifier`` is ``None`` for a pseudo-signal or an unwired one, which resolves
+    to ``not_applicable`` — the pre-existing behaviour, unchanged. Otherwise the
+    verifier is called inside a boundary, and two distinct failures become
+    verification ``error`` with distinguishable sealed evidence:
+
+      * it **raised**            → ``verifier_exception`` / ``VERIFIER_RAISED``
+      * it **returned garbage**  → ``verifier_protocol`` / ``INVALID_VERIFIER_RESULT``
+
+    These are different facts and are never merged. A raise is the checker
+    breaking mid-procedure; a malformed return is the checker breaking its
+    contract while believing it succeeded — the second is the more dangerous of
+    the two, because without this check some of its shapes (``detail_not_canonical``)
+    would still have killed receipt construction downstream, and some
+    (``unknown_state``) would have reached ``reward.score`` as an unscoreable map.
+
+    ``Exception``, deliberately **not** ``BaseException``. ``KeyboardInterrupt``,
+    ``SystemExit`` and ``GeneratorExit`` keep their ordinary meanings: an operator
+    interrupting a run must interrupt it, not silently mint an ``error`` episode
+    that then gets persisted as though the verifier had an opinion.
+
+    **``MemoryError`` is caught, and that is a deliberate divergence from the
+    precedent in ``runner._read_result`` / ``batch.load_candidate_set`` /
+    ``bundle.read_manifest``.** Those three name a narrow tuple and exclude
+    ``MemoryError`` on two grounds; neither survives the move to this seam.
+
+      1. *Attributability.* There, a caught refusal becomes the empty finding,
+         which the verifiers score ``fail`` — **a number**. Catching an OOM would
+         therefore make the same submission score 0.25 on a large host and 1.0 on
+         a small one, and a host-dependent *reward* is worse than a visible crash.
+         Here the classification is ``error``, and ``error`` is this system's
+         existing word for "the host could not answer": ``reward.score``'s F2 rule
+         gives it ``reward = None``, never ``0``, and downstream aggregation drops
+         ``None`` rather than averaging it in. So catching ``MemoryError`` here does
+         not make a submission *score* differently on different machines; it makes
+         it score on one and decline to score on the other, which is the true
+         report. The engine already does exactly this for a timeout — also a fact
+         about the host, also sealed as ``error`` — in the substrate-run-failure
+         branch of ``_finish_episode``, a few dozen lines below.
+      2. *"It would close nothing anyway."* There, ``fh.read()`` had already loaded
+         the file, so the handler could not have helped. Here it closes precisely
+         the hole this change exists to close, and the hole is candidate-reachable:
+         a verifier walks the finding, the patch and the patched tree, all built
+         from bytes the candidate chose, and an escaped ``MemoryError`` is a
+         crashed episode with no receipt and no bundle — the grade erased.
+
+    The honest cost, stated rather than hidden: after a ``MemoryError`` the
+    interpreter's state is not guaranteed, so the *sibling* verdicts in that one
+    episode are best-effort. That is acceptable only because a single ``error``
+    already forces the whole episode to ``status = error`` / ``validity = invalid``
+    / ``reward = None``, so those sibling verdicts are **reported and never
+    scored**. If the four states are ever changed so an ``error`` signal can
+    coexist with a real reward number, this paragraph stops being true and the
+    decision must be retaken.
+
+    ``diagnostics``, when supplied, collects the operator-facing record — full
+    message and traceback. It is never hashed and never written to a bundle.
+    """
+    if verifier is None:
+        return VerifierResult(reward.NOT_APPLICABLE)
+    try:
+        result = verifier(context)
+    except Exception as exc:  # noqa: BLE001 -- NOT BaseException; see the docstring
+        return _verifier_error(
+            sig, verifier,
+            ERROR_ORIGIN_VERIFIER_EXCEPTION, ERROR_CODE_VERIFIER_RAISED,
+            {"exception_type": _qualified_exception_type(type(exc))},
+            diagnostics,
+            {"message": _safe_str(exc),
+             "traceback": "".join(traceback.format_exception(
+                 type(exc), exc, exc.__traceback__))},
+        )
+    violation = _result_violation(result)
+    if violation is not None:
+        return _verifier_error(
+            sig, verifier,
+            ERROR_ORIGIN_VERIFIER_PROTOCOL, ERROR_CODE_INVALID_VERIFIER_RESULT,
+            {"violation": violation},
+            diagnostics,
+            {"returned_type": _qualified_exception_type(type(result))},
+        )
+    return result
+
+
 def _verifier_versions_map(
     reward_spec: Mapping[str, Any], evidence_signals: Iterable[str],
     extra_verifiers: Mapping[str, Verifier],
@@ -389,15 +690,36 @@ def _required_config_error(
 def _assemble_receipt(
     *, substrate_profile, task_id, reward_id, snapshot_id, trace_id, outputs,
     verification, verification_evidence, verifier_versions, score, execution_facts,
+    episode_version=None,
 ) -> Dict[str, Any]:
-    """Assemble the 14-key ``episode-…`` receipt and seal its ``episode_id``.
+    """Assemble the ``episode-…`` receipt and seal its ``episode_id``.
 
     The single point where an episode receipt is shaped. Both the live evaluation
     and the verification replay build receipts through here (via
     ``build_receipt_v1``) so the two can never structurally drift.
+
+    ``episode_version`` selects the schema *and*, through
+    ``identity.EPISODE_SCHEMES``, the canonicalization the id is computed under.
+    It defaults to ``EPISODE_VERSION`` — what this build mints — and is passed
+    explicitly when a receipt must be shaped as some *other* version: replaying
+    a stored episode, which must reproduce the document it is checking rather
+    than the document this build would mint today.
+
+    An unknown version is refused by ``identity.episode_scheme`` on the very
+    next line, when the id is sealed. This function does not pre-validate it,
+    deliberately: one refusal, raised where the consequence is, rather than two
+    that could disagree.
+
+    ``canonicalization`` is emitted only for schemes that require it, so a v1
+    receipt keeps the exact 15-key shape every v1 receipt on disk already has.
+    It is a redundant self-declaration, not an input — the version chose the
+    scheme, and ``episode_scheme`` refuses the pair if they disagree.
     """
+    version = EPISODE_VERSION if episode_version is None else episode_version
+    declaration = identity.episode_scheme_declaration(version)
     receipt = {
-        "episode_version": EPISODE_VERSION,
+        "episode_version": version,
+        **({"canonicalization": declaration} if declaration else {}),
         "substrate_profile": substrate_profile,
         "task_id": task_id,
         "reward_id": reward_id,
@@ -420,13 +742,22 @@ def _assemble_receipt(
 def build_receipt_v1(
     *, substrate_profile, task_id, reward_id, snapshot_id, verifier_versions,
     trace_id, finding, patch, evidence_signals, verification, results,
-    reward_spec, required, tampered, execution_facts,
+    reward_spec, required, tampered, execution_facts, episode_version=None,
 ) -> "tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]":
     """ReceiptBuilderV1 — derive a complete receipt (+ evidence) from resolved parts.
 
     Shared by live evaluation (``evaluate``) and verification replay
     (``episode_bundle.verify_episode_bundle``) so a receipt produced live and the
     receipt re-derived on replay are byte-identical whenever the evidence agrees.
+
+    ``episode_version`` defaults to what this build mints (``EPISODE_VERSION``).
+    A **replay** must pass the stored receipt's own declared version instead:
+    re-deriving under the current default would compare the document on disk
+    against the document this build would produce today, which is a different
+    question, and one that answers "differs" for a bundle whose evidence is
+    entirely intact. See the note on ``EPISODE_VERSION`` for why supplying that
+    argument is the named prerequisite for moving the constant, and E-B4 for the
+    proof that skipping it breaks every sealed episode.
 
     Inputs are the already-resolved pieces: the total ``verification`` state map
     (all declared signals), the per-signal ``results`` (for evidence detail), the
@@ -465,6 +796,7 @@ def build_receipt_v1(
         verifier_versions=verifier_versions,
         score=score,
         execution_facts=execution_facts,
+        episode_version=episode_version,
     )
     return receipt, verifier_evidence
 
@@ -656,15 +988,32 @@ def _finish_episode(
     signal_ids = set(reward_spec.get("signals", {})) | set(required) \
         | set(declared_na) | set(_PSEUDO_SIGNALS)
 
-    def resolve(sig: str) -> VerifierResult:
-        if sig in _PSEUDO_SIGNALS:
-            return VerifierResult(reward.NOT_APPLICABLE)
-        verifier = _resolver_for(sig, extra_verifiers)
-        if verifier is None:
-            return VerifierResult(reward.NOT_APPLICABLE)
-        return verifier(context)
-
-    results = {sig: resolve(sig) for sig in signal_ids}
+    # Every signal is resolved, in sorted order, through the one guarded seam.
+    # Two properties that a bare `{sig: verifier(context) for sig in ...}` did
+    # not have, and that the acceptance bar is stated in terms of:
+    #
+    #   * a verifier that fails is CLASSIFIED, not escalated. Before this, a raise
+    #     escaped `eval_one` before the receipt existed — no receipt, no episode,
+    #     nothing persisted — and since `batch`/`compare` refuse a pair when
+    #     nothing was persisted, that was a fourth route into the same
+    #     grade-erasure class as the malformed-citation, deep-JSON and
+    #     non-UTF-8-filename defects already closed.
+    #   * **the loop continues.** A failing verifier must not silence its
+    #     siblings: the map stays total over every declared signal, so the other
+    #     verifiers still report and `reward.score`'s totality precondition still
+    #     holds. TAP's `Bail out!` is the opposite convention and is wrong for a
+    #     rubric — abandoning the remaining checks would delete evidence about a
+    #     candidate to describe a fault in the evaluator.
+    #
+    # Sorted rather than set-ordered so the operator diagnostics below are
+    # produced in a stable sequence; the receipt itself is order-independent
+    # (`identity.canonical_bytes` sorts keys), so this moves no id.
+    results: Dict[str, VerifierResult] = {}
+    diagnostics: Dict[str, Any] = {}
+    for sig in sorted(signal_ids):
+        wired = (None if sig in _PSEUDO_SIGNALS
+                 else _resolver_for(sig, extra_verifiers))
+        results[sig] = resolve_signal(sig, wired, context, diagnostics=diagnostics)
     verification = {sig: res.state for sig, res in results.items()}
 
     # --- Substrate run failure → error (§6a, exit-code semantics) -------------
@@ -735,6 +1084,15 @@ def _finish_episode(
             # reconstruct the tampered verdict (a nonempty list → tampered).
             "policy_violations": list(run["policy_violations"]),
         },
+        # Operator diagnostics for verifiers that failed: full exception message
+        # and traceback, keyed by signal. **Noncanonical and non-persisted.** It
+        # is not hashed, it is not a bundle member (`episode_bundle._populate`
+        # writes only the members it names, and `_verify_tree_closure` would
+        # reject an undeclared file), and it therefore cannot move an id or make
+        # a bundle fail to close. The same placement SARIF uses: the volatile
+        # parts of a failure live on the notification, never on the result that
+        # gets fingerprinted. Empty for every episode in which no verifier failed.
+        "verifier_diagnostics": diagnostics,
     }
     return _run_v1(receipt, artifacts)
 
