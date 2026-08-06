@@ -55,7 +55,15 @@ sealed ``before_id``.
   source missing / lowering error / Forge down     → error  (a WRL compile error is
                                                      error, not fail — the identity
                                                      comparison could not complete)
+  lowering outran its deadline, worker killed      → error  (``FORGE_LOWER_TIMEOUT``)
   no identity bindings                             → not_applicable
+
+The lowering runs in a killable worker process, not in the evaluating one — see
+``VERIFIER_ISOLATION_POLICY`` below and ``forge_adapter._lower_in_worker``. The
+last row is what that buys: a candidate-authored WRL source that hangs Forge used
+to hang the whole evaluation, which erased the episode without raising anything
+for ``evalone.resolve_signal`` to classify. It is now an ``error`` like any other
+substrate unavailability, sealed under a stable code.
 """
 
 import hashlib
@@ -65,12 +73,16 @@ from typing import Any, List, Mapping, Optional, Tuple
 
 from . import identity, reward, toolchain
 from .execfacts import UnsupportedPolicyError, validate_run_policy
-from .forge_adapter import ForgeIdentityAdapterV1, ForgeUnavailable
+from .forge_adapter import (
+    ERROR_CODE_FORGE_TIMEOUT, ForgeIdentityAdapterV1, ForgeTimeout,
+    ForgeUnavailable,
+)
 from .paths import PathError, safe_join, safe_relposix
 from .runner import RUNNER_PROFILE, _materialize, _normalize_command, _seal_env
 from .vcontext import VerifierContextV1, VerifierResult
 
 __all__ = [
+    "VERIFIER_ISOLATION_POLICY",
     "TESTS_VERIFIER_VERSION",
     "TESTS_IMPL_VERSION",
     "TEST_PLAN_V2",
@@ -82,6 +94,56 @@ __all__ = [
     "BASELINE",
     "PATCHED",
 ]
+
+# --- Which verifiers get a process boundary, and which are trusted without one -
+#
+# `evalone.resolve_signal` contains a verifier that **stops** — a raise, or a
+# return the result contract refuses, becomes `error` and the episode survives.
+# It cannot contain a verifier that **never stops**. An infinite loop, a native
+# deadlock, an `os._exit`, a segfault, or an allocation the host cannot satisfy
+# reaches no `except` clause: the evaluating process does not come back, nothing
+# is persisted, and a failing grade is erased exactly as thoroughly as an
+# uncaught exception erased it. Containment against *not returning* is not a
+# handler; it is a process you are willing to kill.
+#
+# So the question "is this verifier trusted in-process?" has to have a stated
+# answer for every verifier, including ones this repository did not write. It
+# does, below, and the map is the answer — not a comment that can drift from it.
+# Four rows:
+#
+#   builtin_pure   `traaviis.verifiers` — citations, patch, finding_completeness.
+#                  Trusted in-process. They are this repository's own code,
+#                  they walk already-bounded structures, and they call nothing.
+#                  Their inputs are candidate-controlled, which is why the
+#                  *exception* seam covers them; their control flow is not.
+#   tests          Subprocess, timeout-controlled. Has always been: every command
+#                  runs through `subprocess.run(..., timeout=cmd.timeout_seconds)`
+#                  in `run_command_set`, and a `TimeoutExpired` is `_INFRA_ERROR`
+#                  → `error`. This row is a statement of existing fact.
+#   identity       Worker process, timeout-controlled — new. It used to call
+#                  `adapter.lower_source(patched[rel])` in this process, on a WRL
+#                  source the candidate wrote, with no timeout anywhere on the
+#                  path. That asymmetry against `tests` was the hole; see
+#                  `forge_adapter._lower_in_worker`.
+#   external       **Required.** A verifier this repository did not write, reaching
+#                  `evalone` through `extra_verifiers` or a future plugin seam, is
+#                  NOT trusted in-process and must provide its own killable
+#                  boundary. This is a *precondition on the caller*, stated here
+#                  rather than left open, because `extra_verifiers` is a plain
+#                  mapping of callables and nothing in this package can enforce it
+#                  — `resolve_signal` cannot time out a call it is inside of. A
+#                  caller who ignores this row gets exactly the failure mode
+#                  routes 5 and 6 were opened to close, and now knows it.
+#
+# The batteries' own injected doubles are `external` by this rule and are trusted
+# anyway, which is not an exception to it: a battery is not an adversary, and it
+# is the same reason `StubForgeAdapter` may lower in-process.
+VERIFIER_ISOLATION_POLICY = {
+    "builtin_pure": "in_process_trusted",
+    "tests": "subprocess_timeout",
+    "identity": "worker_process_timeout",
+    "external": "worker_process_required",
+}
 
 # Contract version — the signal the reward asks for (sealed as ``contract``).
 TESTS_VERIFIER_VERSION = "residency.tests.v1"
@@ -420,6 +482,23 @@ def make_identity_verifier(adapter: ForgeIdentityAdapterV1):
                                       {"reason": f"bound source missing: {rel}"})
             try:
                 lowered = adapter.lower_source(patched[rel])
+            except ForgeTimeout:
+                # Caught BEFORE `ForgeUnavailable`, which it subclasses. Sealed as
+                # a stable CODE and not as `str(exc)`: this detail enters
+                # `verification_evidence[identity]` and therefore `episode-…`, and
+                # a timeout message is the one kind of message that is guaranteed
+                # to be about the host — a deadline, a pid, a duration. The `path`
+                # is the task's own declared string, already inside `task-…`, so
+                # naming which binding hung adds no host bytes.
+                #
+                # No committed id can move onto this branch. Before the worker
+                # existed a hang did not produce this detail, or any other: it
+                # produced no episode at all, because the process never returned.
+                return VerifierResult(
+                    reward.ERROR,
+                    {"reason": "forge lowering timed out",
+                     "error_code": ERROR_CODE_FORGE_TIMEOUT,
+                     "path": path})
             except ForgeUnavailable as exc:
                 return VerifierResult(reward.ERROR, {"reason": f"forge down: {exc}"})
             if not lowered.ok:

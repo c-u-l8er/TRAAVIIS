@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Mapping as Mapping_ABC
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1490,6 +1491,1035 @@ def test_v9_the_laws_go_red_when_the_guard_is_deleted_from_the_source():
     assert (raised["artifacts"]["verifier_evidence"]["tests"]["detail"]["error_origin"]
             != returned["artifacts"]["verifier_evidence"]["tests"]["detail"][
                 "error_origin"])                                     # (d) restored
+
+
+# --------------------------------------------------------- V10-V14: route 5
+# V1-V9 close "a verifier that raises erases the episode". They do not close
+# "the *report about* the verifier that raised erases the episode", and until
+# now that was open: the message and traceback were built as ARGUMENTS to
+# `_verifier_error`, and Python evaluates arguments before entering a function.
+# So `_verifier_error`'s ordering -- sealed detail first, diagnostics second --
+# was already lost by the time control arrived, and a verifier raising with a
+# candidate-derived enormous message, a chain thousands of links deep, or a
+# `__str__` that allocates until the host says no took the episode down from
+# inside the handler written to prevent exactly that.
+
+
+class HostileBoom(Exception):
+    """A verifier failure carrying a candidate-sized payload.
+
+    Module scope for the same reason as `VerifierBoom`: `__qualname__` is sealed
+    and a locally-defined class reads as `<locals>`-suffixed noise.
+    """
+
+
+_STR_CALLS = [0]
+
+
+class CountingBoom(Exception):
+    """Records every `str()` taken of it, so "was this work done?" is measurable.
+
+    The instrument for V13(a). Whether the diagnostic path *ran* is otherwise
+    invisible from outside -- both the old and the new code produce the same
+    `error` verdict, and that is the point: the defect was in when the work
+    happened, not in what it concluded.
+    """
+
+    def __str__(self):
+        _STR_CALLS[0] += 1
+        return "counted"
+
+
+def _hostile_message_tests(context):
+    """5 MiB of message. Not adversarial in kind -- a verifier that interpolates
+    a candidate's file into its own error text writes this by accident."""
+    raise HostileBoom("x" * (5 * 1024 * 1024))
+
+
+def _deep_chain_tests(context):
+    """20 000 chained exceptions.
+
+    Built by assigning `__context__` rather than by nesting 20 000 `try` blocks,
+    which would hit the recursion limit long before it hit the point. The links
+    are indistinguishable from the ones the interpreter sets implicitly -- every
+    `raise` inside an `except` sets exactly this attribute -- so a verifier
+    looping over candidate-supplied data reaches this shape without meaning to.
+    An earlier version of this fixture *did* loop over try/except and produced a
+    chain of length **two**, because the interpreter clears the handled exception
+    when the `except` block exits; it passed the link-limit assertion by having
+    no links to limit, which is the shape of vacuity this file exists to catch.
+    """
+    top = HostileBoom("top")
+    cur = top
+    for i in range(20000):
+        nxt = HostileBoom("link %d" % i)
+        cur.__context__ = nxt
+        cur = nxt
+    raise top
+
+
+def _cyclic_chain_tests(context):
+    """A chain that is a cycle -- the one shape a depth limit alone still walks
+    to the end of, because there is no end."""
+    a = HostileBoom("a")
+    b = HostileBoom("b")
+    a.__cause__ = b
+    b.__cause__ = a
+    raise a
+
+
+def _counting_tests(context):
+    raise CountingBoom()
+
+
+for _fn in (_hostile_message_tests, _deep_chain_tests, _cyclic_chain_tests,
+            _counting_tests):
+    _fn.version = "residency.tests.v1"
+
+
+def test_v10_a_hostile_exception_still_yields_a_persisted_error_episode():
+    """**Route 5's acceptance bar.** The reporter is inside the boundary too.
+
+    Three shapes of hostile failure -- an enormous message, a 20 000-link cause
+    chain, and a cycle in that chain -- and for each one the whole pipeline must
+    finish: a receipt, a total verification map, sealed error evidence, a written
+    bundle, and a cold re-verification that closes. Before this change each of
+    them was a crash inside the `except` clause, which is the same outcome as no
+    boundary at all: nothing persisted, `batch`/`compare` refuse the pair, the
+    failing grade never existed.
+
+    The sealed detail is asserted to be **exactly** the four stable keys, the same
+    four V4 pins. That is the load-bearing half of "diagnostics cannot move an
+    id": no matter how large or strange the failure, the bytes that reach
+    `episode-…` are the same four facts a well-behaved failure produces.
+    """
+    from traaviis import episode_bundle as EB
+    import time
+
+    for label, verifier in (("message", _hostile_message_tests),
+                            ("chain", _deep_chain_tests),
+                            ("cycle", _cyclic_chain_tests)):
+        started = time.monotonic()
+        extra = {"tests": verifier, "identity": _pass_identity}
+        run, task_doc = _run_with(extra)
+        elapsed = time.monotonic() - started
+
+        r = run["receipt"]
+        assert r["verification"]["tests"] == R.ERROR, label
+        assert sorted(r["verification"]) == sorted(_ALL_SIGNALS
+                                                   + ["native", "oracle"]), label
+        assert r["status"] == R.STATUS_ERROR and r["reward"] is None, label
+        assert r["episode_id"].startswith("episode-"), label
+
+        detail = run["artifacts"]["verifier_evidence"]["tests"]["detail"]
+        assert detail["error_origin"] == E.ERROR_ORIGIN_VERIFIER_EXCEPTION, label
+        assert detail["error_code"] == E.ERROR_CODE_VERIFIER_RAISED, label
+        assert detail["exception_type"] == E._qualified_exception_type(
+            HostileBoom), label
+        assert sorted(detail) == ["error_code", "error_origin", "exception_type",
+                                  "verifier_implementation"], (label, detail)
+
+        # ...and it is publishable and reopenable, which is the clause a crash
+        # inside the handler removed entirely.
+        _path, report = _bundle(run, task_doc, extra, "v10-" + label)
+        assert report["outcome"] == EB.OUTCOME_CLOSED, (label, report["checks"])
+        assert report["episode_id"] == r["episode_id"], label
+        assert report["checks"]["signals"]["tests"]["evidence_match"] is True, label
+
+        # A bound, not a benchmark: the point is that none of the three walks
+        # something unbounded. Generous enough that a loaded host does not make
+        # this law a flake, tight enough that an unbounded walk cannot pass it.
+        assert elapsed < 60.0, (label, elapsed)
+
+
+def test_v11_the_diagnostic_budget_is_a_cap_and_not_a_hope():
+    """Message + traceback ≤ 64 KiB, and the walk is bounded in work.
+
+    Two different claims, and the second is the one that needed the rewrite.
+    Truncating output after the fact would satisfy the first and leave the second
+    open: `traceback.format_exception` walks the entire `__cause__`/`__context__`
+    chain eagerly and only then returns a list to join, so the cost is paid in
+    full before the first byte can be discarded. The walk in `_bounded_traceback`
+    is bounded at both ends -- `_DIAGNOSTIC_CHAIN_LIMIT` links, and stop when the
+    budget is spent -- and refuses to follow a link it has already seen.
+
+    An ordinary failure is checked too, and must come through **untouched**. A cap
+    that also mangles the everyday case has traded one defect for another; V5
+    asserts the operator gets a usable traceback and that must stay true.
+    """
+    def _diag(verifier):
+        ctx = E.VerifierContextV1(task={}, snapshot={}, original_content={},
+                                  run={})
+        out = {}
+        result = E.resolve_signal("tests", verifier, ctx, diagnostics=out)
+        assert result.state == R.ERROR
+        return out["tests"]
+
+    for label, verifier in (("message", _hostile_message_tests),
+                            ("chain", _deep_chain_tests),
+                            ("cycle", _cyclic_chain_tests)):
+        rec = _diag(verifier)
+        total = (len(rec["message"].encode("utf-8"))
+                 + len(rec["traceback"].encode("utf-8")))
+        assert total <= E._DIAGNOSTIC_BUDGET_BYTES, (label, total)
+
+    # The oversized message really was cut, and says so rather than looking short.
+    big = _diag(_hostile_message_tests)
+    assert big["message"].endswith(E._TRUNCATION_MARK)
+    assert len(big["message"]) < 5 * 1024 * 1024
+
+    # The deep chain was cut at the link limit, not merely at the byte budget:
+    # count the separators the walker emits between links.
+    deep = _diag(_deep_chain_tests)
+    links = deep["traceback"].count(E._CHAIN_LINK_SEP) + 1
+    assert links <= E._DIAGNOSTIC_CHAIN_LIMIT, links
+    assert E._CHAIN_TRUNCATION_MARK in deep["traceback"] \
+        or deep["traceback"].endswith(E._TRUNCATION_MARK)
+
+    # The cycle terminated at all, which a naive walk does not.
+    cyclic = _diag(_cyclic_chain_tests)
+    assert cyclic["traceback"].count(E._CHAIN_LINK_SEP) + 1 \
+        <= E._DIAGNOSTIC_CHAIN_LIMIT
+
+    # ...and the ordinary case is not collateral damage.
+    plain = _diag(_boom_tests)
+    assert plain["message"] == "the checker fell over"
+    assert E._TRUNCATION_MARK not in plain["message"]
+    assert E._TRUNCATION_MARK not in plain["traceback"]
+    assert "Traceback (most recent call last)" in plain["traceback"]
+    assert "_boom_tests" in plain["traceback"]
+
+
+def test_v12_a_diagnostic_that_fails_is_dropped_and_moves_no_byte():
+    """**The identity clause of route 5, proved by breaking diagnostics entirely.**
+
+    The requirement is not "diagnostics are usually fine". It is that diagnostic
+    generation cannot affect verification state, reward, receipt, episode id or
+    bundle publication *at all* -- so the way to prove it is to make diagnostic
+    generation fail outright and watch nothing else move.
+
+    Two runs, identical except that the second cannot produce a diagnostic. Their
+    receipts must be byte-identical, and the failing one must simply have no entry
+    for the signal: a whole record or none, never a half-written one. That is a
+    stronger statement than "the traceback is not in the receipt", because it also
+    rules out any *length* or *presence* of a diagnostic having been folded in.
+    """
+    extra = {"tests": _boom_tests, "identity": _pass_identity}
+    good, _t = _run_with(extra)
+
+    saved = E._exception_diagnostics
+
+    def _broken(exc):
+        raise MemoryError("the host could not build a diagnostic")
+
+    try:
+        E._exception_diagnostics = _broken
+        broken, _t2 = _run_with(extra)
+    finally:
+        E._exception_diagnostics = saved
+
+    assert broken["artifacts"]["verifier_diagnostics"] == {}, \
+        "a failed diagnostic must be absent, not partial"
+    assert good["artifacts"]["verifier_diagnostics"]["tests"]["message"] \
+        == "the checker fell over", "the working run must still diagnose"
+
+    assert (I.canonical_bytes(broken["receipt"])
+            == I.canonical_bytes(good["receipt"])), \
+        "a failed diagnostic moved bytes inside the receipt"
+    assert broken["receipt"]["episode_id"] == good["receipt"]["episode_id"]
+    assert broken["receipt"]["status"] == R.STATUS_ERROR
+    assert (broken["artifacts"]["verifier_evidence"]
+            == good["artifacts"]["verifier_evidence"])
+
+
+def test_v13_the_reporter_does_its_expensive_work_behind_the_guard():
+    """Non-vacuity for route 5, by source-level deletion in isolated copies.
+
+    Four probes. **None of them is a crash probe, deliberately.** The natural
+    proof -- "restore the eager arguments and watch a huge message erase the
+    episode" -- can only be made to fail by exhausting the host's memory, which
+    would make this law's verdict a property of the machine running it. That is
+    the exact host-dependence V4 and V7 refuse elsewhere, and a law that OOMs a
+    developer's box to prove a point is not a law. So each probe asserts a
+    *measurable consequence* of the shipped structure instead:
+
+      (a) the work is not done when nobody will read it -- `diagnostics=None`
+          must not so much as `str()` the exception. Under the old eager
+          arguments it always did, unconditionally.
+      (b) the nested guard is what keeps a failed diagnostic from escaping.
+      (c) the byte budget is what bounds the output.
+      (d) the chain limit is what bounds the walk.
+    """
+    def _episode(pkg, extra, required=None):
+        task = _task(list(_SCORED_REQUIRED if required is None else required))
+        return pkg.evalone.evaluate(
+            task, CONTENT, AGENT, REWARD_SPEC, snapshot=_snapshot(),
+            extra_verifiers=extra, platform="linux-x86_64", toolchain=TOOLCHAIN)
+
+    def _ctx(pkg):
+        return pkg.vcontext.VerifierContextV1(
+            task={}, snapshot={}, original_content={}, run={})
+
+    # (a) The thunk. With `diagnostics=None` the shipped seam never asks for a
+    #     message; the eager form built one every time, before `_verifier_error`
+    #     was even entered.
+    _STR_CALLS[0] = 0
+    E.resolve_signal("tests", _counting_tests,
+                     E.VerifierContextV1(task={}, snapshot={},
+                                         original_content={}, run={}),
+                     diagnostics=None)
+    assert _STR_CALLS[0] == 0, \
+        "the shipped seam stringified an exception nobody asked about"
+
+    eager = (
+        "evalone.py",
+        "            lambda: _exception_diagnostics(exc),",
+        "            {\"message\": _safe_str(exc), \"traceback\": \"\".join("
+        "traceback.format_exception(type(exc), exc, exc.__traceback__))},")
+    pkg, cleanup = _isolated_traaviis(eager)
+    try:
+        _STR_CALLS[0] = 0
+        pkg.evalone.resolve_signal("tests", _counting_tests, _ctx(pkg),
+                                   diagnostics=None)
+        assert _STR_CALLS[0] > 0, \
+            "the eager form did not apply; (a) proves nothing"
+    finally:
+        cleanup()
+
+    # (b) The nested guard. Diagnostics are forced to fail in both copies; only
+    #     the guard differs, so the guard is the only thing the outcome can be
+    #     attributed to.
+    force_failure = (
+        "evalone.py",
+        "    message = _clip(_safe_str(exc), _DIAGNOSTIC_MESSAGE_BYTES)",
+        "    raise MemoryError('forced')\n"
+        "    message = _clip(_safe_str(exc), _DIAGNOSTIC_MESSAGE_BYTES)")
+    no_guard = (
+        "evalone.py",
+        "        except Exception:  # noqa: BLE001 -- deliberately total; "
+        "see the docstring",
+        "        except ():  # noqa: BLE001 -- deliberately total; "
+        "see the docstring")
+
+    pkg, cleanup = _isolated_traaviis(force_failure)
+    try:
+        out = _episode(pkg, {"tests": _boom_tests, "identity": _pass_identity})
+        assert out["receipt"]["episode_id"].startswith("episode-")
+        # `tests`, not the whole map: `_pass_identity` returns *this* process's
+        # `VerifierResult`, which the copy's `isinstance` check correctly refuses,
+        # so `identity` carries a protocol diagnostic of its own. See
+        # `_raising_state` for the same trap in its sharper form.
+        assert "tests" not in out["artifacts"]["verifier_diagnostics"], \
+            "the forced failure did not apply; (b) proves nothing"
+    finally:
+        cleanup()
+
+    pkg, cleanup = _isolated_traaviis(force_failure, no_guard)
+    try:
+        try:
+            _episode(pkg, {"tests": _boom_tests, "identity": _pass_identity})
+        except MemoryError:
+            pass                      # the reporter erased the episode: the hole
+        else:
+            raise AssertionError(
+                "a failing diagnostic did NOT erase the episode with the nested "
+                "guard deleted -- V12 is measuring something else")
+    finally:
+        cleanup()
+
+    # (c) The byte budget.
+    raise_cap = ("evalone.py",
+                 "_DIAGNOSTIC_BUDGET_BYTES = 64 * 1024",
+                 "_DIAGNOSTIC_BUDGET_BYTES = 64 * 1024 * 1024")
+    raise_msg = ("evalone.py",
+                 "_DIAGNOSTIC_MESSAGE_BYTES = 8 * 1024",
+                 "_DIAGNOSTIC_MESSAGE_BYTES = 8 * 1024 * 1024")
+    pkg, cleanup = _isolated_traaviis(raise_cap, raise_msg)
+    try:
+        out = {}
+        pkg.evalone.resolve_signal("tests", _hostile_message_tests, _ctx(pkg),
+                                   diagnostics=out)
+        assert len(out["tests"]["message"]) > 64 * 1024, \
+            "the cap was not what held the message down; (c) proves nothing"
+    finally:
+        cleanup()
+
+    # (d) The chain limit. Raise both it and the budget, and the walk gets longer
+    #     -- so the limit, not the budget alone, is what stops it.
+    raise_links = ("evalone.py",
+                   "_DIAGNOSTIC_CHAIN_LIMIT = 8",
+                   "_DIAGNOSTIC_CHAIN_LIMIT = 500")
+    pkg, cleanup = _isolated_traaviis(raise_cap, raise_links)
+    try:
+        out = {}
+        pkg.evalone.resolve_signal("tests", _deep_chain_tests, _ctx(pkg),
+                                   diagnostics=out)
+        links = out["tests"]["traceback"].count(E._CHAIN_LINK_SEP) + 1
+        assert links > E._DIAGNOSTIC_CHAIN_LIMIT, \
+            "raising the link limit changed nothing; (d) proves nothing"
+    finally:
+        cleanup()
+
+    # Restored, each inverts back.
+    _STR_CALLS[0] = 0
+    E.resolve_signal("tests", _counting_tests,
+                     E.VerifierContextV1(task={}, snapshot={},
+                                         original_content={}, run={}),
+                     diagnostics=None)
+    assert _STR_CALLS[0] == 0                                        # (a)
+    live, _t = _run_with({"tests": _boom_tests, "identity": _pass_identity})
+    assert live["artifacts"]["verifier_diagnostics"]["tests"]["message"]  # (b)
+    out = {}
+    E.resolve_signal("tests", _hostile_message_tests,
+                     E.VerifierContextV1(task={}, snapshot={},
+                                         original_content={}, run={}),
+                     diagnostics=out)
+    assert len(out["tests"]["message"]) <= 64 * 1024                 # (c)
+    assert out["tests"]["traceback"].count(E._CHAIN_LINK_SEP) + 1 \
+        <= E._DIAGNOSTIC_CHAIN_LIMIT                                 # (d)
+
+
+class _RaisingHash(object):
+    """A verifier state that cannot be compared against the four frozen ones.
+
+    `reward.STATES` is a frozenset, so `state not in STATES` hashes first. This
+    makes that hash raise, which used to propagate out of `_result_violation` --
+    a function that runs *outside* the reporting seam, because it is what decides
+    whether the seam is entered.
+    """
+
+    def __hash__(self):
+        raise RuntimeError("this state refuses to be classified")
+
+
+class _ExhaustingMapping(Mapping_ABC):
+    """A `detail` that is a real Mapping and still cannot be read.
+
+    `MemoryError` specifically: the old clause named
+    `(ValueError, TypeError, RecursionError)` and let this one through, straight
+    into `build_receipt_v1` and out of every guard.
+    """
+
+    def __iter__(self):
+        raise MemoryError("the host could not enumerate this detail")
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, key):
+        raise MemoryError("the host could not read this detail")
+
+
+def _raising_state(VR):
+    """Parameterised by the `VerifierResult` class, for the same reason
+    `_unhashable_detail` is: inside an isolated package copy
+    `traaviis_cutover_N.vcontext.VerifierResult` is a *different class object*,
+    and a result built from this process's class fails the first clause
+    (`not_a_verifier_result`) before the clause under test is ever reached. That
+    is a real trap -- it silently turns a deletion probe into a test of clause
+    one -- and it cost this law a debugging round."""
+    def verifier(context):
+        return VR(_RaisingHash(), {})
+    verifier.version = "residency.tests.v1"
+    return verifier
+
+
+def _exhausting_detail(VR):
+    def verifier(context):
+        return VR(R.PASS, _ExhaustingMapping())
+    verifier.version = "residency.tests.v1"
+    return verifier
+
+
+def test_v14_a_return_that_cannot_be_classified_is_still_classified():
+    """`_result_violation` is total, clause by clause.
+
+    It runs *before* `_verifier_error` and outside every guard -- it is the
+    function that decides whether the guarded seam is entered -- so a clause that
+    raises escapes exactly as the old reporter did. The returned object belongs to
+    the verifier, and none of its attribute reads, `__hash__`es or mapping
+    protocol are ours to trust.
+
+    A check that cannot be *completed* returns the violation it was testing for.
+    That is not a fudge: an object whose state cannot be compared has, for every
+    purpose this system has, an `unknown_state`, and a detail the canonicalizer
+    cannot get through is `detail_not_canonical` whether it refused or died
+    trying. No new violation string was minted, so `RESULT_VIOLATIONS` is
+    unchanged, `coverage`'s vocabulary is untouched, and no sealed evidence
+    document can gain a value it did not have.
+    """
+    from traaviis import episode_bundle as EB
+
+    for label, verifier, violation in (
+            ("raising-state", _raising_state(VerifierResult), "unknown_state"),
+            ("exhausting-detail", _exhausting_detail(VerifierResult),
+             "detail_not_canonical")):
+        extra = {"tests": verifier, "identity": _pass_identity}
+        run, task_doc = _run_with(extra)
+        detail = run["artifacts"]["verifier_evidence"]["tests"]["detail"]
+        assert run["receipt"]["verification"]["tests"] == R.ERROR, label
+        assert detail["error_origin"] == E.ERROR_ORIGIN_VERIFIER_PROTOCOL, label
+        assert detail["error_code"] == E.ERROR_CODE_INVALID_VERIFIER_RESULT, label
+        assert detail["violation"] == violation, (label, detail)
+        assert detail["violation"] in E.RESULT_VIOLATIONS, label
+        _p, report = _bundle(run, task_doc, extra, "v14-" + label)
+        assert report["outcome"] == EB.OUTCOME_CLOSED, (label, report["checks"])
+
+    # Non-vacuity: narrow the canonical clause back to the three names it used to
+    # catch and the `MemoryError` detail escapes again.
+    narrow = ("evalone.py",
+              "    except Exception:  # noqa: BLE001 -- see the docstring\n"
+              "        # Formerly `(ValueError, TypeError, RecursionError)`",
+              "    except (ValueError, TypeError, RecursionError):\n"
+              "        # Formerly `(ValueError, TypeError, RecursionError)`")
+    pkg, cleanup = _isolated_traaviis(narrow)
+    try:
+        task = _task(list(_SCORED_REQUIRED))
+        try:
+            pkg.evalone.evaluate(
+                task, CONTENT, AGENT, REWARD_SPEC, snapshot=_snapshot(),
+                extra_verifiers={
+                    "tests": _exhausting_detail(pkg.evalone.VerifierResult),
+                    "identity": _pass_identity},
+                platform="linux-x86_64", toolchain=TOOLCHAIN)
+        except MemoryError:
+            pass
+        else:
+            raise AssertionError(
+                "a detail that exhausts memory did NOT escape the narrowed "
+                "clause -- V14 is measuring something other than that clause")
+    finally:
+        cleanup()
+
+
+# ----------------------------------------------------------- W1-W6: route 6
+# V1-V14 close every way a verifier can *stop* badly. None of them closes a
+# verifier that never stops. An infinite loop, a native deadlock, an `os._exit`
+# or a segfault reaches no `except` clause: the evaluating process does not come
+# back, nothing is persisted, and the failing grade is erased exactly as
+# thoroughly as an uncaught exception erased it.
+#
+# The `tests` verifier never had this problem -- `run_command_set` has always run
+# its commands through `subprocess.run(..., timeout=…)`, and a `TimeoutExpired`
+# is `_INFRA_ERROR` -> `error`. The `identity` verifier did: it called
+# `adapter.lower_source(patched[rel])` in this process, on a WRL source the
+# *candidate* wrote, with no timeout anywhere on the path. These laws pin the
+# worker that closes that asymmetry, and the policy that says which verifiers
+# have a boundary and which are trusted without one.
+
+_FAKE_FORGE_SOURCE = '''\
+"""A Forge engine that misbehaves on demand, so route 6 is provable without one.
+
+Deliberately NOT the real engine. Every hazard route 6 exists for -- a lowering
+that never returns, one that spawns something that outlives it, one that exits
+the process outright -- is a hazard the real engine must never exhibit, so a law
+that waited for the real engine to hang would never run. This is also what keeps
+W1-W3 engine-INDEPENDENT: they are about the boundary, not about Forge, and a
+packet extracted with no TRVM checkout above it must still be able to prove them.
+"""
+
+ENGINE_API_VERSION = "1"
+LOWER_RESULT_VERSION = "forge.lower-result.v1"
+BENCH_VERSION = "0.0.0-fake"
+
+import os
+import subprocess
+import sys
+import time
+
+
+def lower_source(source):
+    if "@@SPAWN@@" in source:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"])
+        with open(os.environ["TRVS_FAKE_FORGE_MARKER"], "w") as fh:
+            fh.write(str(child.pid))
+            fh.flush()
+            os.fsync(fh.fileno())
+    if "@@NOISE@@" in source:
+        print("engine chatter that must not land on the response wire")
+    if "@@HANG@@" in source:
+        time.sleep(600)
+    if "@@EXIT@@" in source:
+        os._exit(9)
+    return {"ok": True, "semantic_artifact_id": "sem-fake", "error": None}
+'''
+
+
+def _fake_forge_dir():
+    """A directory `traaviis.engine` will accept, holding the engine above."""
+    root = os.path.join(_tmp(), "fake-forge")
+    if not os.path.isdir(root):
+        os.makedirs(root)
+        with open(os.path.join(root, "forge_api.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(_FAKE_FORGE_SOURCE)
+    return root
+
+
+def _marker_path(name):
+    path = os.path.join(_tmp(), "marker-" + name)
+    if os.path.exists(path):
+        os.remove(path)
+    os.environ["TRVS_FAKE_FORGE_MARKER"] = path
+    return path
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OSError):
+        return False
+    return True
+
+
+def _reap(pid):
+    try:
+        os.kill(pid, 9)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def test_w1_a_lowering_that_never_returns_is_killed_and_reported():
+    """**Route 6's acceptance bar.** A hang becomes an outcome instead of an end.
+
+    Three claims in one law, because they are three halves of the same boundary:
+
+      * a source that makes the engine hang produces `ForgeTimeout` in bounded
+        time, rather than never producing anything;
+      * `ForgeTimeout` **is a** `ForgeUnavailable`, so every existing
+        `except ForgeUnavailable` handler already reports it as `error` rather
+        than silently not covering the case the change exists to cover;
+      * an ordinary lowering still works, and still works when the engine prints
+        on stdout -- the worker takes a duplicate of fd 1 before importing
+        anything, so engine chatter cannot land in the middle of the response
+        document and turn a good answer into an unparseable one.
+
+    Engine-independent by construction: the misbehaving engine is written to a
+    temp directory by this file. A law that waited for the real Forge to hang
+    would never run, and the real Forge hanging is not the hypothesis -- a
+    candidate-authored source making it hang is.
+    """
+    import time
+    from traaviis import forge_adapter as FA
+
+    fake = _fake_forge_dir()
+
+    # An ordinary lowering: the boundary is not in the way of the normal case.
+    ok = FA._lower_in_worker("plain source", fake, 60.0)
+    assert ok.ok is True and ok.semantic_id == "sem-fake", ok
+
+    # ...including one where the engine writes to stdout.
+    noisy = FA._lower_in_worker("@@NOISE@@", fake, 60.0)
+    assert noisy.ok is True and noisy.semantic_id == "sem-fake", noisy
+
+    started = time.monotonic()
+    try:
+        FA._lower_in_worker("@@HANG@@", fake, 2.0)
+    except FA.ForgeTimeout as exc:
+        elapsed = time.monotonic() - started
+        assert isinstance(exc, FA.ForgeUnavailable), \
+            "a timeout that is not a ForgeUnavailable is a case no handler covers"
+    else:
+        raise AssertionError("a lowering that never returns returned")
+    # Bounded, not benchmarked: 2s deadline plus the reap grace, with room for a
+    # loaded host. The engine sleeps 600s, so an unbounded wait cannot pass.
+    assert elapsed < 60.0, elapsed
+
+
+def test_w2_the_kill_reaches_the_grandchild():
+    """`join(timeout)` is not a kill, and killing the child is not killing the tree.
+
+    This repository has learned both halves already. `mcp_server.drain` documents
+    the first at length: it stopped *waiting*, which is not the same as anything
+    stopping, and only the workers being non-daemon threads kept the process
+    honest. `tools/run_battery.py::_kill_tree` documents the second: killing only
+    the direct child left grandchildren holding the pipes, so the battery went on
+    waiting for output from a file it had already given up on. A lowering worker
+    is exactly that shape -- an engine may shell out -- so it is started with
+    `start_new_session=True` and the timeout signals the *group*.
+
+    The misbehaving engine spawns a 600-second sleeper and records its pid before
+    hanging. After the timeout that pid must be gone.
+
+    Non-vacuity is the sharpest kind available here: an isolated copy with
+    `_kill_group` reduced to `pass` must leave the same sleeper alive. Nothing
+    else differs, so the group kill is the only thing the outcome can be
+    attributed to.
+    """
+    from traaviis import forge_adapter as FA
+
+    fake = _fake_forge_dir()
+    marker = _marker_path("w2")
+    try:
+        FA._lower_in_worker("@@SPAWN@@ @@HANG@@", fake, 3.0)
+    except FA.ForgeTimeout:
+        pass
+    else:
+        raise AssertionError("the spawning hang did not time out")
+
+    assert os.path.isfile(marker), "the engine never recorded a grandchild"
+    with open(marker, encoding="utf-8") as fh:
+        pid = int(fh.read().strip())
+    # A reparented process takes a moment to disappear from the table.
+    for _ in range(50):
+        if not _alive(pid):
+            break
+        __import__("time").sleep(0.1)
+    alive = _alive(pid)
+    _reap(pid)
+    assert not alive, "the grandchild outlived the kill (pid %d)" % pid
+
+    # Non-vacuity: delete the group kill and the grandchild survives.
+    no_kill = ("forge_adapter.py",
+               "        _kill_group(proc)",
+               "        pass  # _kill_group(proc)")
+    quick_reap = ("forge_adapter.py",
+                  "_REAP_GRACE_SECONDS = 30.0",
+                  "_REAP_GRACE_SECONDS = 3.0")
+    pkg, cleanup = _isolated_traaviis(no_kill, quick_reap)
+    survivor = None
+    try:
+        marker = _marker_path("w2-probe")
+        probe = __import__(pkg.__name__ + ".forge_adapter",
+                           fromlist=["forge_adapter"])
+        try:
+            probe._lower_in_worker("@@SPAWN@@ @@HANG@@", fake, 3.0)
+        except probe.ForgeTimeout:
+            pass
+        else:
+            raise AssertionError("the probe did not time out; W2 proves nothing")
+        with open(marker, encoding="utf-8") as fh:
+            survivor = int(fh.read().strip())
+        __import__("time").sleep(0.5)
+        assert _alive(survivor), \
+            "the grandchild died even with the group kill deleted -- W2 is " \
+            "measuring something other than that kill"
+    finally:
+        if survivor is not None:
+            _reap(survivor)
+        cleanup()
+
+
+def test_w3_a_worker_that_exits_is_unavailable_and_never_a_verdict():
+    """`os._exit` and a segfault reach no `except` clause. They still get an answer.
+
+    In-process there was nothing to say about them: the evaluating interpreter
+    was simply gone. Across a process boundary they are a return code, and a
+    return code that is not zero means the engine did not answer -- which is
+    `ForgeUnavailable`, i.e. `error`. Never `pass` (the identity would be claimed
+    to hold on no evidence) and never `fail` (a candidate would be marked down for
+    the evaluator's crash). A worker that dies is never evidence against the
+    candidate.
+
+    `ForgeUnavailable` but *not* `ForgeTimeout`: the two are distinguishable
+    because they call for different remedies -- an engine that dies is a bug to
+    fix, an engine that hangs is a deadline to reconsider -- and collapsing them
+    would be the same mistake V3 refuses for the two error origins.
+    """
+    from traaviis import forge_adapter as FA
+
+    fake = _fake_forge_dir()
+    try:
+        FA._lower_in_worker("@@EXIT@@", fake, 60.0)
+    except FA.ForgeTimeout:
+        raise AssertionError("an exiting worker was reported as a hang")
+    except FA.ForgeUnavailable as exc:
+        assert "9" in str(exc), str(exc)
+    else:
+        raise AssertionError("a worker that exited 9 produced a LowerResult")
+
+    # An engine the worker cannot use: `status: "unavailable"` on the wire, and
+    # `ForgeUnavailable` out of the parent -- the same answer as a dead worker,
+    # reached without one dying.
+    #
+    # An *incompatible* engine rather than an absent one, deliberately.
+    # `engine.try_load` treats an invalid `TRVS_FORGE_DIR` as a candidate that
+    # did not match and searches on (unlike `engine.load`, which fails fast), so
+    # pointing the worker at an empty directory inside this monorepo finds the
+    # real sibling engine and lowers successfully. That is `engine.py`'s
+    # behaviour, not this boundary's, and a law asserting otherwise would be
+    # asserting the shape of the checkout it happens to run in.
+    wrong = os.path.join(_tmp(), "wrong-api-forge")
+    if not os.path.isdir(wrong):
+        os.makedirs(wrong)
+        with open(os.path.join(wrong, "forge_api.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write('ENGINE_API_VERSION = "999"\n'
+                     'def lower_source(source):\n'
+                     '    raise AssertionError("must never be called")\n')
+    try:
+        FA._lower_in_worker("plain", wrong, 60.0)
+    except FA.ForgeUnavailable as exc:
+        assert "Forge engine" in str(exc), str(exc)
+    else:
+        raise AssertionError("an incompatible engine produced a LowerResult")
+
+
+class _HangingAdapter(object):
+    """An adapter whose lowering was killed on its deadline."""
+
+    version = "forge.identity.v1@api-1@lower-fake@engine-fake"
+
+    def lower_source(self, source):
+        from traaviis.forge_adapter import ForgeTimeout
+        raise ForgeTimeout("the Forge lowering worker did not finish "
+                           "and was killed after 120.0s on pid 12345")
+
+
+def _timeout_identity(context):
+    """The **real** identity verifier, given a real policy and a hung adapter.
+
+    Not a stand-in for it: `SV.make_identity_verifier` is the shipped factory and
+    this exercises its actual branch. The context is rebuilt with an
+    `identity_policy` because `_task` above declares none, and with a patched tree
+    containing the bound path -- the two things that get the verifier past its
+    `not_applicable` and `no patched tree` exits and onto the lowering call.
+    """
+    import dataclasses
+
+    task = dict(context.task)
+    task["identity_policy"] = {
+        "must_remain": {"world": {"path": "src/mod.py",
+                                  "before_id": "sem-declared"}}}
+    patched = dict(context.patched_content or {})
+    patched.setdefault("src/mod.py", "return 1\n")
+    ctx = dataclasses.replace(context, task=task, patched_content=patched)
+    return SV.make_identity_verifier(_HangingAdapter())(ctx)
+
+
+_timeout_identity.version = "residency.identity.v1"
+
+
+def test_w4_a_hung_lowering_is_a_sealed_error_episode_not_a_lost_one():
+    """The whole point, at the pipeline level: the grade survives the hang.
+
+    The identity verifier's timeout branch seals a **stable code**, not a message.
+    That distinction is not cosmetic: this detail enters
+    `verification_evidence[identity]` and therefore `episode-…`, and a timeout
+    message is the one kind of message guaranteed to be about the host -- a
+    deadline, a pid, a duration. The adapter here raises with all three in its
+    text, and none of them may appear anywhere in what is sealed.
+
+    No committed id can move onto this branch, and the reason is stronger than
+    "we checked": before the worker existed a hang produced no detail, because it
+    produced no episode. There is nothing for the new bytes to have displaced.
+    """
+    from traaviis import episode_bundle as EB
+
+    extra = {"tests": _pass_tests, "identity": _timeout_identity}
+    run, task_doc = _run_with(extra)
+    r = run["receipt"]
+
+    assert r["verification"]["identity"] == R.ERROR, r["verification"]
+    assert sorted(r["verification"]) == sorted(_ALL_SIGNALS
+                                               + ["native", "oracle"])
+    assert r["status"] == R.STATUS_ERROR and r["reward"] is None
+    assert r["episode_id"].startswith("episode-")
+
+    detail = run["artifacts"]["verifier_evidence"]["identity"]["detail"]
+    from traaviis import forge_adapter as FA
+    assert detail["error_code"] == FA.ERROR_CODE_FORGE_TIMEOUT
+    assert detail["reason"] == "forge lowering timed out"
+    assert detail["path"] == "src/mod.py"
+    assert sorted(detail) == ["error_code", "path", "reason"], detail
+
+    # Not one host byte from the exception text reached the seal.
+    sealed = json.dumps([r, run["artifacts"]["verifier_evidence"]])
+    for volatile in ("120.0", "12345", "pid", "was killed"):
+        assert volatile not in sealed, volatile
+
+    # ...and it publishes and reopens, which a hang never did.
+    _path, report = _bundle(run, task_doc, extra, "w4")
+    assert report["outcome"] == EB.OUTCOME_CLOSED, report["checks"]
+    assert report["episode_id"] == r["episode_id"]
+    assert report["checks"]["signals"]["identity"]["evidence_match"] is True
+
+
+def test_w5_the_worker_lowers_to_exactly_the_id_the_engine_does():
+    """**Zero ids moved**, measured against the engine rather than argued.
+
+    The worker is a new *place* for the lowering to happen, not a new lowering.
+    If it produced a different `SemanticArtifactID` for the same source, every
+    sealed episode that scored `identity` would stop closing -- so this compares
+    the in-process call the adapter used to make against the worker call it makes
+    now, on the same source, and requires the same `sem-…`.
+
+    The second half is the timeout's placement: `real_adapter(engine)` and
+    `real_adapter(engine, timeout=…)` must declare the **same** `.version`, because
+    that string enters `verifier_versions.identity` and thus `episode-…`. A
+    host-resource knob in an identity is a knob that moves every id in the corpus
+    for no semantic reason.
+
+    Engine-dependent, so it **skips** rather than fails: `accept_packet.py`'s G5
+    runs the battery once in an extraction with no TRVM checkout above it, and a
+    law that sailed through an absent engine was never testing it.
+    """
+    from traaviis import engine as _engine
+    from traaviis import forge_adapter as FA
+
+    eng = _engine.try_load()
+    if eng is None:
+        raise Skip("Forge engine not locatable; set TRVS_FORGE_DIR")
+    sources = [p for p in (
+        os.path.join(REPO, "worlds", "alley.wrl"),
+        os.path.join(REPO, "examples", "eval-one", "residency-forge",
+                     "subject", "world", "frozen.wrl"),
+    ) if os.path.isfile(p)]
+    if not sources:
+        raise Skip("no WRL source in this extraction to lower")
+
+    adapter = FA.real_adapter(eng)
+    for path in sources:
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        in_process = eng.lower_source(source)
+        via_worker = adapter.lower_source(source)
+        assert bool(in_process.get("ok")) == via_worker.ok, path
+        assert in_process.get("semantic_artifact_id") == via_worker.semantic_id, \
+            "the worker lowered %s to a different id" % path
+
+    assert FA.real_adapter(eng).version == FA.real_adapter(eng, timeout=1.5).version, \
+        "the timeout reached the identity-bearing version string"
+
+
+def test_w6_every_verifier_has_a_stated_isolation_and_the_source_matches():
+    """The plugin question, answered in code rather than left open.
+
+    A policy that lives only in a docstring drifts from the code the first time
+    someone edits one and not the other, so `VERIFIER_ISOLATION_POLICY` is a map
+    and this law checks the source against it. Four rows, and the fourth is the
+    one that had to be *decided* rather than described:
+
+        builtin_pure  in_process_trusted       this repository's own pure code
+        tests         subprocess_timeout       already true, now stated
+        identity      worker_process_timeout   new
+        external      worker_process_required  a precondition on the caller
+
+    `external` is a requirement this package cannot enforce and says so:
+    `extra_verifiers` is a plain mapping of callables, and `resolve_signal` cannot
+    time out a call it is inside of. Leaving it unstated would have been the worse
+    option -- a caller wiring a third-party verifier in-process would reopen route
+    6 without ever being told the rule existed.
+    """
+    import inspect
+
+    assert SV.VERIFIER_ISOLATION_POLICY == {
+        "builtin_pure": "in_process_trusted",
+        "tests": "subprocess_timeout",
+        "identity": "worker_process_timeout",
+        "external": "worker_process_required",
+    }
+
+    src = inspect.getsource(SV)
+    # `tests`: the subprocess claim is a fact about `run_command_set`, checked.
+    assert "subprocess.run(" in src and "timeout=timeout," in src
+
+    # `identity`: the timeout is caught, and caught BEFORE the class it
+    # subclasses -- an `except ForgeUnavailable` written first would swallow it
+    # and the stable code would be unreachable.
+    assert src.index("except ForgeTimeout:") < src.index("except ForgeUnavailable as exc:")
+
+    # ...and the lowering really does leave this process.
+    from traaviis import forge_adapter as FA
+    adapter_src = inspect.getsource(FA)
+    assert "_lower_in_worker(source, forge_dir, timeout)" in adapter_src
+    assert "start_new_session" in adapter_src and "os.killpg" in adapter_src
+    assert "subprocess.Popen(" in adapter_src
+    # The worker is launched out of THIS package copy, not a hard-coded name --
+    # the defect the isolated-copy replay caught, and the reason B4 went red.
+    assert "_PACKAGE = __package__" in adapter_src
+    assert '"-m", _WORKER_MODULE' in adapter_src
+
+    # `builtin_pure`: the three pure verifiers spawn nothing, which is what makes
+    # trusting them in-process a statement rather than a hope.
+    #
+    # Read from the *parse tree*, not from the text. `verifiers.py`'s own
+    # docstring contains the word "subprocess" -- in a sentence promising there
+    # is none -- so a substring check reports the promise as a violation. An
+    # import is a node; prose is not.
+    import ast
+    from traaviis import verifiers as PV
+
+    tree = ast.parse(inspect.getsource(PV))
+    imported = set()
+    calls = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Call):
+            calls.add(ast.unparse(node.func))
+    for forbidden in ("subprocess", "multiprocessing", "socket", "ctypes"):
+        assert forbidden not in imported, forbidden
+    for forbidden in ("os.system", "os.popen", "os.fork", "eval", "exec"):
+        assert forbidden not in calls, forbidden
+
+
+def test_w7_the_timeout_is_what_ends_the_hang():
+    """Non-vacuity for W1, by source-level deletion, run where a hang is safe.
+
+    The deletion here is the one probe in this file that **cannot** be run in
+    process: removing the deadline means the call does not come back, so an
+    in-process probe would hang the battery rather than fail it -- which is
+    precisely the defect being demonstrated, and precisely why it needs a
+    subprocess of its own to demonstrate it in.
+
+    So the same driver is run twice against the same misbehaving engine, once
+    against the shipped package and once against an isolated copy whose
+    `communicate(..., timeout=timeout)` has had its deadline removed. The shipped
+    one must report `TIMEOUT` and exit; the copy must be killed by the driver's
+    own outer deadline. Both directions are asserted, because only the pair
+    distinguishes "the deadline works" from "nothing was ever slow".
+    """
+    import subprocess as _sp
+    import signal as _signal
+
+    fake = _fake_forge_dir()
+    driver = os.path.join(_tmp(), "w7_driver.py")
+    with open(driver, "w", encoding="utf-8") as fh:
+        fh.write(
+            "import sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "mod = __import__(sys.argv[2] + '.forge_adapter',\n"
+            "                 fromlist=['forge_adapter'])\n"
+            "try:\n"
+            "    mod._lower_in_worker('@@HANG@@', sys.argv[3], 2.0)\n"
+            "except mod.ForgeTimeout:\n"
+            "    print('TIMEOUT')\n"
+            "else:\n"
+            "    print('RETURNED')\n")
+
+    def _drive(root, name, deadline):
+        proc = _sp.Popen([sys.executable, driver, root, name, fake],
+                         stdout=_sp.PIPE, stderr=_sp.PIPE, text=True,
+                         start_new_session=True)
+        try:
+            out, _err = proc.communicate(timeout=deadline)
+            return out.strip()
+        except _sp.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, _signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+            proc.communicate()
+            return "HUNG"
+
+    assert _drive(REPO, "traaviis", 60.0) == "TIMEOUT", \
+        "the shipped deadline did not end the hang"
+
+    no_deadline = ("forge_adapter.py",
+                   "        out, err = proc.communicate(request, timeout=timeout)",
+                   "        out, err = proc.communicate(request)")
+    pkg, cleanup = _isolated_traaviis(no_deadline)
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(pkg.__file__)))
+        assert _drive(root, pkg.__name__, 20.0) == "HUNG", \
+            "the lowering came back with the deadline deleted -- W1 is " \
+            "measuring something other than that deadline"
+    finally:
+        cleanup()
 
 
 def _main():

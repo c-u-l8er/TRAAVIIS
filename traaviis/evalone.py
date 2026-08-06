@@ -73,7 +73,7 @@ episode tampered (``reward = 0`` / ``validity = invalid``).
 
 import hashlib
 import traceback
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from . import admission, execfacts, identity, patchapply, reward, runner, signals, verifiers
 from . import substrate_verifiers as _sv, toolchain as _toolchain
@@ -187,6 +187,62 @@ RESULT_VIOLATIONS = (
     "detail_not_mapping",      # .detail is not a mapping
     "detail_not_canonical",    # .detail cannot be sealed by identity.canonical_bytes
 )
+
+# --- The diagnostic budget (route 5: the *reporter* must not erase the episode) -
+#
+# The guarded seam below catches a verifier that raises. Catching it is not the
+# whole job: the report about the failure was, until this change, built as
+# *arguments* to the reporting function — `_safe_str(exc)` and
+# `traceback.format_exception(...)` — and arguments are evaluated before the call
+# is entered. So `_verifier_error`'s careful "sealed detail first, diagnostics
+# second" ordering bought nothing: the expensive, candidate-influenced work ran
+# *before* the minimal canonical result existed. A verifier that raises with a
+# gigabyte-long message, an exception chain thousands of links deep, or a
+# `__str__` that allocates until the host says no would take the whole episode
+# down from inside the handler that exists to prevent exactly that.
+#
+# Three separate mechanisms, in the order they apply:
+#
+#   1. **Ordering.** `_verifier_error` builds `VerifierResult(ERROR, detail)` —
+#      the only object that affects verification state, reward, receipt, episode
+#      id and bundle publication — and holds it, *before* any diagnostic is
+#      requested. Diagnostics arrive as a zero-argument callable, so nothing
+#      expensive is evaluated at the call site.
+#   2. **Caps.** Message and traceback together may not exceed
+#      `_DIAGNOSTIC_BUDGET_BYTES`. The traceback walker also bounds how many
+#      exception links it follows and how many frames it formats per link, so a
+#      deep `__cause__`/`__context__` chain is bounded in *work*, not merely
+#      truncated after the fact.
+#   3. **A nested guard.** Any failure while producing diagnostics — including
+#      `MemoryError`, for the reason already argued for the outer seam — drops
+#      the diagnostics for that signal and returns the result built in step 1.
+#      A dropped diagnostic costs an operator a message; a propagated one costs
+#      the evaluation its episode.
+#
+# None of this can move an id: `diagnostics` is returned in the
+# `EvaluationRunV1` artifacts for a human and is written to no bundle member and
+# hashed by nothing. That property is the whole reason the split exists, and V10
+# below pins it by mutating the diagnostics and re-deriving the receipt.
+_DIAGNOSTIC_BUDGET_BYTES = 64 * 1024
+#: The message's share of the budget; the traceback gets whatever is left.
+_DIAGNOSTIC_MESSAGE_BYTES = 8 * 1024
+#: How many `__cause__`/`__context__` links the walker will follow, and how many
+#: stack frames it will format per link. Both bound *work*, not just output: an
+#: unbounded chain formatted eagerly (which is what `chain=True` does) is the
+#: hazard, so each link is formatted with `chain=False` and the walk is ours.
+_DIAGNOSTIC_CHAIN_LIMIT = 8
+_DIAGNOSTIC_FRAME_LIMIT = 32
+#: Appended when a diagnostic was cut. Fixed text, so a truncated diagnostic says
+#: so plainly rather than looking like a short one.
+_TRUNCATION_MARK = "\n[traaviis: diagnostic truncated]"
+#: What is reported when the whole chain could not be walked.
+_CHAIN_TRUNCATION_MARK = "\n[traaviis: exception chain truncated]"
+#: Printed between two links of a formatted chain, in place of the interpreter's
+#: own "The above exception was the direct cause of…" prose. Deliberately not
+#: that prose: this walker follows `__cause__` first and `__context__` only when
+#: there is no cause, so reproducing wording that distinguishes them would be
+#: claiming a distinction the record does not carry.
+_CHAIN_LINK_SEP = "\n[traaviis: caused by / during handling of]\n\n"
 
 Verifier = Callable[[VerifierContextV1], VerifierResult]
 
@@ -433,7 +489,16 @@ def _impl_version(verifier: Optional[Verifier]) -> Optional[str]:
     """
     if verifier is None:
         return None
-    version = getattr(verifier, "version", None)
+    try:
+        version = getattr(verifier, "version", None)
+    except Exception:  # noqa: BLE001 -- `.version` may be a property on a
+        # hostile object, and this read is on the sealed path: `_verifier_error`
+        # calls it while building the canonical detail, before any diagnostic is
+        # attempted. A raise here would erase the episode from inside the
+        # reporter. An unreadable version is `None`, which is the value this
+        # function already returns for a verifier that declares none, so the
+        # preflight's invalid-config rule keeps working unchanged.
+        return None
     return version if isinstance(version, str) else None
 
 
@@ -467,9 +532,25 @@ def _qualified_exception_type(cls: Any) -> str:
     bundle is re-derived by the code that wired the verifier. A verifier defined
     in ``__main__`` is not a shipping configuration; the wiring registry imports
     every real implementation by module path.
+
+    **Total, because it is on the sealed path.** This value goes into the
+    canonical detail, which is the object that must exist before any diagnostic
+    is attempted (route 5). ``__qualname__`` and ``__module__`` are ordinary
+    attributes on every class Python defines, but they are *attributes*, and a
+    metaclass can make them properties that raise. If reading them could raise,
+    then constructing the sealed result could raise, and the reporter would erase
+    the episode exactly as the verifier did. ``"<unavailable>"`` is reachable only
+    on inputs that previously escaped as an uncaught exception, so no already
+    sealed episode can gain it and no committed id can move — the same argument
+    the origin vocabulary above is admitted under.
     """
-    name = getattr(cls, "__qualname__", None) or getattr(cls, "__name__", "") or ""
-    module = getattr(cls, "__module__", "") or ""
+    try:
+        name = getattr(cls, "__qualname__", None) or getattr(cls, "__name__", "") or ""
+        module = getattr(cls, "__module__", "") or ""
+        if not isinstance(name, str) or not isinstance(module, str):
+            return "<unavailable>"
+    except Exception:  # noqa: BLE001 -- see the docstring; this is a sealed path
+        return "<unavailable>"
     if module in ("builtins", "__builtin__", "exceptions", ""):
         return name
     return "%s.%s" % (module, name)
@@ -483,22 +564,168 @@ def _result_violation(result: Any) -> Optional[str]:
     detail actually be sealed. The last check runs the *real* canonicalizer over
     the real detail rather than re-deriving what it accepts, so this stays correct
     as ``identity.py`` tightens.
+
+    **Every clause is individually total, and that is route 5's other half.**
+    This function runs *outside* the reporting seam — it is what decides whether
+    the seam is entered at all — so a clause that raises escapes the guard and
+    erases the episode just as surely as the reporter did. Each check is
+    therefore wrapped, and a check that cannot be *completed* returns the
+    violation it was testing for: an object whose ``state`` cannot be compared
+    has, for every purpose this system has, an ``unknown_state``; a ``detail``
+    the canonicalizer cannot get through is ``detail_not_canonical`` whether it
+    refused or died trying. The returned object is the verifier's, and none of
+    its attribute reads, ``__eq__``s or mapping protocol are ours to trust.
+
+    The catch widened from ``(ValueError, TypeError, RecursionError)`` to
+    ``Exception`` for the reason already argued at length in ``resolve_signal``:
+    here the classification is ``error``, which ``reward.score`` gives
+    ``reward = None`` rather than a number, so a host-dependent failure declines
+    to score instead of scoring differently on different machines. No new
+    violation string was added — the four are unchanged, so ``coverage``'s
+    vocabulary and every sealed evidence document are untouched.
     """
-    if not isinstance(result, VerifierResult):
+    try:
+        if not isinstance(result, VerifierResult):
+            return "not_a_verifier_result"
+    except Exception:  # noqa: BLE001 -- see the docstring
         return "not_a_verifier_result"
-    if result.state not in reward.STATES:
+    try:
+        if result.state not in reward.STATES:
+            return "unknown_state"
+    except Exception:  # noqa: BLE001 -- a hostile `state` cannot be compared
         return "unknown_state"
-    if not isinstance(result.detail, Mapping):
+    try:
+        if not isinstance(result.detail, Mapping):
+            return "detail_not_mapping"
+    except Exception:  # noqa: BLE001 -- a hostile `detail` cannot be classified
         return "detail_not_mapping"
     try:
         identity.canonical_bytes(dict(result.detail))
-    except (ValueError, TypeError, RecursionError):
-        # The same three names, for the same three reasons, as
-        # `_finding_artifact`: IdentityError/UnicodeEncodeError are ValueError,
-        # TypeError is an unserializable value, RecursionError is a document the
-        # emitter cannot re-emit.
+    except Exception:  # noqa: BLE001 -- see the docstring
+        # Formerly `(ValueError, TypeError, RecursionError)` — the same three
+        # names, for the same three reasons, as `_finding_artifact`:
+        # IdentityError/UnicodeEncodeError are ValueError, TypeError is an
+        # unserializable value, RecursionError is a document the emitter cannot
+        # re-emit. `MemoryError` and a raising mapping protocol are the two the
+        # tuple let through, and both are candidate-reachable.
         return "detail_not_canonical"
     return None
+
+
+def _clip(text: str, budget: int) -> str:
+    """``text`` cut to at most ``budget`` UTF-8 bytes, cheaply and totally.
+
+    The slice happens in *characters* first (``text[:budget]``). That is not an
+    approximation: every character encodes to at least one byte, so ``budget``
+    characters always cover at least ``budget`` bytes, and slicing first bounds
+    the cost of the encode that follows. Encoding the whole of a gigabyte-long
+    message in order to measure it is precisely the work this cap exists to
+    avoid.
+
+    The truncation mark is charged *against* the budget rather than added on top,
+    so "message + traceback ≤ 64 KiB" is the real bound and not 64 KiB plus
+    whatever the marks cost.
+    """
+    if budget <= len(_TRUNCATION_MARK):
+        return ""
+    keep = budget - len(_TRUNCATION_MARK)
+    head = text[:keep]
+    data = head.encode("utf-8", "replace")
+    if len(head) == len(text) and len(data) <= budget:
+        return text
+    return data[:keep].decode("utf-8", "ignore") + _TRUNCATION_MARK
+
+
+def _bounded_traceback(exc: BaseException, budget: int) -> str:
+    """Format ``exc``'s traceback and cause chain under a hard work budget.
+
+    ``traceback.format_exception(type, exc, tb)`` — what this replaced — walks the
+    entire ``__cause__``/``__context__`` chain **eagerly**, building one formatted
+    block per link and reading the source lines of every frame, and only then
+    returns the list for ``"".join`` to concatenate. Nothing about the chain's
+    depth is bounded, and nothing about it is ours: an exception's ``__context__``
+    is set implicitly by every ``raise`` inside an ``except``, so a verifier
+    looping over candidate-supplied data can build a chain as long as the data.
+    The cost is paid before the first byte can be discarded.
+
+    So the walk is done here instead: one link at a time, at most
+    ``_DIAGNOSTIC_CHAIN_LIMIT`` links, at most ``_DIAGNOSTIC_FRAME_LIMIT`` frames
+    per link, and stopping the moment ``budget`` bytes have been produced. Links
+    already seen are not followed twice — an exception chain can be a cycle, and
+    a cycle is the one shape a depth limit alone would still walk to the end of.
+
+    ``traceback.TracebackException`` is deliberately **not** used, even one link
+    at a time. Its constructor captures the entire ``__cause__``/``__context__``
+    chain eagerly whatever ``format`` is later asked for, so building one costs
+    the full depth before a single link can be discarded — the exact expense this
+    function exists to bound. Suppressing that needs its private ``_seen``
+    parameter, which is not an interface to depend on. ``extract_tb`` +
+    ``format_list`` walk one exception's frames and nothing else, and the
+    exception line is assembled here from the two pieces that are already
+    bounded: the qualified type (host-independent, and total) and the clipped
+    message.
+
+    This is a *bound*, not a guarantee: formatting one link still asks the
+    exception for its own string, and a single pathological ``__str__`` can
+    exhaust memory before this function gets to discard anything. That case is
+    covered one layer out, by the nested guard in ``_verifier_error``, which
+    drops the diagnostics and keeps the episode. Both layers are needed; neither
+    is sufficient.
+    """
+    parts: List[str] = []
+    used = 0
+    seen = set()
+    cur: Optional[BaseException] = exc
+    links = 0
+    cut = False
+    while cur is not None:
+        if links >= _DIAGNOSTIC_CHAIN_LIMIT or id(cur) in seen or used >= budget:
+            cut = True
+            break
+        seen.add(id(cur))
+        links += 1
+        if links > 1:
+            parts.append(_CHAIN_LINK_SEP)
+            used += len(_CHAIN_LINK_SEP)
+        frames = traceback.extract_tb(
+            getattr(cur, "__traceback__", None), limit=_DIAGNOSTIC_FRAME_LIMIT)
+        chunks = ["Traceback (most recent call last):\n"]
+        chunks.extend(traceback.format_list(frames))
+        chunks.append("%s: %s\n" % (
+            _qualified_exception_type(type(cur)),
+            _clip(_safe_str(cur), _DIAGNOSTIC_MESSAGE_BYTES)))
+        for chunk in chunks:
+            if used >= budget:
+                cut = True
+                break
+            # Clip each chunk as it arrives rather than after the join: the
+            # exception line is the only unbounded one, and this keeps at most
+            # one oversized string alive at a time.
+            chunk = chunk[:budget - used]
+            parts.append(chunk)
+            used += len(chunk)
+        nxt = cur.__cause__
+        if nxt is None and not getattr(cur, "__suppress_context__", False):
+            nxt = cur.__context__
+        cur = nxt
+    text = "".join(parts)
+    if cut or cur is not None:
+        text += _CHAIN_TRUNCATION_MARK
+    return _clip(text, budget)
+
+
+def _exception_diagnostics(exc: BaseException) -> Dict[str, Any]:
+    """The operator-facing record for a raising verifier, inside the budget.
+
+    Called only through ``_verifier_error``'s nested guard, and only after the
+    canonical result already exists. Nothing it returns is hashed.
+    """
+    message = _clip(_safe_str(exc), _DIAGNOSTIC_MESSAGE_BYTES)
+    spent = len(message.encode("utf-8", "replace"))
+    return {
+        "message": message,
+        "traceback": _bounded_traceback(exc, _DIAGNOSTIC_BUDGET_BYTES - spent),
+    }
 
 
 def _safe_str(obj: Any) -> str:
@@ -517,7 +744,7 @@ def _safe_str(obj: Any) -> str:
 def _verifier_error(
     sig: str, verifier: Verifier, origin: str, code: str,
     sealed: Mapping[str, Any], diagnostics: Optional[Dict[str, Any]],
-    operator: Mapping[str, Any],
+    operator: Callable[[], Mapping[str, Any]],
 ) -> VerifierResult:
     """Build the ``error`` result for a failed verifier, splitting sealed from operator.
 
@@ -525,6 +752,34 @@ def _verifier_error(
     stable origin, the qualified type, the verifier's own implementation version.
     ``operator`` does not — it goes to ``diagnostics``, which is returned in the
     ``EvaluationRunV1`` artifacts for a human and is written to no bundle member.
+
+    **``operator`` is a callable, not a mapping, and that is the fix for route 5.**
+    It used to be a mapping, and every caller built it with expressions like
+    ``_safe_str(exc)`` and ``traceback.format_exception(...)`` written *in the
+    argument list*. Python evaluates arguments before entering the function, so
+    the ordering this function was written to guarantee — canonical detail first,
+    diagnostics second — was already lost by the time control arrived. A verifier
+    that raised with a hostile message erased the episode from inside the handler
+    whose entire purpose was to prevent that. Deferring the work behind a thunk
+    is what moves it to where the guard can reach it.
+
+    The order below is therefore load-bearing, and it is the order a reader
+    should check first:
+
+      1. build ``detail`` and the ``VerifierResult`` — the *only* value that
+         reaches verification state, reward, receipt, ``episode-…`` or the bundle;
+      2. attempt diagnostics under a nested guard;
+      3. return the object from step 1, whatever step 2 did.
+
+    Step 2 cannot influence step 1 because step 1 has already happened, and it
+    cannot influence step 3 because step 3 returns a name bound before step 2
+    ran. A diagnostic that fails leaves ``diagnostics[sig]`` absent — not partly
+    written: the record is assembled in a local and published in one assignment,
+    so an operator reading the artifacts sees a whole record or none.
+
+    ``Exception``, deliberately not ``BaseException``, for the same reason as the
+    outer seam: an operator's Ctrl-C during diagnostic generation must still
+    interrupt the run.
     """
     detail: Dict[str, Any] = {
         "error_origin": origin,
@@ -537,12 +792,23 @@ def _verifier_error(
         "verifier_implementation": _impl_version(verifier),
     }
     detail.update(sealed)
+    # Step 1 is complete here. Nothing below may change what this holds.
+    result = VerifierResult(reward.ERROR, detail)
     if diagnostics is not None:
-        record = {"signal": sig, "error_origin": origin, "error_code": code}
-        record.update(sealed)
-        record.update(operator)
-        diagnostics[sig] = record
-    return VerifierResult(reward.ERROR, detail)
+        try:
+            record = {"signal": sig, "error_origin": origin, "error_code": code}
+            record.update(sealed)
+            record.update(operator())
+            diagnostics[sig] = record
+        except Exception:  # noqa: BLE001 -- deliberately total; see the docstring
+            # An operator loses a message. The alternative — letting it out — is
+            # the evaluation losing an episode, which is the failure mode this
+            # whole seam exists to remove. `pop` rather than nothing because a
+            # `dict.update` that raised part-way could have left a partial
+            # record bound to `record`, and (defensively) because a future
+            # caller may publish incrementally.
+            diagnostics.pop(sig, None)
+    return result
 
 
 def resolve_signal(
@@ -608,8 +874,22 @@ def resolve_signal(
     coexist with a real reward number, this paragraph stops being true and the
     decision must be retaken.
 
-    ``diagnostics``, when supplied, collects the operator-facing record — full
-    message and traceback. It is never hashed and never written to a bundle.
+    ``diagnostics``, when supplied, collects the operator-facing record — the
+    exception's message and traceback, capped at ``_DIAGNOSTIC_BUDGET_BYTES``
+    together and produced only under ``_verifier_error``'s nested guard, after
+    the canonical result already exists. It is never hashed and never written to
+    a bundle. A signal whose diagnostics could not be produced is simply absent
+    from the map; the verification map itself stays total either way.
+
+    **What this seam does NOT close: a verifier that never returns.** Everything
+    above is about a verifier that *stops* — by raising or by returning garbage.
+    A verifier that loops forever, deadlocks in native code, calls ``os._exit``
+    or segfaults reaches no ``except`` clause at all, and erases the episode just
+    as thoroughly as an uncaught exception did. Containment cannot be retrofitted
+    onto an in-process call; it takes a process boundary. Which verifiers have
+    one, and which are trusted without one, is stated in
+    ``substrate_verifiers.VERIFIER_ISOLATION_POLICY`` — including the rule for
+    verifiers passed in through ``extra_verifiers`` by a caller.
     """
     if verifier is None:
         return VerifierResult(reward.NOT_APPLICABLE)
@@ -621,9 +901,11 @@ def resolve_signal(
             ERROR_ORIGIN_VERIFIER_EXCEPTION, ERROR_CODE_VERIFIER_RAISED,
             {"exception_type": _qualified_exception_type(type(exc))},
             diagnostics,
-            {"message": _safe_str(exc),
-             "traceback": "".join(traceback.format_exception(
-                 type(exc), exc, exc.__traceback__))},
+            # A thunk, NOT a mapping. Written inline as a mapping, the message
+            # and traceback would be built here — before `_verifier_error` is
+            # entered and therefore outside its guard. See route 5 in that
+            # function's docstring.
+            lambda: _exception_diagnostics(exc),
         )
     violation = _result_violation(result)
     if violation is not None:
@@ -632,7 +914,11 @@ def resolve_signal(
             ERROR_ORIGIN_VERIFIER_PROTOCOL, ERROR_CODE_INVALID_VERIFIER_RESULT,
             {"violation": violation},
             diagnostics,
-            {"returned_type": _qualified_exception_type(type(result))},
+            # Cheap today — but it reads `type(result)`'s attributes off an
+            # object the verifier chose, so it belongs behind the same thunk as
+            # the expensive one rather than being the one exception a later
+            # editor has to notice.
+            lambda: {"returned_type": _qualified_exception_type(type(result))},
         )
     return result
 
