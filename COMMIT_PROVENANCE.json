@@ -1,0 +1,96 @@
+{
+  "branch": "main",
+  "commits_newest_first": [
+    {
+      "commit": "1afc0805f3de6c2df53d6860b1c53d9abfa4d665",
+      "parents": [
+        "7a6be9d617097ea72b5a8e5f35793f91ede661c4"
+      ],
+      "subject": "feat(json): one bounded parse boundary, kept total by two AST laws",
+      "tree": "04aee00188a9996d92f59a6c9a1f983b97947f5f"
+    },
+    {
+      "commit": "7a6be9d617097ea72b5a8e5f35793f91ede661c4",
+      "parents": [
+        "c653e1532a56c0f62ae5698ecfb73aa1daf77a8a"
+      ],
+      "subject": "fix(eval): make exception containment total, and isolate Forge lowering",
+      "tree": "3066f4e7ab7ff779c1b5e09206b94f0a6134ae64"
+    },
+    {
+      "commit": "c653e1532a56c0f62ae5698ecfb73aa1daf77a8a",
+      "parents": [
+        "202b0abd449394295448e4f57927767122b48620"
+      ],
+      "subject": "test(coverage): declare the engine dependency instead of failing on it",
+      "tree": "ff0c4f9fa0a3d0f634bd7c5dcb348fe5d0361a83"
+    },
+    {
+      "commit": "202b0abd449394295448e4f57927767122b48620",
+      "parents": [
+        "c4e1631423037046eb4f83fc00776e1aaf23ec71"
+      ],
+      "subject": "fix(canonical): close the v2 numeric round-trip domain",
+      "tree": "fd29a5adfbd7d29514326c1d9d37ab536ef7b1bd"
+    },
+    {
+      "commit": "c4e1631423037046eb4f83fc00776e1aaf23ec71",
+      "parents": [
+        "e2987d5bef6824ad385af2ab06de2fd86d951217"
+      ],
+      "subject": "fix(eval): preserve verifier faults as error episodes",
+      "tree": "4f19223015c81b6b98bdecbe0a7a5a3805ac9146"
+    },
+    {
+      "commit": "e2987d5bef6824ad385af2ab06de2fd86d951217",
+      "parents": [
+        "f199520c8fd1a78e9b31e303d23abcfd1ecb1f2c"
+      ],
+      "subject": "Record the migration options, and correct what this session falsified",
+      "tree": "50f1e818f65a1ec1d4deb3d6cbefb97fdf957e05"
+    },
+    {
+      "commit": "f199520c8fd1a78e9b31e303d23abcfd1ecb1f2c",
+      "parents": [
+        "5147a2dfc1915e3d7ee85c50e4831243f40ce5a1"
+      ],
+      "subject": "An id guard that fails closed, without crying wolf",
+      "tree": "dec58d15fd25242184b0bcb923710efeecb6ba68"
+    },
+    {
+      "commit": "5147a2dfc1915e3d7ee85c50e4831243f40ce5a1",
+      "parents": [
+        "c4a580f7c077d3e424bfac62cff75bd7dd023935"
+      ],
+      "subject": "A candidate must not be able to erase its own failing score",
+      "tree": "643290a9788df0d7ea62983443c9566f4cd6b08b"
+    }
+  ],
+  "head": "1afc0805f3de6c2df53d6860b1c53d9abfa4d665",
+  "note": "The packet archive proves a source tree, not a history. This file carries the history the archive cannot: commit hashes, parent ordering and per-commit tree hashes, so the claim that these landed unsquashed and in order is checkable rather than asserted.",
+  "number_oracle": {
+    "caveat": "Rust core::fmt is Grisu3-derived, as is V8's fast path: this is an independent IMPLEMENTATION, not an independent ALGORITHM. The digit COUNT is taken from the foreign renderer and the digits are re-derived by exact ROUND_HALF_EVEN, so a shared shortest-length bug would survive. An exact minimal-length oracle is a ruled, unbuilt cutover gate.",
+    "disagreements_found": "Rust and V8 differ on 6 of 484 boundary patterns, including RFC 8785 Appendix B's 'Round to even' row (Rust 1424953923781206.3 vs RFC ...206.2). Rust emits *a* shortest decimal; ECMA Note 2 requires *the* closest, ties-to-even.",
+    "file_sha256": {
+      "bits.json.gz": "dadeb0adbe8a9f616b499048475263ec0d2cd57911655d09837769463b69a7aa",
+      "gen_oracle.py": "b45be1e9ff7926b1211aaa017646d6bcb22d61c9e3a02477e9650db0623bb6bf",
+      "oracle.js": "d0f23cb1586c79edfa2525cd4df5fc815f8c29f2ef79ff17b60d54cab7418738",
+      "oracle.tsv": "12f48bae2d0c0980acf2a753579a8797f6c5151580a76290cb36ffc2ce853a94",
+      "out.json.gz": "4a3c615e23585fda558520e15fbf2fdbb9dbf9c0e8068bf3b5a2ce1695462da8",
+      "patterns.txt": "aeb7b4f0f797d65de7a1f8da582a62adc33700a938b103e529ad464d6bf0b898",
+      "render.py": "d0f15a512c6ce059649680f85c783160fb94499dff260a5041592661d22dd5ee",
+      "render2.py": "6b1391d1f2929f0b894d68d5eac87450d13486ef4c2509d9c68ed9796313c39b",
+      "t.rs": "7848c178978a54fb6f273b34f8d895ca3d7474d11a5f79217e38fba028de3547",
+      "verify_vs_node.py": "9a9ea1541985493c2b5efd2ef03edad261afd6a402b0c19112c015bd70f5108a"
+    },
+    "purpose": "Foreign-implementation evidence for the ECMA-262 7.1.12.1 rendering used by the v2 canonicalizer. Kept OUT of the package tree so the production implementation stays independent of it, and shipped HERE so the claim is reproducible."
+  },
+  "provenance_version": "traaviis.commit-provenance.v1",
+  "toolchain": {
+    "git": "git version 2.52.0",
+    "node": "v25.2.1",
+    "platform": "Linux 6.18.6-arch1-1 x86_64",
+    "python": "Python 3.14.2 (main, Jan  2 2026, 14:27:39) [GCC 15.2.1 20251112]",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  }
+}
