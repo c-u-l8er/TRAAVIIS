@@ -44,11 +44,10 @@ merely happen to agree. Each task is one ephemeral session against the single
 kernel; the sessions are the per-task thing, and they are the only per-task thing.
 """
 
-import json
 import os
 import tempfile
 
-from . import admission, evalone, substrates
+from . import admission, boundedjson as _bjson, evalone, substrates
 from .substrates import AdmissionError
 
 __all__ = [
@@ -128,34 +127,37 @@ def open_environment(package, engine=None):
             "ENV_MISSING",
             "not a packed environment (no environment.json): %s" % package)
     with open(manifest_path, "rb") as fh:
-        try:
-            head = json.loads(fh.read().decode("utf-8"))
-        except (ValueError, UnicodeDecodeError, RecursionError) as ex:
-            # `open_environment` is *the only door* into a package, so every way
-            # the decoder can refuse these third-party bytes has to land on
-            # `ENV_MALFORMED`. `RecursionError` is a `RuntimeError`, not a
-            # `ValueError`, so a *legal* document nested past the decoder's
-            # stack used to escape this clause and kill the evaluation -- and a
-            # crash before `sub.open_package` means the package was never
-            # admitted *or* refused, which is the one outcome a fail-closed door
-            # is built to exclude. 200 000 nested arrays is 400 kB.
-            #
-            # `UnicodeDecodeError` is a `ValueError` subclass and so already
-            # implied; it is named because it comes from `.decode`, not
-            # `json.loads`.
-            #
-            # Deliberately NOT caught, here and in `_read_member`:
-            #
-            #   TypeError    only a bug in this module can reach it (the
-            #                argument is always the `str` `.decode` returned),
-            #                and a bug in the reader must not be reported as a
-            #                malformed package.
-            #   MemoryError  a fact about the host, not about the bytes -- it
-            #                would refuse the same package on one machine and
-            #                admit it on another. It closes nothing here in any
-            #                case: `fh.read()` has already loaded the file.
-            raise SplitError("ENV_MALFORMED",
-                             "environment.json is not valid JSON: %s" % ex)
+        raw = fh.read()
+    try:
+        head = _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as ex:
+        # `open_environment` is *the only door* into a package, so every way the
+        # boundary can refuse these third-party bytes has to land on
+        # `ENV_MALFORMED`. A crash before `sub.open_package` means the package
+        # was never admitted *or* refused, which is the one outcome a fail-closed
+        # door is built to exclude.
+        #
+        # The clause that stood here enumerated `(ValueError, UnicodeDecodeError,
+        # RecursionError)` -- correct, and arrived at only after `RecursionError`
+        # had escaped twice. It is a single type now because the enumeration
+        # belongs in one place, not once per reader.
+        #
+        # Deliberately NOT caught, here and in `_read_member`:
+        #
+        #   TypeError    only a bug in this module can reach it (the argument is
+        #                always the bytes `fh.read()` returned), and a bug in
+        #                the reader must not be reported as a malformed package.
+        #   MemoryError  a fact about the host, not about the bytes -- it would
+        #                refuse the same package on one machine and admit it on
+        #                another. `MAX_INPUT_BYTES` is the host-independent
+        #                closure for size.
+        #
+        # The read is now outside the `try`, which also fixes a smaller thing:
+        # an `OSError` from `fh.read()` was inside the old `with`-plus-`try` and
+        # could never have been the malformed-JSON it would have been reported
+        # as, had the clause been one line wider.
+        raise SplitError("ENV_MALFORMED",
+                         "environment.json is not valid JSON: %s" % ex)
     profile = head.get("substrate_profile")
     sub = substrates.for_profile(profile)
     if profile not in _EVALUABLE:
@@ -454,12 +456,13 @@ def _index(manifest, split, episodes, runtime_context=None):
 def write_evaluation(report, path):
     """Write the index atomically (temp sibling + one rename). Returns `path`."""
     parent = os.path.dirname(os.path.abspath(path)) or "."
+    data = _bjson.dump_json_bounded(report, indent=2, sort_keys=True,
+                                    ensure_ascii=False, trailing_newline=True)
     os.makedirs(parent, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".trvs-eval-", dir=parent)
     try:
         with os.fdopen(fd, "wb") as fh:
-            fh.write((json.dumps(report, indent=2, sort_keys=True,
-                                 ensure_ascii=False) + "\n").encode("utf-8"))
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
@@ -481,12 +484,13 @@ def _read_member(root, ref, what):
     if not os.path.isfile(target) or os.path.islink(target):
         raise SplitError("ENV_MEMBER", "%s not found in package: %s" % (what, ref))
     with open(target, "rb") as fh:
-        try:
-            return json.loads(fh.read().decode("utf-8"))
-        except (ValueError, UnicodeDecodeError, RecursionError) as ex:
-            # A member document out of somebody else's package: same clause and
-            # same reasoning as `open_environment` above. `ENV_MEMBER` already
-            # covers "this reference does not resolve to a document I can
-            # read", and an undecodably-deep member is one more way of being
-            # exactly that -- not a new kind of wrongness.
-            raise SplitError("ENV_MEMBER", "%s is not valid JSON: %s" % (what, ex))
+        raw = fh.read()
+    try:
+        return _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as ex:
+        # A member document out of somebody else's package: same boundary and
+        # same reasoning as `open_environment` above. `ENV_MEMBER` already
+        # covers "this reference does not resolve to a document I can read", and
+        # an out-of-bounds member is one more way of being exactly that -- not a
+        # new kind of wrongness, so not a new code.
+        raise SplitError("ENV_MEMBER", "%s is not valid JSON: %s" % (what, ex))

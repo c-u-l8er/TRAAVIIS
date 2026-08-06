@@ -1683,9 +1683,17 @@ def test_m30_the_transport_added_no_rung_no_verb_and_no_second_pipeline():
 
     # The CLI drives an adapter; the adapter drives the substrate. A command that
     # constructed one itself would make the CLI a third transport.
-    cli_src = inspect.getsource(cli)
-    assert "EpisodeKernelV1" not in cli_src
-    assert "kernel" not in cli_src.lower()
+    #
+    # Read off the parse tree, like every other claim in this law. It used to be
+    # `"kernel" not in inspect.getsource(cli).lower()` -- a substring scan over
+    # the whole file, prose included, which is the failure mode this battery has
+    # now hit six times: any comment mentioning the kernel broke it, and a
+    # genuine `kernel` reference hidden inside a longer identifier would not.
+    # `_code_identifiers` is already used three lines below for exactly this
+    # kind of claim; the two are now consistent.
+    cli_names = _code_identifiers(inspect.getsource(cli))
+    assert "EpisodeKernelV1" not in cli_names
+    assert "kernel" not in cli_names
 
     # No second pipeline. This module computes no reward, builds no receipt,
     # writes no bundle, derives no identity, and constructs no RunResult.

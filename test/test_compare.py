@@ -585,13 +585,32 @@ def test_c19_the_written_report_is_atomic_and_complete():
 
         # A write that dies mid-stream leaves no stub to be mistaken for a
         # comparison, and no temp file behind either.
+        #
+        # The failure is injected at `fdopen` rather than at `json.dump`, which
+        # is where it used to go: the report is now serialized whole, in memory,
+        # *before* the temp file is created, so `json.dump` is no longer in the
+        # path at all. That reordering is deliberate (a refusal must not be able
+        # to leave a half-written member behind), and it means the honest place
+        # to simulate a dying disk is the write itself. The law is unchanged --
+        # no stub, no temp file -- only the seam it pokes.
         target = os.path.join(out_dir, "doomed.json")
-        original = C.json.dump
+        original = C.os.fdopen
 
-        def boom(*a, **kw):
-            raise OSError("disk full")
+        class _DoomedFile:
+            def __init__(self, fd):
+                self._fd = fd
 
-        C.json.dump = boom
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                os.close(self._fd)
+                return False
+
+            def write(self, _data):
+                raise OSError("disk full")
+
+        C.os.fdopen = lambda fd, *a, **kw: _DoomedFile(fd)
         try:
             C.write_comparison(report, target)
         except OSError:
@@ -599,7 +618,7 @@ def test_c19_the_written_report_is_atomic_and_complete():
         else:
             raise AssertionError("a failed write reported success")
         finally:
-            C.json.dump = original
+            C.os.fdopen = original
         assert not os.path.exists(target)
         assert sorted(os.listdir(out_dir)) == ["comparison.json"], \
             os.listdir(out_dir)

@@ -45,7 +45,6 @@ GPT-5.6 closure rulings implemented here:
 """
 
 import hashlib
-import json
 import os
 import shutil
 import stat
@@ -54,7 +53,7 @@ import tempfile
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from . import identity
+from . import boundedjson as _bjson, identity
 from .paths import safe_join
 
 __all__ = ["run_agent", "RunResult", "TRACE_VERSION", "RUNNER_PROFILE"]
@@ -300,8 +299,8 @@ def run_agent(
             with open(rp, "rb") as fh:
                 result_bytes = fh.read()
             try:
-                result_obj = json.loads(result_bytes.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError, RecursionError):
+                result_obj = _bjson.load_json_bounded(result_bytes)
+            except _bjson.BoundedJsonError:
                 # malformed → orchestrator scores as fail.
                 #
                 # These are the candidate's own bytes, and §10a already rules on
@@ -312,9 +311,13 @@ def run_agent(
                 # cannot read, so a candidate that crashes its evaluator has
                 # erased the bad score rather than earned a good one.
                 #
-                # The clause used to name only the first two, which is the whole
-                # of what a *hand-written* malformed file raises but not the
-                # whole of what `json.loads` raises:
+                # The clause used to name only `ValueError` and
+                # `UnicodeDecodeError`, which is the whole of what a
+                # *hand-written* malformed file raises but not the whole of what
+                # `json.loads` raises. It now names one type, because the
+                # enumeration below belongs in `boundedjson` -- stated once --
+                # rather than once per reader, which is how three readers came
+                # to hold three different versions of it:
                 #
                 #   ValueError          `json.JSONDecodeError` — a syntax error;
                 #                       also the >4300-digit integer refusal

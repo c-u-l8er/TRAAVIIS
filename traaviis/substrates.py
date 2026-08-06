@@ -28,10 +28,9 @@ always *recomputed from bytes* -- a declared id is checked against the
 recomputation, never trusted.
 """
 
-import json
 import os
 
-from . import identity, snapshot as _snapshot
+from . import boundedjson as _bjson, identity, snapshot as _snapshot
 from .paths import PathError, safe_relposix
 
 __all__ = [
@@ -180,8 +179,16 @@ def _verify_canonical_manifest(manifest):
 def _read_json(path, code, what):
     data = _read_bytes(path, code, what)
     try:
-        return json.loads(data.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as ex:
+        return _bjson.load_json_bounded(data)
+    except _bjson.BoundedJsonError as ex:
+        # These bytes are third-party -- this is the substrate reading somebody
+        # else's packed environment -- so every way they can be refused has to
+        # land on this module's own code rather than escaping as a crash. The
+        # clause this replaced named `(ValueError, UnicodeDecodeError)` and so
+        # missed `RecursionError`, which is a `RuntimeError`: a legal member
+        # nested 200 000 deep (400 kB) killed admission instead of failing it,
+        # and a package that crashes the admitter was never admitted *or*
+        # refused, which is the one outcome a fail-closed door excludes.
         raise AdmissionError(code, "%s is not valid JSON: %s" % (what, ex))
 
 

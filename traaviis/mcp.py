@@ -195,6 +195,7 @@ import json
 import os
 import threading
 
+from . import boundedjson as _bjson
 from . import kernel as _kernel
 from . import ors as _ors
 from . import substrates as _substrates
@@ -886,8 +887,17 @@ class McpAdapterV1(object):
             raise self._no_resource(uri)
         try:
             with open(path, "rb") as fh:
-                receipt = json.loads(fh.read().decode("utf-8"))
-        except (OSError, ValueError) as exc:
+                raw = fh.read()
+            receipt = _bjson.load_json_bounded(raw)
+        except (OSError, _bjson.BoundedJsonError) as exc:
+            # `OSError` and a bounds refusal share one code here, unlike in
+            # `comparison._read_receipt`, because this is a *resource read* and
+            # the client is told the same thing either way: the URI resolves to
+            # something this server cannot serve. The clause caught
+            # `(OSError, ValueError)`, so a deep receipt raised `RecursionError`
+            # out of a resource read and killed the serve loop -- a published
+            # episode being unreadable must degrade to a typed error, never to a
+            # dead server, since the other episodes are still fine.
             raise McpError(ERR_INTERNAL,
                            "episode %s is published but unreadable: %s"
                            % (episode_id, exc))

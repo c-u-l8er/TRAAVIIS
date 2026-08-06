@@ -45,6 +45,8 @@ import re
 import shutil
 import tempfile
 
+from . import boundedjson as _bjson
+
 __all__ = [
     "ScaffoldError",
     "ENV_MANIFEST_VERSION",
@@ -910,8 +912,15 @@ def identity_violations(files):
                                   % (literal, prefix)))
         if path.endswith(".json"):
             try:
-                doc = json.loads(text)
-            except ValueError:
+                doc = _bjson.load_json_bounded(text)
+            except _bjson.BoundedJsonError:
+                # A template audit, so this is the mildest site in the registry:
+                # nothing is admitted or scored here, an unreadable template is
+                # simply reported as one. It routes through the boundary anyway
+                # because `except ValueError` alone let `RecursionError` through,
+                # and `trvs init` dying on a deep template is still `trvs init`
+                # dying -- a scaffold that crashes the auditor has skipped the
+                # id-literal audit rather than passed it.
                 out.append((path, "not valid JSON"))
                 continue
             for key in _walk_keys(doc):

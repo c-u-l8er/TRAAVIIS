@@ -36,13 +36,12 @@ content-addressed ones here: that substitution is the whole point of packing,
 and it is why `init` was right not to invent them.
 """
 
-import json
 import os
 import shutil
 import stat
 import tempfile
 
-from . import bundle as _bundle, identity, substrates
+from . import boundedjson as _bjson, bundle as _bundle, identity, substrates
 from .paths import PathError, safe_relposix
 from .substrates import AdmissionError
 
@@ -66,7 +65,16 @@ class PackError(AdmissionError):
 
 
 def _doc(obj):
-    return (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    """The canonical presentation bytes of one package member.
+
+    `sort_keys=False` is load-bearing and must stay that way: these exact bytes
+    are sha256'd per-member into the bundle manifest, and therefore into
+    `bundle-`. Re-ordering keys -- or compacting the indent -- would move every
+    published package id in the world. The bounds check added here is precisely
+    a check: it can refuse, but it cannot alter a byte of what it admits.
+    """
+    return _bjson.dump_json_bounded(obj, indent=2, sort_keys=False,
+                                    ensure_ascii=False, trailing_newline=True)
 
 
 def _read_json(path, code, what):
@@ -75,8 +83,14 @@ def _read_json(path, code, what):
     with open(path, "rb") as fh:
         raw = fh.read()
     try:
-        return json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as ex:
+        return _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as ex:
+        # One clause, because `load_json_bounded` is total: every way these
+        # bytes can fail to be an in-bounds JSON document arrives as this one
+        # type. That is the whole point of routing through the boundary -- the
+        # clause this replaced named `(ValueError, UnicodeDecodeError)` and so
+        # let a `RecursionError` through, which is a `RuntimeError` and killed
+        # `pack` outright on a legal-but-deep member.
         raise PackError(code, "%s is not valid JSON: %s" % (what, ex))
 
 

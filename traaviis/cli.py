@@ -31,7 +31,7 @@ import shutil
 import sys
 import tempfile
 
-from . import __version__, engine as _engine
+from . import __version__, boundedjson as _bjson, engine as _engine
 from . import scaffold as _scaffold
 from .paths import PathError, safe_relposix
 
@@ -454,10 +454,14 @@ def _load_json(path, what):
     if not os.path.isfile(path):
         sys.stderr.write("trvs: bundle is missing %s: %s\n" % (what, path))
         raise SystemExit(EXIT_UNAVAILABLE)
+    # Minimal change: read bytes, decode at the shared boundary. The clause was
+    # `except ValueError`, which missed `RecursionError` *and* the lazy
+    # `UnicodeDecodeError` that text-mode `open` raises from inside `json.load`.
+    with open(path, "rb") as fh:
+        raw = fh.read()
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except ValueError as exc:
+        return _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as exc:
         sys.stderr.write("trvs: %s is not valid JSON: %s\n" % (what, exc))
         raise SystemExit(EXIT_UNAVAILABLE)
 

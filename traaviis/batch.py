@@ -41,13 +41,12 @@ Three properties are what make the matrix mean anything:
   fabricated relation -- and the rest of the matrix still runs.
 """
 
-import json
 import os
 import re
 import shutil
 import tempfile
 
-from . import comparison, evalsplit
+from . import boundedjson as _bjson, comparison, evalsplit
 from .substrates import AdmissionError
 
 __all__ = [
@@ -172,46 +171,42 @@ def load_candidate_set(path):
     """Read and validate a `CandidateSetV1` from disk."""
     try:
         with open(path, "rb") as fh:
-            doc = json.loads(fh.read().decode("utf-8"))
+            raw = fh.read()
     except OSError as ex:
         raise BatchError("CANDIDATE_SET_UNREADABLE",
                          "could not read candidate set: %s" % ex)
-    except (ValueError, UnicodeDecodeError, RecursionError) as ex:
-        # Every way the decoder can refuse these bytes lands on one code.
-        #
-        #   ValueError          `json.JSONDecodeError`, and the >4300-digit
-        #                       integer refusal (CVE-2020-10735).
-        #   UnicodeDecodeError  non-UTF-8 bytes out of `.decode`. A `ValueError`
-        #                       subclass, named because it comes from a
-        #                       different call than the rest.
-        #   RecursionError      a *legal* document nested past the decoder's
-        #                       stack. It is a `RuntimeError`, so the clause
-        #                       used to let it through: measured, a 400 kB file
-        #                       of nested arrays killed `load_candidate_set`
-        #                       outright instead of refusing it.
+    try:
+        doc = _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as ex:
+        # Every way these bytes can fail to be an in-bounds JSON document lands
+        # on one code, and the enumeration of *how* they can fail now lives in
+        # `boundedjson` rather than being restated here. This clause previously
+        # named `(ValueError, UnicodeDecodeError, RecursionError)` and was
+        # correct; it is routed through the shared boundary anyway, because the
+        # defect being closed is not any single clause being wrong but there
+        # being N independent clauses, each an independent chance to enumerate
+        # the decoder's failure modes slightly wrong. Three rounds of this
+        # tree's history say they do get it wrong.
         #
         # Unlike `ors_server._body` and `bundle.read_manifest`, this file is not
         # third-party: an operator writes (or generates) their own candidate
         # set, so there is no trust boundary here and nothing an adversary
-        # gains. The reason to catch it anyway is B1 -- *the whole plan is
-        # admitted before anything runs.* B1 is a claim about the shape of the
-        # failure, not only its timing: the operator is promised a named
-        # refusal naming the file, and an untyped `RecursionError` traceback is
-        # not that. The code is unchanged because this is not a new kind of
-        # wrongness, only a new way of reaching the existing one.
+        # gains. The reason to refuse in a typed way anyway is B1 -- *the whole
+        # plan is admitted before anything runs.* B1 is a claim about the shape
+        # of the failure, not only its timing: the operator is promised a named
+        # refusal naming the file, and an untyped traceback is not that.
         #
-        # Deliberately NOT caught:
+        # Deliberately NOT caught, here or at the boundary:
         #
-        #   TypeError    `json.loads` raises it only for a non-`str`/`bytes`
-        #                argument. The argument is the result of `.decode`, so
-        #                it is always a `str`; the only way to reach it is a bug
-        #                in this function, and a bug here must stay loud rather
-        #                than be reported as the operator's malformed file.
+        #   TypeError    reachable only through a bug in the reader (the
+        #                argument is always the bytes `fh.read()` returned), and
+        #                a bug here must stay loud rather than be reported as
+        #                the operator's malformed file.
         #   MemoryError  whether a document exhausts memory is a fact about the
         #                host, not about the bytes. Catching it would refuse the
         #                same candidate set on one machine and admit it on
-        #                another, and it would close nothing anyway: `fh.read()`
-        #                above has already loaded the whole file.
+        #                another. The host-independent closure for size is
+        #                `MAX_INPUT_BYTES`, which is a fact about the bytes.
         raise BatchError("CANDIDATE_SET_MALFORMED",
                          "candidate set is not valid JSON: %s" % ex)
     return validate_candidate_set(doc)
@@ -477,14 +472,21 @@ def _runtime_context(registry):
 
 
 def _write_json(document, path):
-    """Write one member atomically inside the staging tree."""
+    """Write one member atomically inside the staging tree.
+
+    Serialized before `mkstemp`, so a document that breaks a bound is refused
+    with no temp file in existence. The `json.dumps(...)` this replaced already
+    built the whole string before opening anything, so no bytes move and the
+    only change is that the bounds are now proven first.
+    """
     parent = os.path.dirname(path) or "."
+    data = _bjson.dump_json_bounded(document, indent=2, sort_keys=True,
+                                    ensure_ascii=False, trailing_newline=True)
     os.makedirs(parent, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".trvs-batch-member-", dir=parent)
     try:
         with os.fdopen(fd, "wb") as fh:
-            fh.write((json.dumps(document, indent=2, sort_keys=True,
-                                 ensure_ascii=False) + "\n").encode("utf-8"))
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)

@@ -33,11 +33,11 @@ Two rules the reward relation must not break:
   relation rather than folded into the ranking.
 """
 
-import json
 import os
 import tempfile
 from typing import Any, Dict, Mapping, Optional
 
+from . import boundedjson as _bjson
 from .substrates import AdmissionError
 
 __all__ = [
@@ -113,9 +113,22 @@ def _replay(bundle_dir, extra_verifiers, side):
 def _read_receipt(bundle_dir, side):
     path = os.path.join(bundle_dir, "receipt.json")
     try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (OSError, ValueError) as ex:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as ex:
+        raise ComparisonError(
+            "EPISODE_UNAVAILABLE",
+            "%s: could not read sealed receipt: %s" % (side, ex))
+    try:
+        return _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as ex:
+        # Split from the `OSError` above rather than sharing one clause, because
+        # they are different facts: the first is "this file would not open", the
+        # second is "these bytes are not an in-bounds document". The old clause
+        # caught only `(OSError, ValueError)`, so a deep receipt raised
+        # `RecursionError` straight through `compare` -- and `compare` refusing
+        # to answer is exactly what a candidate with the worse score wants,
+        # since an unanswerable comparison scores nobody.
         raise ComparisonError(
             "EPISODE_UNAVAILABLE",
             "%s: could not read sealed receipt: %s" % (side, ex))
@@ -289,15 +302,27 @@ def write_comparison(comparison, path):
     Same discipline as every other artifact writer here: a temp file in the
     destination directory, then `os.replace`. A reader never sees a partial
     comparison, and a failed write leaves no stub behind to be mistaken for one.
+
+    The document is serialized *whole, in memory, before the temp file is
+    created*. That ordering is the point: `json.dump` writes as it walks, so a
+    document it cannot finish -- one too deep, or carrying a value it cannot
+    encode -- used to leave a truncated `.comparison-XXXX` behind in the
+    destination directory, and the `unlink` in the handler only ran for
+    exceptions it saw. Now a refusal happens with no descriptor open at all, so
+    there is nothing to clean up and nothing to half-write.
+
+    `ensure_ascii` is left at its default `True`, matching what `json.dump`
+    emitted here before, so the bytes of an accepted comparison are unchanged.
     """
     path = os.path.abspath(path)
     directory = os.path.dirname(path) or "."
+    data = _bjson.dump_json_bounded(comparison, indent=2, sort_keys=True,
+                                    ensure_ascii=True, trailing_newline=True)
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".comparison-", dir=directory)
     try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(comparison, fh, indent=2, sort_keys=True)
-            fh.write("\n")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         os.replace(tmp, path)
     except BaseException:
         try:

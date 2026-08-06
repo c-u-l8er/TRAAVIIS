@@ -203,7 +203,7 @@ import json
 import sys
 import threading
 
-from . import mcp as _mcp
+from . import boundedjson as _bjson, mcp as _mcp
 
 __all__ = [
     "CANCELLED",
@@ -378,11 +378,22 @@ class McpStdioServer(object):
     def _decode(self, raw):
         """Returns `(message, error_response)`; exactly one of them is not None."""
         try:
-            return json.loads(raw.decode("utf-8")), None
-        except (ValueError, UnicodeDecodeError) as exc:
+            return _bjson.load_json_bounded(raw), None
+        except _bjson.BoundedJsonError as exc:
             # A parse failure has no id to correlate against — JSON-RPC says the
             # id is null in exactly this case, and guessing one would attach an
             # error to a request that may not exist.
+            #
+            # Every bound maps onto `ERR_PARSE`, deliberately. An over-deep or
+            # oversized message is not a new kind of wrongness that deserves a
+            # new code — it is the same "I could not read your message", and a
+            # peer that cannot be told which bound it broke can still be told
+            # the message was unreadable. The clause caught `(ValueError,
+            # UnicodeDecodeError)` before, so a deep-but-legal line raised
+            # `RecursionError` out of `handle_line` and killed the stdio serve
+            # loop: one hostile line ended the session for every subsequent
+            # request, which is a denial of service reachable by anyone who can
+            # write 400 kB of brackets.
             return None, _mcp._error_response(
                 None, _mcp.ERR_PARSE, "Parse error: %s" % exc)
 

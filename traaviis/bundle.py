@@ -36,7 +36,6 @@ one would let a package name bytes it does not carry.
 """
 
 import hashlib
-import json
 import os
 import shutil
 import stat
@@ -44,7 +43,7 @@ import tarfile
 import tempfile
 import zipfile
 
-from . import identity
+from . import boundedjson as _bjson, identity
 from .paths import PathError, safe_relposix
 from .substrates import AdmissionError
 
@@ -263,37 +262,33 @@ def read_manifest(root):
     with open(path, "rb") as fh:
         raw = fh.read()
     try:
-        doc = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, RecursionError) as ex:
+        doc = _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as ex:
         # These bytes arrived inside somebody else's package -- the same trust
-        # boundary `ors_server._body` sits on. Every way the decoder can refuse
-        # them has to land on `BUNDLE_MALFORMED`, because this function is the
-        # door: `verify_bundle` calls it before `verify_tree`, so a manifest
-        # that crashes the reader has skipped closure verification entirely
-        # rather than failed it. An untyped crash is also indistinguishable to a
+        # boundary `ors_server._body` sits on. Every way they can be refused has
+        # to land on `BUNDLE_MALFORMED`, because this function is the door:
+        # `verify_bundle` calls it before `verify_tree`, so a manifest that
+        # crashes the reader has skipped closure verification entirely rather
+        # than failed it. An untyped crash is also indistinguishable to a
         # consumer from "the verifier is broken", which is exactly the reading a
         # tampered package would like to earn.
         #
-        #   ValueError          `json.JSONDecodeError`, and the >4300-digit
-        #                       integer refusal (CVE-2020-10735).
-        #   UnicodeDecodeError  non-UTF-8 bytes out of `.decode`; a `ValueError`
-        #                       subclass, named because it comes from a
-        #                       different call than the rest.
-        #   RecursionError      a *legal* document nested past the decoder's
-        #                       stack, and a `RuntimeError`, so the clause used
-        #                       to let it through. 200 000 nested arrays is
-        #                       400 kB -- an ordinary-looking member.
+        # The clause here enumerated `(ValueError, UnicodeDecodeError,
+        # RecursionError)`. It is one type now, so that the enumeration cannot
+        # drift between this reader and the `environment.json` one below -- the
+        # two were the same clause copied, and copies are how three of these
+        # came to be wrong at once.
         #
-        # Deliberately NOT caught, at this site and the `environment.json` one
-        # below:
+        # Deliberately NOT caught, at this site and the one below:
         #
         #   TypeError    reachable only through a bug in this module, since the
-        #                argument is always the `str` `.decode` returned. A bug
-        #                in the verifier must not be reported as a bad package.
+        #                argument is always the bytes `fh.read()` returned. A
+        #                bug in the verifier must not be reported as a bad
+        #                package.
         #   MemoryError  a fact about the host, not about the bytes: catching it
         #                would refuse the same package on one machine and admit
-        #                it on another. It would close nothing here anyway --
-        #                `fh.read()` above has already loaded the file.
+        #                it on another. `MAX_INPUT_BYTES` is the closure for
+        #                size, and it is a fact about the bytes.
         raise BundleError("BUNDLE_MALFORMED",
                           "%s is not valid JSON: %s" % (MANIFEST_NAME, ex))
     return _validate_manifest(doc)
@@ -381,17 +376,18 @@ def verify_bundle(root, *, engine=None, environment=True):
             "the package carries no environment.json, so the env- it claims "
             "cannot be re-derived")
     with open(env_doc_path, "rb") as fh:
-        try:
-            env_doc = json.loads(fh.read().decode("utf-8"))
-        except (ValueError, UnicodeDecodeError, RecursionError) as ex:
-            # Same clause, same reasoning as `read_manifest` above (including
-            # what is deliberately left uncaught). `RecursionError` matters more
-            # here, not less: `verify_tree` has already passed by this point, so
-            # an untyped crash reads as the verifier dying *after* declaring the
-            # package closed -- a package that could never be pronounced on
-            # rather than one that was refused.
-            raise BundleError("BUNDLE_MALFORMED",
-                              "environment.json is not valid JSON: %s" % ex)
+        env_raw = fh.read()
+    try:
+        env_doc = _bjson.load_json_bounded(env_raw)
+    except _bjson.BoundedJsonError as ex:
+        # Same boundary, same reasoning as `read_manifest` above (including what
+        # is deliberately left uncaught). An out-of-bounds document matters more
+        # here, not less: `verify_tree` has already passed by this point, so an
+        # untyped crash reads as the verifier dying *after* declaring the
+        # package closed -- a package that could never be pronounced on rather
+        # than one that was refused.
+        raise BundleError("BUNDLE_MALFORMED",
+                          "environment.json is not valid JSON: %s" % ex)
     profile = env_doc.get("substrate_profile")
     sub = substrates.for_profile(profile)
     reopened = sub.reopen_package(root, engine=engine)

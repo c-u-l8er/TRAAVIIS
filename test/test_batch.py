@@ -190,7 +190,21 @@ def _caught_by(fn, needle):
             continue
         caught = handler.type
         parts = caught.elts if isinstance(caught, ast.Tuple) else [caught]
-        return {n.id for n in parts}
+        # Rendered as dotted names, because a caught exception is no longer
+        # always a bare `Name`: routing these readers through the shared
+        # boundary made the clause `_bjson.BoundedJsonError`, which is an
+        # `Attribute`. The helper used to read `.id` off every element and died
+        # outright on the first qualified one -- a crash, not a red law, so it
+        # would have been read as "the battery is broken" rather than "the
+        # guard changed shape".
+        def _name(node):
+            if isinstance(node, ast.Attribute):
+                return "%s.%s" % (_name(node.value), node.attr)
+            if isinstance(node, ast.Name):
+                return node.id
+            return ast.dump(node)
+
+        return {_name(n) for n in parts}
     raise AssertionError("no except clause in %s mentions %r"
                          % (fn.__name__, needle))
 
@@ -1113,16 +1127,37 @@ def test_b31_an_undecodable_candidate_set_is_a_typed_refusal():
         # a `ValueError`, so naming `ValueError` never covered it.
         assert not issubclass(RecursionError, ValueError)
 
-        # And the clause is exactly three names. `MemoryError` is deliberately
-        # absent: whether a document exhausts memory is a fact about the *host*,
-        # so catching it would refuse the same file on one machine and admit it
-        # on another. `TypeError` is absent because `json.loads` raises it only
-        # for a non-`str` argument, which only a bug in this module can produce
-        # -- a bug in the reader must not be reported as the operator's bad
-        # file. Read off the parse tree rather than the text, so a comment
-        # cannot satisfy it.
-        assert _caught_by(B.load_candidate_set, "is not valid JSON") == \
-            {"ValueError", "UnicodeDecodeError", "RecursionError"}
+        # The clause is exactly one name now, and that is the point of the
+        # change rather than a weakening of this law. It used to enumerate
+        # `{ValueError, UnicodeDecodeError, RecursionError}` here, and an
+        # identical enumeration was copied into six other readers; three of
+        # those copies were wrong at the same time. The enumeration now lives in
+        # `boundedjson` and every reader names the one type it produces.
+        #
+        # `MemoryError` is still deliberately absent, and still for the reason
+        # it always was: whether a document exhausts memory is a fact about the
+        # *host*, so catching it would refuse the same file on one machine and
+        # admit it on another. `TypeError` is still absent because only a bug in
+        # the reader can produce it, and a bug must not be reported as the
+        # operator's bad file. Both absences are asserted, not just described.
+        #
+        # Read off the parse tree rather than the text, so a comment cannot
+        # satisfy it.
+        caught = _caught_by(B.load_candidate_set, "is not valid JSON")
+        assert caught == {"_bjson.BoundedJsonError"}, caught
+        assert "MemoryError" not in caught and "TypeError" not in caught
+
+        # And the one type really does cover the three the clause used to name,
+        # which is what makes the narrowing safe rather than merely tidier.
+        import traaviis.boundedjson as _BJ
+        assert issubclass(_BJ.BoundedJsonError, ValueError)
+        for payload in (b"{", b'"\xff"', ("[" * 200000).encode()):
+            try:
+                _BJ.load_json_bounded(payload)
+            except _BJ.BoundedJsonError:
+                pass
+            else:
+                raise AssertionError("the boundary accepted %r" % payload[:8])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -33,7 +33,6 @@ self-consistent — reporting one line per closure/artifacts/signal/reward/episo
 
 import errno
 import hashlib
-import json
 import os
 import shutil
 import tempfile
@@ -44,6 +43,7 @@ from . import (admission, execfacts, identity, patchapply, reward as _reward,
 from .evalone import (EVALUATION_RUN_VERSION, VERIFIER_EVIDENCE_VERSION,
                       build_receipt_v1, resolve_signal,
                       _evidence_object, _evidence_ref)
+from . import boundedjson as _bjson
 from .paths import PathError, safe_join, safe_relposix
 from .vcontext import VerifierContextV1, VerifierResult
 
@@ -98,10 +98,43 @@ class EpisodeBundleConflict(EpisodeBundleError):
 
 # --------------------------------------------------------------------- writing
 def _write_json(path: str, obj: Any) -> None:
+    """Write one bundle member, refusing *before* the directory is created.
+
+    This is the site with no exception handler at all, and it did not need one
+    to lose an episode. ``json.dump(..., indent=2)`` is O(depth^2) in output
+    size, because each level of nesting contributes its own indent to every line
+    beneath it. Measured: a depth-5 000 document of 10 kB produced **50 080 218
+    bytes** and exited 0. At depth 45 000 / 90 kB the projection is **4 050 180
+    003 bytes**; that run never completed, so nothing persisted -- the identical
+    grade-erasure payoff as a crash, reached without raising anything. No widened
+    `except` clause addresses that, because it is not an exception.
+
+    `MAX_DEPTH` refuses the document at 128 levels, so the expansion is never
+    generated rather than being generated and then regretted.
+
+    Two orderings are load-bearing:
+
+    - the bytes are produced whole, in memory, before `open`. `json.dump` writes
+      as it walks, so a member it could not finish left a **truncated file at
+      the member's real path** -- not a temp name, the real one. A half-written
+      member is worse than a crash: a crash is legible as a crash, whereas a
+      truncated member is a document that gets read back, fails to parse, and is
+      attributed to whoever submitted it.
+    - `makedirs` happens after the refusal too, so a refused bundle does not
+      leave empty evidence directories standing as though a member were coming.
+
+    `indent`, `sort_keys` and `ensure_ascii` are unchanged. Bundle members are
+    digest-checked, but every one of those digests is recomputed from the
+    *parsed object* (`identity.canonical_bytes` via `_sha256_json`,
+    `_evidence_ref`), never from these file bytes -- so compacting here would in
+    fact have been safe. It is not done anyway: an unnecessary byte change to a
+    persisted artifact is a risk taken for no benefit.
+    """
+    data = _bjson.dump_json_bounded(obj, indent=2, sort_keys=True,
+                                    ensure_ascii=False, trailing_newline=True)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, indent=2, ensure_ascii=False, sort_keys=True)
-        fh.write("\n")
+    with open(path, "wb") as fh:
+        fh.write(data)
 
 
 def _write_bytes(path: str, data: bytes) -> None:
@@ -347,10 +380,21 @@ def _member(root_real: str, ref: str, what: str) -> str:
 def _load_json(path: str, what: str) -> Any:
     if not os.path.isfile(path):
         raise EpisodeBundleError("bundle is missing %s: %s" % (what, path))
+    with open(path, "rb") as fh:
+        raw = fh.read()
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except ValueError as exc:
+        return _bjson.load_json_bounded(raw)
+    except _bjson.BoundedJsonError as exc:
+        # The narrowest clause in the tree before this: `except ValueError`
+        # alone, which missed both `RecursionError` (a `RuntimeError`) and the
+        # `UnicodeDecodeError` that `open(..., encoding="utf-8")` raised lazily
+        # from inside `json.load` on non-UTF-8 bytes. Reading is now done in
+        # binary and decoded at the boundary, so where the decode failure comes
+        # from is no longer something this function has to know.
+        #
+        # It matters most here of anywhere: `verify_episode_bundle` calls this
+        # to re-read the members it is about to pronounce on, so a member that
+        # crashed the reader skipped verification rather than failing it.
         raise EpisodeBundleError("%s is not valid JSON: %s" % (what, exc))
 
 

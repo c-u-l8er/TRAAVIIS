@@ -251,7 +251,21 @@ def _caught_by(fn, needle):
             continue
         caught = handler.type
         parts = caught.elts if isinstance(caught, ast.Tuple) else [caught]
-        return {n.id for n in parts}
+        # Rendered as dotted names, because a caught exception is no longer
+        # always a bare `Name`: routing these readers through the shared
+        # boundary made the clause `_bjson.BoundedJsonError`, which is an
+        # `Attribute`. The helper used to read `.id` off every element and died
+        # outright on the first qualified one -- a crash, not a red law, so it
+        # would have been read as "the battery is broken" rather than "the
+        # guard changed shape".
+        def _name(node):
+            if isinstance(node, ast.Attribute):
+                return "%s.%s" % (_name(node.value), node.attr)
+            if isinstance(node, ast.Name):
+                return node.id
+            return ast.dump(node)
+
+        return {_name(n) for n in parts}
     raise AssertionError("no except clause in %s mentions %r"
                          % (fn.__name__, needle))
 
@@ -1433,21 +1447,28 @@ def test_d41_a_package_the_decoder_cannot_decode_is_a_bad_package():
     _refuses(lambda: ES._read_member(root, "environment.json", "task document"),
              "ENV_MEMBER", "d41-member")
 
-    # Every clause is exactly the three decoder failures, read off the parse
-    # tree so that a comment naming an exception cannot satisfy the law.
+    # Every clause is exactly one type now, read off the parse tree so that a
+    # comment naming an exception cannot satisfy the law.
     #
-    # `MemoryError` is deliberately absent from all four: whether a document
-    # exhausts memory is a fact about the *host*, so catching it would refuse
-    # the same package on one machine and admit it on another -- a
+    # These four used to enumerate `{ValueError, UnicodeDecodeError,
+    # RecursionError}` each, by copy. Four copies of one enumeration is four
+    # chances to get it wrong, and this tree has already spent three of them --
+    # so the enumeration moved into `boundedjson` and these readers name the
+    # single type it raises. That all four agree is now structural rather than
+    # coincidental.
+    #
+    # `MemoryError` is still deliberately absent from all four: whether a
+    # document exhausts memory is a fact about the *host*, so catching it would
+    # refuse the same package on one machine and admit it on another -- a
     # host-dependent verdict on a portable artifact is worse than a visible
-    # crash. `TypeError` is absent because `json.loads` raises it only for a
-    # non-`str` argument, which only a bug in the reader can produce; a bug in
-    # the verifier must never be reported as a bad package.
-    want = {"ValueError", "UnicodeDecodeError", "RecursionError"}
+    # crash. `TypeError` is absent because only a bug in the reader can produce
+    # it, and a bug in the verifier must never be reported as a bad package.
+    want = {"_bjson.BoundedJsonError"}
     for fn in (BD.read_manifest, BD.verify_bundle,
                ES.open_environment, ES._read_member):
         got = _caught_by(fn, "is not valid JSON")
         assert got == want, (fn.__name__, got)
+        assert "MemoryError" not in got and "TypeError" not in got, fn.__name__
 
 
 def test_d40_the_earlier_laws_and_the_packet_gates_are_untouched():

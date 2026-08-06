@@ -39,6 +39,7 @@ import threading
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import boundedjson as _bjson
 from . import ors as _ors
 from . import kernel as _kernel
 from . import substrates as _substrates
@@ -160,14 +161,19 @@ def make_handler(adapter, *, log=None):
                 return {}
             raw = self.rfile.read(length)
             try:
-                return json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError, RecursionError) as exc:
-                # `RecursionError` is the one that is easy to miss: it is a
+                return _bjson.load_json_bounded(raw)
+            except _bjson.BoundedJsonError as exc:
+                # `RecursionError` is the one that was easy to miss: it is a
                 # `RuntimeError`, not a `ValueError`, so a *legal* JSON document
                 # nested past the decoder's stack used to escape this handler
                 # entirely, killing the request thread and dropping the
                 # connection with no response at all. `MAX_BODY_BYTES` does not
                 # bound it — 200 000 nested arrays is 400 kB, well inside 8 MiB.
+                # `MAX_DEPTH` does bound it, which is why the read now goes
+                # through the shared boundary rather than through a clause that
+                # has to keep the decoder's failure modes enumerated correctly
+                # by hand. The length precheck above is kept: refusing an
+                # oversized body before `rfile.read` means never reading it.
                 #
                 # The distinction being kept is the one `status_for` is built
                 # around: a dropped connection reads as "the server broke", which
