@@ -1666,12 +1666,24 @@ def test_m30_the_transport_added_no_rung_no_verb_and_no_second_pipeline():
     assert numbers == list(range(1, 41)), numbers
     assert len(_law_names()) == 40
 
-    # No new rung. `identity.py` does not know this transport exists, checked by
-    # whole word so that a syllable inside `separators` cannot fail it.
-    import re
+    # No new rung. `identity.py` does not know this transport exists.
+    #
+    # This used to be a whole-word scan over `re.findall(r"[A-Za-z_]+", ...)` of
+    # the *whole source*, prose included -- which is the seventh time this
+    # battery has hit the defect its own comment eight lines below describes.
+    # The word that broke it was `resource`: 9D added a comment to `identity.py`
+    # explaining why `execution_limits_version` is an optional trace member,
+    # that comment says "a declared resource bound", and the law read the
+    # explanation as the violation. A module is allowed to *name* a seam it
+    # does not cross, and prose is where it says so.
+    #
+    # Read off the parse tree, like the `cli` and `mcp` claims below, and split
+    # on `_` for the same reason the text version did: `verifier_versions` must
+    # not be able to hide an `rpc`, but `separators` must not be able to invent
+    # one either.
     ident_words = set()
-    for token in re.findall(r"[A-Za-z_]+", inspect.getsource(I)):
-        ident_words.update(p for p in token.lower().split("_") if p)
+    for name in _code_identifiers(inspect.getsource(I)):
+        ident_words.update(p for p in name.lower().split("_") if p)
     for word in ("mcp", "jsonrpc", "rpc", "stdio", "prompt", "resource"):
         assert word not in ident_words, "identity.py mentions %r" % word
 

@@ -870,12 +870,19 @@ def verify_episode_bundle(
     else:
         policy = task.get("agent_run_policy") or {}
         exit_code = event.get("exit_code")
-        timed_out = exit_code is None
         allowed = list(policy.get("allowed_exit_codes", [0]))
-        bad_exit = (not timed_out) and exit_code not in allowed
+        # The exact mirror of `evalone._finish_episode` after the 9E attribution
+        # ruling, and the mirroring is what makes a replayed verdict comparable
+        # to a live one. An overflowed run reports no exit code, so `exit_code is
+        # None` no longer means "timed out" on its own -- the persisted
+        # truncation flags are what tell the two apart, which is why they are
+        # bundle members rather than derived.
         output_truncated = (bool(proc.get("stdout_truncated"))
                             or bool(proc.get("stderr_truncated")))
-        run_error = timed_out or bad_exit or output_truncated
+        timed_out = exit_code is None and not output_truncated
+        bad_exit = ((not timed_out) and (not output_truncated)
+                    and exit_code not in allowed)
+        run_error = timed_out or bad_exit
     if run_error:
         for sig in replay_state:
             if sig not in _PSEUDO_SIGNALS:

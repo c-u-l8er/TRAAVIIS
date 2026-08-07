@@ -277,6 +277,75 @@ def _kernel_error_codes(source):
     return sorted(codes)
 
 
+def _code_identifiers(source):
+    """Every *code* identifier in `source`: names, attributes, imports, args.
+
+    String constants, docstrings and comments are excluded by construction,
+    because none of them is an identifier. Three laws in this battery (K4, K16,
+    K28) used to make claims about structure by searching source **text** --
+    `"session-" not in getsource(I)`, `source.count("with self._lock:")`,
+    `"kernel" not in getsource(cli).lower()` -- and Law B
+    (`test_boundedjson::J17`) registered all three as violations owned here.
+
+    The rule this battery already learned four times (K10, K12, K18, O30) is
+    that **a module is allowed to name a seam it deliberately does not cross**.
+    `identity.py` explains at length that session handles are not a rung;
+    `cli.py` explains that it drives an adapter and not the kernel. A text scan
+    reads both explanations as the violation they deny.
+    """
+    names = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(source))):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.keyword) and node.arg:
+            names.add(node.arg)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names.update(node.module.split("."))
+            for alias in node.names:
+                names.update(alias.name.split("."))
+                if alias.asname:
+                    names.add(alias.asname)
+    return names
+
+
+def _string_constants(source):
+    """Every string literal in `source`, docstrings included.
+
+    Docstrings are *kept* here on purpose, unlike in `_code_identifiers`. The
+    claim K4 makes is about a literal prefix -- a rung of the ladder is a string
+    -- and the discriminator that makes the claim structural is that it is an
+    equality on a *whole literal* rather than a substring test over prose. A
+    docstring saying "`session-` is not a rung" is one long string that does not
+    equal `"session-"` and never will.
+    """
+    return {node.value for node in ast.walk(ast.parse(textwrap.dedent(source)))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+
+
+def _lock_blocks(source, attribute="_lock"):
+    """Every `with self.<attribute>:` block in `source`, as AST nodes."""
+    blocks = []
+    for node in ast.walk(ast.parse(textwrap.dedent(source))):
+        if not isinstance(node, ast.With):
+            continue
+        for item in node.items:
+            expression = item.context_expr
+            if (isinstance(expression, ast.Attribute)
+                    and expression.attr == attribute
+                    and isinstance(expression.value, ast.Name)
+                    and expression.value.id == "self"):
+                blocks.append(node)
+    return blocks
+
+
 def _law_names():
     """Every law defined in this module, by name.
 
@@ -456,7 +525,17 @@ def test_k4_a_session_id_is_an_ephemeral_handle_not_an_artifact_id():
                            "env-", "bundle-", "finding-", "patch-", "sem-"):
                 assert not sid.startswith(prefix)
         # `session-` is not, and must not become, an identity prefix.
-        assert "session-" not in inspect.getsource(I)
+        #
+        # Asked of `identity.py`'s string *literals*, by equality and by the
+        # `_id(prefix, ...)` shape a rung is actually minted with -- not by a
+        # substring scan over the file, which is how this law came to forbid the
+        # sentence in `identity.py` that explains a session handle is not a rung.
+        literals = _string_constants(inspect.getsource(I))
+        assert "session-" not in literals
+        assert "session" not in literals
+        assert not any(text.startswith("session")
+                       for text in literals if len(text) < 32), \
+            "identity.py holds a short literal starting with 'session'"
     finally:
         k.close(a)
         k.close(b)
@@ -826,13 +905,24 @@ def test_k16_no_process_wide_lock_is_held_over_a_session_lifetime():
     # `start`, `_claim_finalize`, `_release_finalize` and `close`. None of them
     # may contain admission, scoring, or a subprocess (K26 proves the same thing
     # dynamically, by holding the work open and taking the lock from outside).
-    source = inspect.getsource(K.ResidencyKernelV1)
-    assert source.count("with self._lock:") == 6, source.count("with self._lock:")
+    #
+    # Read on the parse tree. Counting `"with self._lock:"` occurrences in
+    # source text counts the ones in comments too, and slicing the file on that
+    # string to find each "block" gave a *text* region whose end was guessed at
+    # a blank line -- so a comment inside a locked block ended it early and a
+    # comment mentioning `run_agent` anywhere near one failed the law. A `With`
+    # node has an exact body; that is the whole fix.
+    blocks = _lock_blocks(inspect.getsource(K.ResidencyKernelV1))
+    assert len(blocks) == 6, len(blocks)
     for forbidden in ("_admit_episode", "_finish_episode", "_invalid_config_run",
                       "run_agent"):
-        for block in source.split("with self._lock:")[1:]:
-            head = block.split("\n\n")[0]
-            assert forbidden not in head, forbidden
+        for block in blocks:
+            called = {ast.unparse(node.func)
+                      for node in ast.walk(ast.Module(body=block.body,
+                                                      type_ignores=[]))
+                      if isinstance(node, ast.Call)}
+            assert not any(name.endswith(forbidden) for name in called), \
+                "%s is called while the session-table lock is held" % forbidden
 
 
 def test_k17_a_substrate_with_no_episode_semantics_is_refused_by_name():
@@ -1386,9 +1476,21 @@ def test_k28_the_linearization_added_no_identity_and_no_surface():
 
     # No new rung, no new CLI surface -- restated because this patch is exactly
     # the kind that would be tempted to add one.
-    assert "session" not in inspect.getsource(I).lower()
+    #
+    # Read as identifiers, for the reason K4 and K16 now are. `.lower()` over
+    # the whole of `identity.py` forbade the word "session" in prose, which is
+    # the word that file needs in order to say a session handle is not a rung;
+    # the same scan over `cli.py` forbade the comment explaining that the CLI
+    # drives an adapter and never the kernel.
+    identity_names = {n.lower() for n in _code_identifiers(inspect.getsource(I))}
+    assert "session" not in identity_names
+    assert not any("session" in n for n in identity_names), \
+        sorted(n for n in identity_names if "session" in n)
     from traaviis import cli
-    assert "kernel" not in inspect.getsource(cli).lower()
+    cli_names = {n.lower() for n in _code_identifiers(inspect.getsource(cli))}
+    assert "kernel" not in cli_names
+    assert not any("kernel" in n for n in cli_names), \
+        sorted(n for n in cli_names if "kernel" in n)
 
     # The refusal vocabulary grew by exactly one code, and it is a lifecycle
     # refusal rather than an admission one. The codes are read from the

@@ -2127,6 +2127,33 @@ def test_w1_a_lowering_that_never_returns_is_killed_and_reported():
     assert elapsed < 60.0, elapsed
 
 
+
+def _reap_isolated_workers(package):
+    """Kill any lowering worker left running out of an isolated package copy.
+
+    Matched on the module name, which is unique per copy (`traaviis_cutover_N`),
+    so this can never touch the real package's workers or another battery's.
+    """
+    import signal as _signal
+    try:
+        listing = os.listdir("/proc")
+    except OSError:
+        return
+    for entry in listing:
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % entry, "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if package in cmdline and "forge_worker" in cmdline:
+            try:
+                os.kill(int(entry), _signal.SIGKILL)
+            except OSError:
+                pass
+
+
 def test_w2_the_kill_reaches_the_grandchild():
     """`join(timeout)` is not a kill, and killing the child is not killing the tree.
 
@@ -2142,10 +2169,12 @@ def test_w2_the_kill_reaches_the_grandchild():
     The misbehaving engine spawns a 600-second sleeper and records its pid before
     hanging. After the timeout that pid must be gone.
 
-    Non-vacuity is the sharpest kind available here: an isolated copy with
-    `_kill_group` reduced to `pass` must leave the same sleeper alive. Nothing
-    else differs, so the group kill is the only thing the outcome can be
-    attributed to.
+    Non-vacuity is the sharpest kind available here: an isolated copy with the
+    containment removed must leave the same sleeper alive. Nothing else differs,
+    so the boundary is the only thing the outcome can be attributed to. Since
+    9E that boundary is a per-run cgroup rather than a process group -- see the
+    comment on the deletion below for why the older probe had stopped proving
+    anything.
     """
     from traaviis import forge_adapter as FA
 
@@ -2170,14 +2199,33 @@ def test_w2_the_kill_reaches_the_grandchild():
     _reap(pid)
     assert not alive, "the grandchild outlived the kill (pid %d)" % pid
 
-    # Non-vacuity: delete the group kill and the grandchild survives.
-    no_kill = ("forge_adapter.py",
-               "        _kill_group(proc)",
-               "        pass  # _kill_group(proc)")
-    quick_reap = ("forge_adapter.py",
-                  "_REAP_GRACE_SECONDS = 30.0",
-                  "_REAP_GRACE_SECONDS = 3.0")
-    pkg, cleanup = _isolated_traaviis(no_kill, quick_reap)
+    # Non-vacuity: remove the containment and the grandchild survives.
+    #
+    # **This probe was retargeted twice, and the second time is the interesting
+    # one.** 9D moved the kill out of this module into the shared execution
+    # profile, so the edit stopped being about `forge_adapter.py`. Then 9E
+    # showed that the thing being deleted -- `killpg` -- was never the mechanism
+    # that closes this: a descendant can call `setsid()` and leave the group
+    # before any signal addressed to it arrives, so deleting the group kill and
+    # watching a *cooperative* grandchild die was proving something about a
+    # boundary that did not hold anyway.
+    #
+    # What is deleted now is the cgroup discovery, which forces the copy down to
+    # `traaviis.process-group.v1` -- exactly the boundary 9D shipped -- and the
+    # group kill with it. The grandchild must then survive. That is the real
+    # counterfactual: not "a weaker kill", but "the boundary 9D had".
+    no_cgroup = ("containment.py",
+                 "    base = _own_cgroup_path()\n"
+                 "    if base is not None and os.path.isdir(base):",
+                 "    base = None\n"
+                 "    if base is not None and os.path.isdir(base):")
+    no_kill = ("containment.py",
+               '    if hasattr(os, "killpg"):',
+               "    if False:  # hasattr(os, \"killpg\")")
+    quick_reap = ("execlimits.py",
+                  "REAP_GRACE_SECONDS = 30.0",
+                  "REAP_GRACE_SECONDS = 3.0")
+    pkg, cleanup = _isolated_traaviis(no_cgroup, no_kill, quick_reap)
     survivor = None
     try:
         marker = _marker_path("w2-probe")
@@ -2198,6 +2246,15 @@ def test_w2_the_kill_reaches_the_grandchild():
     finally:
         if survivor is not None:
             _reap(survivor)
+        # ...and the worker itself, not only the sleeper whose pid it recorded.
+        # This probe *deliberately* runs with containment disabled -- that is
+        # what it proves -- so nothing kills what it spawns except this block.
+        # Measured: a hung `@@HANG@@` worker from the isolated copy outlived the
+        # battery by three and a half minutes and held a run cgroup open the
+        # whole time, which no sweep can remove while it is populated. A law
+        # that demonstrates a boundary failing has to clean up after the failure
+        # it demonstrated.
+        _reap_isolated_workers(pkg.__name__)
         cleanup()
 
 
@@ -2392,8 +2449,8 @@ def test_w6_every_verifier_has_a_stated_isolation_and_the_source_matches():
     one that had to be *decided* rather than described:
 
         builtin_pure  in_process_trusted       this repository's own pure code
-        tests         subprocess_timeout       already true, now stated
-        identity      worker_process_timeout   new
+        tests         bounded_process_group    a deadline was not containment
+        identity      bounded_worker_group     new in route 6, bounded in 9D
         external      worker_process_required  a precondition on the caller
 
     `external` is a requirement this package cannot enforce and says so:
@@ -2401,35 +2458,94 @@ def test_w6_every_verifier_has_a_stated_isolation_and_the_source_matches():
     time out a call it is inside of. Leaving it unstated would have been the worse
     option -- a caller wiring a third-party verifier in-process would reopen route
     6 without ever being told the rule existed.
+
+    **Two things about this law changed in 9D, and the second is the reason it
+    is now written on the parse tree.**
+
+    The `tests` row used to read `subprocess_timeout`, and this law used to
+    prove it with `"subprocess.run(" in src and "timeout=timeout," in src`. Both
+    the row and the proof were true about the *clock* and silent about
+    everything else: `subprocess.run` buffers all output and applies its cap
+    afterwards, and its `timeout=` kills the direct child, so a grandchild
+    holding stdout outlives the deadline. A deadline is not a bounded
+    process-tree and evidence-capture boundary, and the row says so now.
+
+    The proof was also one of the twelve raw-text structural claims Law B
+    (`test_boundedjson::J17`) registered as violations: it asserted the shape of
+    an implementation by searching its source *text*, so a comment naming
+    `subprocess.run(` satisfied it and a comment naming the wrong thing broke
+    it. It is rewritten here on `ast`, where a call is a node and prose is not --
+    which is the same instrument the `builtin_pure` half of this law has used
+    since it was written, for the same reason.
     """
+    import ast
     import inspect
 
     assert SV.VERIFIER_ISOLATION_POLICY == {
         "builtin_pure": "in_process_trusted",
-        "tests": "subprocess_timeout",
-        "identity": "worker_process_timeout",
+        "tests": "bounded_process_group",
+        "identity": "bounded_worker_group",
         "external": "worker_process_required",
     }
 
-    src = inspect.getsource(SV)
-    # `tests`: the subprocess claim is a fact about `run_command_set`, checked.
-    assert "subprocess.run(" in src and "timeout=timeout," in src
+    def _calls(module):
+        return {ast.unparse(n.func)
+                for n in ast.walk(ast.parse(inspect.getsource(module)))
+                if isinstance(n, ast.Call)}
+
+    def _handlers(module):
+        """Every `except` clause, in source order, as `(qualified name, lineno)`."""
+        out = []
+        for node in ast.walk(ast.parse(inspect.getsource(module))):
+            if isinstance(node, ast.ExceptHandler) and node.type is not None:
+                out.append((ast.unparse(node.type), node.lineno))
+        return sorted(out, key=lambda pair: pair[1])
+
+    # `tests`: the containment claim is a fact about `run_command_set`'s calls.
+    # The bounded primitive is present and the unbounded ones are absent -- the
+    # second half is the load-bearing one, because a module that called both
+    # would satisfy any check that only looked for the good call.
+    sv_calls = _calls(SV)
+    assert "execlimits.run_bounded" in sv_calls
+    assert "subprocess.run" not in sv_calls
+    assert "subprocess.Popen" not in sv_calls
 
     # `identity`: the timeout is caught, and caught BEFORE the class it
     # subclasses -- an `except ForgeUnavailable` written first would swallow it
-    # and the stable code would be unreachable.
-    assert src.index("except ForgeTimeout:") < src.index("except ForgeUnavailable as exc:")
+    # and the stable code would be unreachable. Read as handler nodes, so the
+    # ordering claim is about `except` clauses rather than about the first place
+    # two names happen to appear in the file.
+    order = [name for name, _line in _handlers(SV)]
+    assert "ForgeTimeout" in order and "ForgeUnavailable" in order
+    assert order.index("ForgeTimeout") < order.index("ForgeUnavailable"), order
 
-    # ...and the lowering really does leave this process.
+    # ...and the lowering really does leave this process, through the shared
+    # bounded primitive rather than through a `Popen` of its own.
     from traaviis import forge_adapter as FA
-    adapter_src = inspect.getsource(FA)
-    assert "_lower_in_worker(source, forge_dir, timeout)" in adapter_src
-    assert "start_new_session" in adapter_src and "os.killpg" in adapter_src
-    assert "subprocess.Popen(" in adapter_src
+    adapter_tree = ast.parse(inspect.getsource(FA))
+    fa_calls = _calls(FA)
+    assert "execlimits.run_bounded" in fa_calls
+    assert "subprocess.Popen" not in fa_calls
+    assert "_lower_in_worker" in fa_calls
+
     # The worker is launched out of THIS package copy, not a hard-coded name --
     # the defect the isolated-copy replay caught, and the reason B4 went red.
-    assert "_PACKAGE = __package__" in adapter_src
-    assert '"-m", _WORKER_MODULE' in adapter_src
+    # Asserted as an *assignment* whose value is the `__package__` name, and as
+    # the argv the worker is actually spawned with, rather than as two substrings
+    # that a comment could supply.
+    assigned = {}
+    for node in ast.walk(adapter_tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and \
+                isinstance(node.targets[0], ast.Name):
+            assigned[node.targets[0].id] = ast.unparse(node.value)
+    assert assigned.get("_PACKAGE", "").startswith("__package__"), assigned.get("_PACKAGE")
+    assert assigned.get("_WORKER_MODULE") == "_PACKAGE + '.forge_worker'", \
+        assigned.get("_WORKER_MODULE")
+    spawn_argv = [ast.unparse(n) for n in ast.walk(adapter_tree)
+                  if isinstance(n, ast.List)
+                  and any(isinstance(e, ast.Constant) and e.value == "-m"
+                          for e in n.elts)]
+    assert spawn_argv == ["[sys.executable, '-m', _WORKER_MODULE]"], spawn_argv
 
     # `builtin_pure`: the three pure verifiers spawn nothing, which is what makes
     # trusting them in-process a statement rather than a hope.
@@ -2509,9 +2625,14 @@ def test_w7_the_timeout_is_what_ends_the_hang():
     assert _drive(REPO, "traaviis", 60.0) == "TIMEOUT", \
         "the shipped deadline did not end the hang"
 
-    no_deadline = ("forge_adapter.py",
-                   "        out, err = proc.communicate(request, timeout=timeout)",
-                   "        out, err = proc.communicate(request)")
+    # The deadline moved with the kill: `_lower_in_worker` no longer opens its
+    # own `Popen` and calls `communicate(..., timeout=...)`, it calls
+    # `execlimits.run_bounded`, whose supervisor loop holds the one deadline
+    # every execution path in the package now shares. Deleting it there deletes
+    # it for the lowering worker, which is what this probe needs.
+    no_deadline = ("execlimits.py",
+                   "        if deadline is not None and time.monotonic() >= deadline:",
+                   "        if False:  # deadline deleted for W7")
     pkg, cleanup = _isolated_traaviis(no_deadline)
     try:
         root = os.path.dirname(os.path.dirname(os.path.abspath(pkg.__file__)))
@@ -2519,6 +2640,14 @@ def test_w7_the_timeout_is_what_ends_the_hang():
             "the lowering came back with the deadline deleted -- W1 is " \
             "measuring something other than that deadline"
     finally:
+        # The copy has **no deadline**, so its worker hangs by construction and
+        # nothing in it will ever stop. `_drive` kills the driver's process
+        # group, which does not reach a worker the driver spawned into its own.
+        # Measured: two of these accumulated per full battery run and sat at 3
+        # and 7 minutes old, forever. Same rule as W2 -- a law that demonstrates
+        # a boundary failing has to clean up after the failure it demonstrated,
+        # and here the boundary that fails is the deadline itself.
+        _reap_isolated_workers(pkg.__name__)
         cleanup()
 
 

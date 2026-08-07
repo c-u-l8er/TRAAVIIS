@@ -686,11 +686,21 @@ def patch_id(patch: Mapping[str, Any]) -> str:
 # The canonical trace records deterministic events only. Volatile execution
 # metadata (wall-clock timestamps, host paths, human-readable timed logs) is
 # projected out and never enters trace-.
+#
+# ``execution_limits_version`` is the one **optional** member, and the
+# projection below already handles it without any special case: keys are copied
+# ``if k in e``, so an event that does not carry it canonicalizes to exactly the
+# bytes it did before this key existed, and every ``trace-…`` ever sealed stays
+# where it is. It is present only on a run that hit a declared resource bound —
+# a run that, before ``execlimits``, produced no trace at all because it hung or
+# exhausted the host. So the profile name is sealed exactly where a replayer
+# needs to know which bounds refused, and it moves nothing anywhere else.
 _TRACE_EVENT_KEYS = (
     "command", "cwd", "environment_keys", "exit_code",
     "stdout_digest", "stderr_digest",
     "files_created_digest", "files_modified_digest", "files_deleted_digest",
     "file_modes_changed_digest", "result_file_digest", "policy_violations_digest",
+    "execution_limits_version",
 )
 
 

@@ -39,19 +39,19 @@ a different ``episode-…`` id.
 """
 
 import hashlib
-import json
 import os
-import signal
-import subprocess
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
+from . import boundedjson as _bjson, execlimits
+
 __all__ = [
-    "LowerResult", "ForgeUnavailable", "ForgeTimeout",
+    "LowerResult", "ForgeUnavailable", "ForgeTimeout", "ForgeSourceTooLarge",
     "ForgeIdentityAdapterV1", "StubForgeAdapter", "real_adapter",
     "FORGE_LOWER_TIMEOUT_SECONDS", "ERROR_CODE_FORGE_TIMEOUT",
+    "ERROR_CODE_FORGE_SOURCE_TOO_LARGE",
 ]
 
 #: How long one worker gets to lower one source before it is killed. Generous,
@@ -60,16 +60,17 @@ __all__ = [
 #: a fraction of a second.
 FORGE_LOWER_TIMEOUT_SECONDS = 120.0
 
-#: After the group kill, how long to wait for the pipes to close. Bounded for the
-#: same reason `tools/run_battery.py` bounds its second `communicate`: an
-#: unbounded wait after a kill reintroduces the hang the kill exists to end, in
-#: the one case (a grandchild that survived) where it matters most.
-_REAP_GRACE_SECONDS = 30.0
-
 #: The stable, host-independent code the identity verifier seals when a lowering
 #: was killed on its timeout. A *code*, never the message: the message would carry
 #: a duration, and a duration is a fact about the host, not about the world.
 ERROR_CODE_FORGE_TIMEOUT = "FORGE_LOWER_TIMEOUT"
+
+#: The stable code sealed when a WRL source is over the IPC bound. A code for the
+#: same reason, and a *different* code from the timeout on purpose: a timeout is
+#: a fact about how long the engine took and a size refusal is a fact about the
+#: candidate's bytes, so a reader that cannot tell them apart cannot tell an
+#: engine problem from a submission problem.
+ERROR_CODE_FORGE_SOURCE_TOO_LARGE = "FORGE_SOURCE_TOO_LARGE"
 
 
 class ForgeUnavailable(Exception):
@@ -89,6 +90,39 @@ class ForgeTimeout(ForgeUnavailable):
     fail-open shape this repository has removed three times. Callers that want to
     *distinguish* a hang from a missing engine catch this first; callers that only
     care that no answer arrived need no edit.
+    """
+
+
+class ForgeSourceTooLarge(Exception):
+    """A WRL source exceeded ``execlimits.MAX_IPC_SOURCE_BYTES``.
+
+    **Not a ``ForgeUnavailable``, and the change of base class is the ruling.**
+    9D made it one, on the argument that every existing handler would then treat
+    it correctly -- and flagged the tension that created: ``error`` means
+    ``reward = None``, the episode goes unscored, and this refusal is
+    attributable to the *candidate's own bytes*. A candidate that wrote a 2 MiB
+    WRL file could unscore its identity signal by doing so.
+
+    The 9E ruling drew the line at **attribution, not severity**::
+
+        deterministic candidate-byte limit
+            -> evidence against the candidate
+        host/runtime availability or wall-clock limit
+            -> no trustworthy candidate verdict
+
+    A source-size profile is a declared byte bound: the same source is over it
+    on every host, so refusing it says something about the submission rather
+    than about the machine. It is therefore an identity ``fail`` when the source
+    is the *patched* one, and an inadmissible configuration when it is the
+    *original* -- that fixture was never evaluable. A wall-clock timeout stays on
+    the other side of the line and stays ``error``, because the ruling is
+    explicit that it must not become a numerical failure until Forge has a
+    deterministic fuel or reduction bound.
+
+    Being a plain ``Exception`` is what makes that stick. Left as a
+    ``ForgeUnavailable`` subclass it would keep being absorbed by the existing
+    ``except ForgeUnavailable`` handlers and keep coming out as ``error``,
+    whatever this docstring said.
     """
 
 
@@ -190,25 +224,14 @@ _WORKER_MODULE = _PACKAGE + ".forge_worker"
 _PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _kill_group(proc) -> None:
-    """Kill the worker *and* anything it spawned.
-
-    `start_new_session=True` gave the worker its own process group; this signals
-    the group, so an engine that shelled out does not leave a grandchild holding
-    the pipe open. Straight from `tools/run_battery.py::_kill_tree`, including
-    the fallback: a platform without `killpg`, or a group that has already gone,
-    degrades to killing the child rather than raising out of a cleanup path.
-    """
-    if hasattr(os, "killpg"):
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-            return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
+# The kill-the-whole-group primitive that used to live here is now
+# `execlimits.kill_process_group`, and `_lower_in_worker` reaches it through
+# `execlimits.run_bounded` rather than open-coding a `Popen` + `communicate`
+# pair. That is the substance of the 9D ruling and not a tidy-up: this module
+# had the *only* correct process-tree kill in the package while the agent runner
+# and the tests verifier each had a bare `subprocess.run(timeout=…)`, so the one
+# execution path that had been thought about was also the one that needed it
+# least. There is now one primitive and three callers.
 
 
 def _worker_env(forge_dir: Optional[str]) -> dict:
@@ -239,59 +262,95 @@ def _worker_env(forge_dir: Optional[str]) -> dict:
     return env
 
 
+def _encode_request(source: str) -> bytes:
+    """The one request envelope, bounded before a process is even started.
+
+    The parent used to do an unbounded ``json.dumps({"source": source})`` on
+    bytes the *candidate* wrote. That is a whole copy of a candidate-controlled
+    string, plus JSON escaping, materialized in the evaluating process before
+    anything could refuse it — so a WRL file large enough to matter was a memory
+    problem here, in the process holding the episode, and not in the disposable
+    worker.
+
+    Bounding the source first means the refusal costs one ``len`` on bytes that
+    were already resident, and the worker is never spawned at all. Its own
+    `forge_worker.read_request` applies the same two bounds from the other side;
+    that is not redundancy, it is each end refusing what it will not hold.
+    """
+    encoded = len(source.encode("utf-8", "surrogatepass"))
+    if encoded > execlimits.MAX_IPC_SOURCE_BYTES:
+        raise ForgeSourceTooLarge(
+            "refusing to lower a source of %d bytes; the bound is %d (%s)"
+            % (encoded, execlimits.MAX_IPC_SOURCE_BYTES,
+               execlimits.EXECUTION_LIMITS_VERSION))
+    return _bjson.dump_json_bounded(
+        {"source": source}, sort_keys=True,
+        max_output_bytes=execlimits.MAX_IPC_REQUEST_BYTES)
+
+
 def _lower_in_worker(source: str, forge_dir: Optional[str],
                      timeout: float) -> LowerResult:
     """Run one lowering in a killable worker process. Never hangs, never crashes.
 
     Raises ``ForgeTimeout`` if the worker outlived ``timeout`` (it is killed
-    first), and ``ForgeUnavailable`` if it died, exited non-zero, or answered
-    with anything other than one parseable response object. Returns a
-    ``LowerResult`` in exactly the two cases where the engine gave a verdict.
-    """
-    popen_kwargs = {}
-    if os.name == "posix":
-        # POSIX-only, and the load-bearing half of `_kill_group`.
-        popen_kwargs["start_new_session"] = True
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", _WORKER_MODULE],
-            cwd=_PACKAGE_ROOT, env=_worker_env(forge_dir),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, **popen_kwargs)
-    except OSError as exc:
-        raise ForgeUnavailable("could not start the lowering worker: %s" % exc)
+    first, with its whole group), ``ForgeSourceTooLarge`` if the request is over
+    the IPC bound, and ``ForgeUnavailable`` if it died, exited non-zero, or
+    answered with anything other than one parseable in-bounds response object.
+    Returns a ``LowerResult`` in exactly the two cases where the engine gave a
+    verdict.
 
-    request = json.dumps({"source": source})
+    **The capture is bounded, not just the clock.** ``proc.communicate`` read the
+    worker's stdout and stderr with no cap, so an engine that printed
+    indefinitely — or a lowering pass that dumped a multi-megabyte diagnostic —
+    was an unbounded allocation in the evaluating process, reached without the
+    timeout ever firing. ``execlimits.run_bounded`` caps both streams as they are
+    read and kills the whole group on either a deadline or an overflow.
+    """
     try:
-        out, err = proc.communicate(request, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        try:
-            proc.communicate(timeout=_REAP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            # A grandchild survived the group kill and still holds the pipes.
-            # Stop waiting on the pipes, not on the verdict: the verdict is
-            # already decided, and it is `ForgeTimeout` either way.
-            try:
-                proc.kill()
-            except OSError:
-                pass
+        request = _encode_request(source)
+    except _bjson.BoundedJsonError as exc:
+        raise ForgeSourceTooLarge(
+            "the lowering request could not be encoded in bounds: %s" % exc)
+
+    run = execlimits.run_bounded(
+        [sys.executable, "-m", _WORKER_MODULE],
+        cwd=_PACKAGE_ROOT, env=_worker_env(forge_dir), timeout=timeout,
+        input=request,
+        max_stdout_bytes=execlimits.MAX_IPC_RESPONSE_BYTES,
+        max_stderr_bytes=execlimits.MAX_IPC_DIAGNOSTIC_BYTES)
+
+    if run["spawn_error"] is not None:
+        raise ForgeUnavailable(
+            "could not start the lowering worker: %s" % run["spawn_error"])
+
+    err = run["stderr"].decode("utf-8", "replace")
+    if run["timed_out"]:
         raise ForgeTimeout(
             "the Forge lowering worker did not finish and was killed")
-
-    if proc.returncode != 0:
+    if run["stdout_truncated"]:
+        # More response than the profile will hold is not a response. Refusing
+        # it here rather than parsing the prefix is the same rule the worker
+        # applies to its own output: a truncated document read as a whole one is
+        # how a lowering that never happened gets reported as one that did.
+        raise ForgeUnavailable(
+            "the Forge lowering worker response exceeded %d bytes"
+            % execlimits.MAX_IPC_RESPONSE_BYTES)
+    if run["exit_code"] != 0:
         # Includes the shapes no `except` clause could ever have seen in-process:
-        # a segfault (negative return code) and an `os._exit`.
+        # a segfault (negative return code) and an `os._exit`. `exit_code` is
+        # `None` when the group was killed for emitting more than the profile
+        # retains, which lands here for the same reason.
         raise ForgeUnavailable(
             "the Forge lowering worker exited %s: %s"
-            % (proc.returncode, (err or "").strip()[:512]))
+            % (run["exit_code"], err.strip()[:512]))
     try:
-        response = json.loads(out)
+        response = _bjson.load_json_bounded(
+            run["stdout"], max_input_bytes=execlimits.MAX_IPC_RESPONSE_BYTES)
         status = response["status"]
     except Exception as exc:  # noqa: BLE001 -- no parseable answer is no answer
         raise ForgeUnavailable(
             "the Forge lowering worker gave no usable response (%s): %s"
-            % (type(exc).__name__, (err or "").strip()[:512]))
+            % (type(exc).__name__, err.strip()[:512]))
 
     if status != "ok":
         raise ForgeUnavailable(str(response.get("error")))

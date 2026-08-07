@@ -112,6 +112,126 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # --------------------------------------------------------------------------- #
+# Structural instruments: claims about code, read off the parse tree.           #
+#                                                                              #
+# Four laws in this file (C18, C42, C50, C52) used to make claims about the     #
+# *shape* of an implementation by searching its source **text** -- statement    #
+# order by comparing `str.index` positions, "no such check exists" by substring #
+# scan, "these two modules do not reference each other" by `in`. Every one of   #
+# those is satisfiable and breakable by a comment, and Law B                    #
+# (`test_boundedjson::J17`) registered all four as violations owned by this     #
+# battery. The claims were right; the instrument was not.                       #
+#                                                                              #
+# These helpers are the instrument. A statement is a node, an argument is a     #
+# keyword, a literal is a `Constant`, and prose is none of them. They are       #
+# duplicated here rather than imported from another battery for the reason      #
+# every battery in this tree duplicates its own instruments: a law that went    #
+# red because a *different* file changed would be reporting the wrong fact.     #
+# --------------------------------------------------------------------------- #
+import ast  # noqa: E402
+import inspect  # noqa: E402
+import textwrap  # noqa: E402
+
+
+def _function_tree(function):
+    """The `ast.FunctionDef` for `function`, with its docstring removed.
+
+    The docstring is dropped because every claim below is about executable
+    structure, and leaving it in would put the very sentences that *explain* a
+    check back inside the thing being searched -- which is the defect these
+    helpers replace.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    node = tree.body[0]
+    if (node.body and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)):
+        node.body = node.body[1:]
+    return node
+
+
+def _function_body(function):
+    """The statement list of `function`, docstring removed.
+
+    `list(...)` rather than the bare `.body` attribute, so that what comes back
+    is visibly a container. Law B's checker classifies a helper by the *shape*
+    of what it returns — a string is text, a list is structure — and a helper
+    that fetched source and then handed back an attribute read as text, which
+    made every claim about these statements look like a claim about characters.
+    """
+    return list(_function_tree(function).body)
+
+
+def _called(node):
+    """The dotted name a `Call` (or any expression) invokes, or `None`."""
+    func = node.func if isinstance(node, ast.Call) else node
+    try:
+        return ast.unparse(func)
+    except Exception:                                    # pragma: no cover
+        return None
+
+
+def _names(node):
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _constants(node):
+    """Every literal value under `node`, as a set of hashable constants."""
+    out = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant):
+            try:
+                out.add(child.value)
+            except TypeError:                            # pragma: no cover
+                pass
+    return out
+
+
+def _code_facts(function):
+    """`{names, attributes, constants, expressions}` for one function's code.
+
+    `expressions` holds the unparsed form of every `BinOp`, which is what lets a
+    claim like "no `2**53` bound appears" be made about arithmetic rather than
+    about a substring -- the sentence explaining that no such bound exists is no
+    longer indistinguishable from the bound.
+    """
+    node = _function_tree(function)
+    names, attributes, expressions = set(), set(), set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            names.add(child.id)
+        elif isinstance(child, ast.Attribute):
+            attributes.add(child.attr)
+            names.add(child.attr)
+        elif isinstance(child, ast.BinOp):
+            expressions.add(ast.unparse(child))
+    return {"names": names, "attributes": attributes,
+            "constants": _constants(node), "expressions": expressions}
+
+
+def _raised_codes(node):
+    """Every identifier used as the first argument of a `raise X(CODE, ...)`."""
+    codes = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Raise) and isinstance(child.exc, ast.Call) \
+                and child.exc.args:
+            first = child.exc.args[0]
+            if isinstance(first, ast.Name):
+                codes.add(first.id)
+    return codes
+
+
+def _enclosing_try(body, call):
+    """The top-level `Try` in `body` that contains `call`, or `None`."""
+    for statement in body:
+        if isinstance(statement, ast.Try):
+            for child in ast.walk(statement):
+                if child is call:
+                    return statement
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # A minimal RFC 8785 reference implementation (stdlib only, no dependency)     #
 #                                                                             #
 # This exists so the battery can *measure* conformance rather than assert it.  #
@@ -773,40 +893,89 @@ def test_c18_three_domain_checks_are_enforced_and_nothing_else_is():
     because a domain check smuggled into the walk restricts the domain exactly
     as much as one written inline — and the walk is now the more inviting place
     to put one, since it already visits every node.
+
+    **Read on the parse tree.** This law used to assert statement *order* by
+    comparing `str.index` positions inside whitespace-stripped source, and its
+    forbidden-token scan was a substring test over that same text — so a comment
+    mentioning `json.dumps` moved the index, and a comment explaining why there
+    is no `2**53` bound read as a `2**53` bound. Law B (`test_boundedjson::J17`)
+    registered it as one of twelve such violations, owned by this battery. The
+    claims are unchanged; the instrument is `ast`, where a statement is a node,
+    an argument is a keyword, and prose is neither.
     """
-    import inspect
-    src = inspect.getsource(I.canonical_bytes)
-    body = "".join(src.split('"""', 2)[-1].split())
+    body = _function_body(I.canonical_bytes)
+
     # check 1: the key domain, enforced *before* anything is serialized, so the
-    # collision cannot be minted and then regretted
-    assert body.startswith("bad_key=_find_bad_key(obj)ifbad_keyisnotNone:"), body
-    assert "CANONICAL_KEY_TYPE," in body, "the key guard vanished; ids collide"
-    assert body.index("_find_bad_key") < body.index("json.dumps"), \
+    # collision cannot be minted and then regretted. Asserted as the *first two
+    # statements*, which is what "before" means when it is read structurally
+    # rather than as a character offset.
+    assert isinstance(body[0], ast.Assign), ast.unparse(body[0])
+    assert _names(body[0].targets[0]) == {"bad_key"}
+    assert _called(body[0].value) == "_find_bad_key", ast.unparse(body[0])
+    assert isinstance(body[1], ast.If), ast.unparse(body[1])
+    assert ast.unparse(body[1].test) == "bad_key is not None"
+    assert "CANONICAL_KEY_TYPE" in _raised_codes(body[1]), \
+        "the key guard vanished; ids collide"
+
+    # check 2: the numeric domain, unchanged, still on the same dumps call, with
+    # the four keywords that fix the byte format and the one that fixes the
+    # domain. Read as keywords, so an argument cannot be satisfied by prose and
+    # a reordering of them cannot break the law.
+    dumps = [n for n in ast.walk(ast.Module(body=body, type_ignores=[]))
+             if isinstance(n, ast.Call) and _called(n) == "json.dumps"]
+    assert len(dumps) == 1, "there is not exactly one serialization call"
+    keywords = {kw.arg: ast.unparse(kw.value) for kw in dumps[0].keywords}
+    assert keywords == {"sort_keys": "True", "separators": "(',', ':')",
+                        "ensure_ascii": "False", "allow_nan": "False"}, keywords
+    assert "CANONICAL_NON_FINITE" in _raised_codes(
+        _enclosing_try(body, dumps[0])), "the NaN guard vanished; ids are at risk"
+
+    # check 3: the encoding domain, on the same encode call that always raised.
+    encodes = [n for n in ast.walk(ast.Module(body=body, type_ignores=[]))
+               if isinstance(n, ast.Call) and _called(n) == "text.encode"]
+    assert len(encodes) == 1 and _constants(encodes[0]) == {"utf-8"}
+    handlers = [h for n in ast.walk(ast.Module(body=body, type_ignores=[]))
+                if isinstance(n, ast.Try) for h in n.handlers]
+    assert any(ast.unparse(h.type) == "UnicodeEncodeError" for h in handlers)
+    assert "CANONICAL_ENCODING" in _raised_codes(
+        _enclosing_try(body, encodes[0])), "the encoding guard vanished"
+
+    # ...and check 1 really does run before check 2, which the statement
+    # ordering above already establishes but is worth saying in the terms the
+    # law is about. Positions come from `enumerate`, not from `list.index`:
+    # `index` compares AST nodes by equality, and two structurally identical
+    # statements would resolve to whichever came first.
+    serialization = _enclosing_try(body, dumps[0])
+    positions = [i for i, statement in enumerate(body)
+                 if statement is serialization]
+    assert positions and positions[0] > 1, \
         "the key check must run before serialization, not after"
-    # check 2: the numeric domain, unchanged, still on the same dumps call
-    assert ('try:text=json.dumps(obj,sort_keys=True,separators=(",",":"),'
-            'ensure_ascii=False,allow_nan=False,)') in body, body
-    assert "allow_nan=False" in body, "the NaN guard vanished; ids are at risk"
-    # check 3: the encoding domain, on the same encode call that always raised
-    assert 'try:returntext.encode("utf-8")exceptUnicodeEncodeErrorasex:' in body, \
-        body
-    assert "CANONICAL_ENCODING," in body, "the encoding guard vanished"
-    # those three are the only domain restrictions -- these would each move ids
-    walk = "".join(inspect.getsource(I._find_bad_key).split('"""', 2)[-1].split())
-    for token in ("isascii", "unicodedata", "2**53",
-                  "9007199254740992", "sort(", "unicode_escape"):
-        assert token not in body, "unexpected domain check %r appeared" % token
-        assert token not in walk, "unexpected domain check %r in the walk" % token
+
+    # Those three are the only domain restrictions -- these would each move ids.
+    # Every probe is a *code* construct now: an identifier, a literal, an
+    # attribute or an arithmetic expression. `2**53` in particular used to be a
+    # substring; it is a `BinOp` here, so the sentence explaining that no such
+    # bound exists no longer counts as one existing.
+    for where, function in (("canonical_bytes", I.canonical_bytes),
+                            ("the walk", I._find_bad_key)):
+        code = _code_facts(function)
+        for token in ("isascii", "unicodedata", "sort", "unicode_escape"):
+            assert token not in code["names"], \
+                "unexpected domain check %r in %s" % (token, where)
+        assert 9007199254740992 not in code["constants"], \
+            "an I-JSON magnitude bound appeared in %s" % where
+        assert "2 ** 53" not in code["expressions"], \
+            "an I-JSON magnitude bound appeared in %s" % where
+
     # "surrogate" used to be on that list, to catch a hand-rolled surrogate
     # scan. Check 3 makes the word legitimate, so the guard moves to the thing
     # that actually mattered: the encoding domain must be defined by the
     # *encoder*, not by a codepoint range we invented and could get wrong.
-    judge = "".join(
-        inspect.getsource(I._unencodable_index).split('"""', 2)[-1].split())
-    assert '.encode("utf-8")' in judge, judge
-    for token in ("0xD800", "0xDFFF", "55296", "57343", "surrogatepass"):
-        assert token not in judge, \
-            "the encoding domain was hand-rolled as a range check: %r" % token
+    judge = _code_facts(I._unencodable_index)
+    assert "encode" in judge["names"] and "utf-8" in judge["constants"], judge
+    for token in (0xD800, 0xDFFF, 55296, 57343, "surrogatepass"):
+        assert token not in judge["constants"], \
+            "the encoding domain was hand-rolled as a range check: %r" % (token,)
     # and it still accepts every *finite*, *string-keyed* thing a dict can hold
     assert I.canonical_bytes({chr(0x1F600): 1e308, chr(0xD7FF): -0.0})
     # while both refusals are typed, not bare stdlib leaks
@@ -2313,43 +2482,94 @@ def test_c42_the_two_implementations_are_independent_and_agree():
     """
     import inspect
 
-    # 1. no call from the yardstick into the thing it measures
+    def _module_facts(module_or_function):
+        """`{names, imports, constants}` for a module or function, code only.
+
+        The `_code_facts` helper's shape, widened to a module and carrying
+        imports separately -- because "does this file reach into that one" is a
+        question about import and reference nodes, and nothing else.
+        """
+        source = textwrap.dedent(inspect.getsource(module_or_function))
+        tree = ast.parse(source)
+        names, imports = set(), []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append(alias.name)
+                    names.update(alias.name.split("."))
+            elif isinstance(node, ast.ImportFrom):
+                imports.append(node.module or "")
+                names.update((node.module or "").split("."))
+                for alias in node.names:
+                    imports.append("%s.%s" % (node.module or "", alias.name))
+                    names.add(alias.name)
+        return {"names": names, "imports": imports,
+                "constants": _constants(tree)}
+
+    # 1. no reference from the yardstick into the thing it measures. Read as
+    #    names and imports rather than as substrings, so that a comment in the
+    #    reference explaining what it deliberately does *not* import stays
+    #    legal -- the same allowance (2) has always needed in the other
+    #    direction.
     for fn in (_es_number_to_string, _jcs_string, _utf16_sortkey,
                _jcs_serialize, jcs):
-        src = inspect.getsource(fn)
-        for token in ("PROD", "traaviis.jcs", "from traaviis import jcs"):
-            assert token not in src, \
+        facts = _module_facts(fn)
+        for token in ("PROD", "jcs_module", "admit_number", "number_to_string"):
+            assert token not in facts["names"], \
                 "the reference %s reaches into production via %r" % (
                     fn.__name__, token)
+        assert not any(imported.startswith("traaviis")
+                       for imported in facts["imports"]), facts["imports"]
 
-    # 2. no call from production back into the battery. Read as *code*, with
-    #    the docstrings stripped: `traaviis/jcs.py` names this file in prose
-    #    deliberately -- explaining why it is a second implementation is the
-    #    point -- and a text scan that could not tell a citation from an import
-    #    would forbid the explanation. Sixth time in this codebase that a raw
-    #    text scan made a claim about structure it could not see (cf. O30).
-    prod_src = inspect.getsource(PROD)
-    prod_code = _without_docstrings(prod_src)
-    assert "RFC 8785" not in prod_code, "the docstring strip did not strip"
-    for token in ("test_canonical", "import test", "unittest", "pytest",
+    # 2. no reference from production back into the battery. `traaviis/jcs.py`
+    #    names this file in prose deliberately -- explaining why it is a second
+    #    implementation is the point -- and a text scan that could not tell a
+    #    citation from an import would forbid the explanation. That allowance
+    #    used to be bought with `_without_docstrings`, which strips docstrings
+    #    and leaves comments; it is now bought by reading nodes, which have
+    #    neither.
+    prod = _module_facts(PROD)
+    for token in ("test_canonical", "unittest", "pytest",
                   "_es_number_to_string", "_jcs_serialize"):
-        assert token not in prod_code, \
+        assert token not in prod["names"], \
             "traaviis/jcs.py reaches into the test battery via %r" % token
-    assert [line for line in prod_code.splitlines()
-            if line.startswith("import ") or line.startswith("from ")] \
-        == ["import math"], "production grew an import; check what it now trusts"
+    assert prod["imports"] == ["math"], \
+        "production grew an import; check what it now trusts: %s" % prod["imports"]
 
     # 3. two derivations of the shortest decimal, not one shared one.
-    #    An *absence* is asserted over the code, for the reason in (2); a
-    #    *presence* may be asserted over the whole source, since prose cannot
-    #    make a missing implementation appear.
-    ref_src = inspect.getsource(_es_number_to_string)
-    assert "Decimal(repr(" in ref_src, \
+    #
+    #    The reference adopts `repr`'s digits and re-reads them with
+    #    `Decimal.as_tuple`; production searches `"%.*e"` for increasing
+    #    precision and stops at the first that parses back to the identical
+    #    double. Both halves are checked as *calls*: `Decimal(repr(x))` is a
+    #    call whose argument is a call, and `float(text) == x` is a comparison
+    #    whose left side is a call. A sentence describing either would satisfy
+    #    the old substring test and does not satisfy this one.
+    reference = _function_tree(_es_number_to_string)
+    nested = [n for n in ast.walk(reference)
+              if isinstance(n, ast.Call) and _called(n) == "Decimal"
+              and n.args and isinstance(n.args[0], ast.Call)
+              and _called(n.args[0]) == "repr"]
+    assert nested, \
         "the reference stopped adopting repr's digits; C42's premise moved"
-    assert "Decimal" not in prod_code, \
+    assert "Decimal" not in prod["names"], \
         "production adopted the reference's derivation; agreement is now vacuous"
-    assert '"%.*e"' in prod_src and "float(text) == x" in prod_code, \
-        "production stopped deriving-and-verifying its digits"
+
+    production = _function_tree(PROD._shortest_digits)
+    prod_constants = _constants(production)
+    assert "%.*e" in prod_constants, \
+        "production stopped searching precisions for its digits"
+    round_trip = [n for n in ast.walk(production)
+                  if isinstance(n, ast.Compare)
+                  and isinstance(n.left, ast.Call)
+                  and _called(n.left) == "float"
+                  and any(isinstance(op, ast.Eq) for op in n.ops)]
+    assert round_trip, \
+        "production stopped verifying that its derived digits round-trip"
 
     # 4. the number-rendering warrant is written down, and is the *current*
     #    one. This assertion used to demand the V8-derived disclosure be
@@ -2359,9 +2579,18 @@ def test_c42_the_two_implementations_are_independent_and_agree():
     #    dropped: the citation and the second, non-V8 oracle must both be
     #    legible, and the history of the superseded claim must survive, because
     #    a warrant that stops being written down stops being checkable.
+    #
+    #    This half is asked of `PROD.__doc__` rather than of the source text,
+    #    and the change is not cosmetic. A warrant is *prose* -- it is the one
+    #    claim in this law that genuinely concerns words -- so it belongs
+    #    against the docstring, which is prose by construction. Asking it of
+    #    `inspect.getsource` made the whole function a raw-text reader, which is
+    #    what put C42 on Law B's violation list; the prose question was never
+    #    the problem, the prose *container* was.
+    warrant = PROD.__doc__ or ""
     for token in ("ECMA-262", "7.1.12.1", "ES2019", "Note 2", "Rust", "V8",
                   "76,926", "484"):
-        assert token in prod_src, \
+        assert token in warrant, \
             "the number-rendering warrant lost %r; see C51 and the module " \
             "docstring for what it is supposed to say" % token
 
@@ -3499,26 +3728,56 @@ def test_c50_the_profile_is_closed_under_its_own_output():
     compared: the sample is what would have been checked without (1) and (2),
     and it is a rounding error next to the domain.
     """
-    import inspect
     import random
-    source = inspect.getsource(PROD.admit_number)
-    body = _without_docstrings(source)
-    returns = [line.strip() for line in body.splitlines()
-               if line.strip().startswith("return ")]
-    assert returns == ["return token", "return token"], returns
-    # the guard, read twice: its *structure* off the stripped code (where a
-    # docstring cannot fake it) and its *literals* off the raw source (where
-    # the stripper has removed every string, including these two).
-    assert "    if  in token or  in token:\n        return token" in body, \
-        "the unguarded return is no longer guarded by the token's shape"
-    assert 'if "." in token or "e" in token:' in source, \
-        "the token-shape guard no longer tests for `.` and `e`"
-    assert "magnitude = int(token)" in body and "MAX_SAFE_INTEGER" in body
 
-    serialize = _without_docstrings(inspect.getsource(PROD._serialize))
-    assert serialize.count("admit_number") == 1, serialize
-    assert "number_to_string" not in serialize, \
+    # Read on the parse tree. This law used to make its structural claims with
+    # substring tests over source text -- one of them over
+    # `_without_docstrings`'s output, which strips docstrings and leaves
+    # comments, so a comment quoting the guard satisfied it. Law B registered it
+    # as a violation owned by this battery. The claims are unchanged.
+    admit = _function_tree(PROD.admit_number)
+
+    # (1) exactly two returns, both of `token`, and the one that skips the
+    #     range test is guarded by the token's shape.
+    returns = [n for n in ast.walk(admit) if isinstance(n, ast.Return)]
+    assert [ast.unparse(n.value) for n in returns] == ["token", "token"], \
+        [ast.unparse(n.value) for n in returns]
+    guards = [n for n in admit.body
+              if isinstance(n, ast.If)
+              and any(isinstance(c, ast.Return) for c in n.body)]
+    assert len(guards) == 1, "the unguarded return is no longer a guarded one"
+    guard = guards[0]
+    assert isinstance(guard.test, ast.BoolOp) and isinstance(guard.test.op, ast.Or)
+    conditions = {ast.unparse(v) for v in guard.test.values}
+    assert conditions == {"'.' in token", "'e' in token"}, conditions
+
+    # (2) and the other return really is behind the range test.
+    assert any(isinstance(n, ast.Assign)
+               and ast.unparse(n.value) == "int(token)"
+               for n in ast.walk(admit)), "the token is no longer reparsed"
+    assert "MAX_SAFE_INTEGER" in _names(admit), \
+        "the interoperable bound left admit_number"
+
+    # (3) `_serialize` has no other numeric path. Counted as *calls*, so a
+    #     comment naming `number_to_string` is not a second path -- and the
+    #     admission function is now a parameter, which is exactly the kind of
+    #     change a substring count would have mis-read.
+    serialize = _function_tree(PROD._serialize)
+    calls = [_called(n) for n in ast.walk(serialize) if isinstance(n, ast.Call)]
+    assert "number_to_string" not in calls, \
         "_serialize grew a numeric path that bypasses the profile"
+    # One numeric dispatch, through the injected admission function, and the
+    # only two things that can be injected are the two declared profiles' rules
+    # -- `canonical_bytes` is the one place that binds it.
+    numeric = [n for n in ast.walk(serialize)
+               if isinstance(n, ast.Call) and _called(n) == "admit"]
+    assert len(numeric) == 1, [ast.unparse(n) for n in numeric]
+    binder = _function_tree(PROD.canonical_bytes)
+    bound = {ast.unparse(n.value) for n in ast.walk(binder)
+             if isinstance(n, ast.Assign)
+             and {"admit"} == {t.id for t in n.targets
+                               if isinstance(t, ast.Name)}}
+    assert bound == {"admit_number", "admit_number_ijson"}, bound
 
     # --- and measured: canonicalize -> parse -> canonicalize ----------------
     values = [0, -0.0, 0.0, 1, 1.0, -1, 0.1, 0.5, 1 / 3, 2 ** 53 - 1,
@@ -3723,11 +3982,18 @@ def test_c52_the_declared_scheme_names_the_profile_and_not_the_bare_rfc():
     assert I.SCHEME_RFC8785 == "JCS_CLOSED_NUMBER_PROFILE_V1"
     assert I.SCHEME_RFC8785 is PROD.PROFILE, \
         "the declared name was copied rather than taken from jcs.PROFILE"
-    # read as *code*: identity.py names the superseded value in prose, on
+    # Read as *code*: identity.py names the superseded value in prose, on
     # purpose, so that the rename is explained where it happened. The same
-    # distinction C42 draws, for the same reason -- a text scan that could not
-    # tell a citation from a live constant would forbid the explanation.
-    assert "rfc8785-v1" not in _without_docstrings(inspect.getsource(I)), \
+    # distinction C42 draws, for the same reason -- a scan that could not tell a
+    # citation from a live constant would forbid the explanation.
+    #
+    # It used to be bought with `_without_docstrings`, which is why Law B
+    # registered this law as a violation: that helper strips docstrings and
+    # returns a *string*, so the claim was still a substring test over text and
+    # a `#` comment quoting the old name still broke it. A `Constant` node is
+    # neither a docstring nor a comment.
+    live_constants = _constants(ast.parse(inspect.getsource(I)))
+    assert "rfc8785-v1" not in live_constants, \
         "the superseded declared name is still reachable in identity.py"
 
     # producer and verifier read the same table

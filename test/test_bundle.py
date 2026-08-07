@@ -949,18 +949,44 @@ def test_d28_presentation_only_edits_move_no_episode_identity():
 def test_d29_the_serial_batch_and_comparison_batteries_remain_green():
     """This slice touched `pack`, so it touched what every batch runs over.
     Re-asserted structurally here; the full batteries run in the tree battery."""
+    import ast
     import inspect
     from traaviis import batch as _batch, comparison as C, evalsplit as ES
 
+    def _identifiers(module):
+        """Every code identifier in `module`. Not its prose."""
+        names = set()
+        for node in ast.walk(ast.parse(inspect.getsource(module))):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                continue
+            elif isinstance(node, ast.keyword) and node.arg:
+                names.add(node.arg)
+        return names
+
+    # Read as identifiers, not as substrings. These three modules *discuss*
+    # bundle identity in their docstrings -- explaining what they deliberately
+    # do not know is the point -- and a text scan reads the explanation as the
+    # violation. This law was registered under Law B with the rationale "reads
+    # another battery's stdout", which is not what it does; the entry described
+    # a different test. It is structural now and the entry is gone.
     for module in (_batch, C, ES):
-        source = inspect.getsource(module)
-        assert "bundle_id" not in source, \
+        assert "bundle_id" not in _identifiers(module), \
             "%s learned about bundle identity" % module.__name__
 
     params = inspect.signature(C.compare_episodes).parameters
+    # The **third** copy of this pin in the tree (with `test_compare::C15d` and
+    # `test_batch::B29`). Three batteries independently pinning one signature
+    # means one deliberate surface change needs three edits, and a missed one is
+    # a false red -- which is what 9F-A's `strict` produced. Noisy rather than
+    # dangerous, unlike a duplicated *guard* (see `test_execlimits::X21`), which
+    # is why it is recorded here rather than made a law.
     assert set(params) == {"left_dir", "right_dir", "registry",
-                           "extra_verifiers"}, sorted(params)
-    assert "SerialBatchV1" not in inspect.getsource(BD)
+                           "extra_verifiers", "strict"}, sorted(params)
+    assert "SerialBatchV1" not in _identifiers(BD)
 
 
 def test_d30_the_cli_surface_is_complete_and_typed():

@@ -184,9 +184,10 @@ import math
 
 __all__ = [
     "JcsError", "JCS_KEY_TYPE", "JCS_NON_FINITE", "JCS_ENCODING",
-    "JCS_INT_RANGE", "JCS_NOT_JSON", "PROFILE",
+    "JCS_INT_RANGE", "JCS_NOT_JSON", "PROFILE", "PROFILE_IJSON", "PROFILES",
     "MAX_SAFE_INTEGER", "MIN_SAFE_INTEGER",
-    "canonical_bytes", "admit_number", "number_to_string", "utf16_units",
+    "canonical_bytes", "admit_number", "admit_number_ijson",
+    "number_to_string", "utf16_units",
 ]
 
 
@@ -194,6 +195,14 @@ __all__ = [
 #: `identity.SCHEME_RFC8785` is this string; the two are kept equal by C52 so
 #: that renaming the profile cannot leave a document declaring the old name.
 PROFILE = "JCS_CLOSED_NUMBER_PROFILE_V1"
+
+#: The **language-neutral** successor. Built, laws and all, and deliberately not
+#: yet declared by anything — see `admit_number_ijson` for the rule and the
+#: reason the cutover is a separate act from the implementation.
+PROFILE_IJSON = "JCS_IJSON_CLOSED_NUMBER_PROFILE_V1"
+
+#: Every profile name this module knows, so a caller can ask rather than guess.
+PROFILES = (PROFILE, PROFILE_IJSON)
 
 
 #: A mapping key was not exactly a `str`. RFC 8785 §3.1 inherits I-JSON's rule
@@ -355,6 +364,123 @@ def admit_number(value, where="$"):
     return token
 
 
+#: Refusal reason: a mathematically integral value outside the interoperable
+#: safe-integer range, under `PROFILE_IJSON`. Distinct from the two `PROFILE`
+#: reasons because it refuses a strictly larger set for a different argument.
+REASON_INTEGRAL_OUT_OF_RANGE = "integral-outside-safe-integer-range"
+
+
+def _is_integral(value):
+    """Is `value` mathematically a whole number? Asked of the *value*, not the type.
+
+    This is the whole of what makes the successor profile language-neutral.
+    `PROFILE`'s rule was "does the emitted token contain a `.` or an `e`", which
+    is a question about ECMAScript's *rendering* — and rendering switches to
+    exponent form at exactly `1e21`, so `1e20` was refused and `1e21` admitted
+    with nothing numerical happening in between. `2` is integral whether it
+    arrives as `2`, `2.0`, or `2e0`, and no producer's type system enters into
+    it.
+    """
+    if isinstance(value, int):
+        return True
+    return not math.isnan(value) and not math.isinf(value) and value == int(value)
+
+
+def admit_number_ijson(value, where="$"):
+    """The canonical token for `value` under `PROFILE_IJSON`, or a typed refusal.
+
+    **The rule, in three lines.**
+
+        finite binary64 values only
+
+        mathematically integral:  abs(value) <= 2**53 - 1
+        non-integral:             the rendered token must parse back to
+                                  identical binary64 bits
+
+    **What this fixes, and it is not a tightening for its own sake.** `PROFILE`
+    decides admission by looking at the emitted token: a literal holding neither
+    `.` nor `e` is an integer literal and is bounded, and anything else is
+    admitted because an ordinary parse yields a binary64. That is closed, and it
+    is *sound*, and it makes the admitted set depend on where ECMAScript happens
+    to switch notation. ECMA-262 7.1.12.1 step 6 renders in positional form
+    while `n <= 21`, so:
+
+        1e20   token `100000000000000000000`  an integer literal  -> refused
+        1e21   token `1e+21`                  not an integer      -> admitted
+
+    Two values one decimal place apart, both integral, both far above `2**53`,
+    landing on opposite sides of the boundary — and the thing that separated
+    them was a *lexical* rule in one language's renderer. The successor asks
+    about the number instead, and both are refused.
+
+    The domain therefore has no hole and no reopening: `PROFILE`'s admitted set
+    was integral doubles up to `2**53 - 1`, then a gap across `[2**53, 1e21)`,
+    then *everything integral again* from `1e21` up to and including the largest
+    finite binary64. `PROFILE_IJSON`'s is integral doubles up to `2**53 - 1`,
+    full stop, plus every non-integral finite double whose shortest rendering
+    round-trips (which is all of them, by construction of `_shortest_digits` —
+    the clause is enforcement, not a filter, and is written out so the property
+    is on the path rather than in a comment).
+
+    Measured consequences, exactly as ruled::
+
+        int(2**54)     reject      float(2**54)   reject
+        int(10**21)    reject      float(1e21)    reject
+        1e20           reject      1e16           reject
+        NaN, ±Infinity reject      -0.0           renders as `0`
+        2**53 - 1      admit       0.1, 5e-324    admit
+
+    **Not yet declared by anything.** No document carries `PROFILE_IJSON` and
+    `identity` does not offer it as a scheme. Implementing a profile and cutting
+    over to it are different acts: the cutover moves the admitted domain of every
+    future `episode-…`, and the ruling makes the exact minimum-length oracle
+    (`audit/number-oracle/run_audit.py`) a hard gate on it. This function exists
+    so the gate has something to be a gate *on*.
+    """
+    if value is True or value is False:
+        raise JcsError(JCS_NOT_JSON, "a bool is not a number", {"path": where})
+
+    if _is_integral(value):
+        # Asked before `_as_double`, and that ordering is load-bearing: an
+        # integer above `2**53` that is *not* exactly a binary64 must be refused
+        # for being out of range, not for being inexact. Both refusals are
+        # correct; only one of them is the reason.
+        magnitude = abs(int(value))
+        if magnitude > MAX_SAFE_INTEGER:
+            raise JcsError(
+                JCS_INT_RANGE,
+                "refusing to canonicalize %r at %s under %s: it is "
+                "mathematically an integer of magnitude %d, above the "
+                "interoperable bound %d that RFC 7493 §2.2 and RFC 8259 §6 both "
+                "name. This holds however the value is written -- `1e20`, "
+                "`100000000000000000000` and `float(1e20)` are one number and "
+                "get one answer. Carry it as a string instead."
+                % (value, where, PROFILE_IJSON, magnitude, MAX_SAFE_INTEGER),
+                {"path": where, "value": repr(value),
+                 "limit": str(MAX_SAFE_INTEGER),
+                 "profile": PROFILE_IJSON,
+                 "reason": REASON_INTEGRAL_OUT_OF_RANGE})
+        return number_to_string(_as_double(value, where))
+
+    token = number_to_string(_as_double(value, where))
+    # The round-trip clause, applied rather than assumed. `_shortest_digits`
+    # searches for the first precision whose output parses back to the identical
+    # double, so this cannot fire -- and it is written out anyway, for the reason
+    # `load_json_bounded` catches a `RecursionError` its own scan has already
+    # made unreachable: a guarantee must not rest on the guard's arithmetic being
+    # right.
+    if float(token) != float(_as_double(value, where)):
+        raise JcsError(
+            JCS_INT_RANGE,
+            "refusing to canonicalize %r at %s under %s: its rendering %s does "
+            "not parse back to the same binary64, so the sealed bytes would "
+            "denote a different number than the one that was sealed."
+            % (value, where, PROFILE_IJSON, token),
+            {"path": where, "value": repr(value), "token": token,
+             "profile": PROFILE_IJSON, "reason": "non-round-tripping-token"})
+    return token
+
+
 def number_to_string(value):
     """ECMAScript `Number::toString(value, 10)`, which RFC 8785 §3.2.2.3 mandates.
 
@@ -471,7 +597,8 @@ def utf16_units(text):
     return tuple(units)
 
 
-def _serialize(value, where):
+def _serialize(value, where, admit=None):
+    admit = admit_number if admit is None else admit
     if value is None:
         return "null"
     if value is True:
@@ -481,10 +608,10 @@ def _serialize(value, where):
     if isinstance(value, str):
         return _string(value, where)
     if isinstance(value, (int, float)):
-        return admit_number(value, where)
+        return admit(value, where)
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(
-            _serialize(item, "%s[%d]" % (where, position))
+            _serialize(item, "%s[%d]" % (where, position), admit)
             for position, item in enumerate(value)) + "]"
     if isinstance(value, dict):
         for key in value:
@@ -497,7 +624,8 @@ def _serialize(value, where):
                     {"path": where, "key_type": type(key).__name__})
         items = sorted(value.items(), key=lambda kv: utf16_units(kv[0]))
         return "{" + ",".join(
-            _string(key, where) + ":" + _serialize(item, "%s.%s" % (where, key))
+            _string(key, where) + ":"
+            + _serialize(item, "%s.%s" % (where, key), admit)
             for key, item in items) + "}"
     raise JcsError(JCS_NOT_JSON,
                    "not JSON data at %s: a value of type %s"
@@ -505,13 +633,33 @@ def _serialize(value, where):
                    {"path": where, "type": type(value).__name__})
 
 
-def canonical_bytes(value):
-    """RFC 8785 canonical UTF-8 bytes for `value`.
+def canonical_bytes(value, profile=PROFILE):
+    """RFC 8785 canonical UTF-8 bytes for `value`, under `profile`.
 
     The encode cannot fail: `_string` has already refused every code point
     UTF-8 has no encoding for, which is the whole of what it could have failed
     on. That ordering is the RFC's, not a convenience -- §3.2.2.2 terminates
     during serialization, so under this scheme a lone surrogate is refused
     strictly earlier than under the legacy one, where `.encode` is what raises.
+
+    `profile` selects the **admission rule** and nothing else. Serialization is
+    identical under both -- same sort, same escapes, same rendering -- so any
+    document both profiles admit gets byte-identical output and the identical
+    id. That is the property that makes the eventual cutover a narrowing of the
+    domain rather than a re-hashing of the corpus: nothing that is legal today
+    and legal tomorrow moves.
+
+    The default is `PROFILE` and stays `PROFILE` until item 13. A default that
+    quietly followed the newest profile would *be* the cutover, arriving as a
+    side effect of a keyword argument.
     """
-    return _serialize(value, "$").encode("utf-8")
+    if profile == PROFILE:
+        admit = admit_number
+    elif profile == PROFILE_IJSON:
+        admit = admit_number_ijson
+    else:
+        raise JcsError(JCS_NOT_JSON,
+                       "unknown canonicalization profile %r; this module "
+                       "implements %s" % (profile, " and ".join(PROFILES)),
+                       {"profile": profile})
+    return _serialize(value, "$", admit).encode("utf-8")

@@ -992,8 +992,12 @@ def test_b29_the_comparison_api_ambiguity_closure_remains_green():
 
     params = inspect.signature(C.compare_episodes).parameters
     assert "runtime_context" not in params, sorted(params)
+    # `strict` was added by 9F-A: a refusal switch that decides whether an
+    # episode minted under a non-containing runner profile may enter a
+    # comparison. It is not an attestation input -- the profile is read out of
+    # the receipt -- so the rule this law guards is unchanged.
     assert set(params) == {"left_dir", "right_dir", "registry",
-                           "extra_verifiers"}, sorted(params)
+                           "extra_verifiers", "strict"}, sorted(params)
 
     f = _fixture()
     left = _bundle("nofix", f["report"]["task_ids"][0])

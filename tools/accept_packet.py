@@ -373,6 +373,56 @@ def tree_mode_diff(a, b):
 # --------------------------------------------------------------------------
 
 
+#: Gates whose subject is the **archive**, not the content tree.
+#:
+#: These four hash, inspect, or rebuild the delivered `.zip`, so their verdict is
+#: a property of the exact bytes that were judged. A verdict *inside* an archive
+#: therefore cannot cover the archive containing it -- adding the report changes
+#: the file. That is a real self-reference and it is named here rather than
+#: glossed: a reader recomputes them by running this script on the file in hand,
+#: which is the only way they could ever have been checked.
+ARCHIVE_GATES = ("G1", "G2", "G3", "G4", "G7")
+
+#: Gates whose subject is the **content tree**: extract, run the battery.
+#:
+#: Adding a JSON report to the tree does not change what the battery does, so
+#: these carry across a rebuild unchanged -- which is what makes embedding them
+#: honest. And they are the ones that matter here: the reviewed 9D packet
+#: shipped a memo that ended while G5/G6 were still running, so the complaint
+#: was precisely that the battery result was not final in the archive.
+CONTENT_GATES = ("G5", "G6")
+
+REPORT_VERSION = "traaviis.packet-acceptance.v1"
+
+
+def _write_report(path, packet, results, ok):
+    """Persist the verdict, with its self-reference stated rather than hidden."""
+    with open(packet, "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    gates = [{"gate": gid, "label": label, "passed": bool(passed),
+              "note": (note or "").splitlines()[0] if note else "",
+              "subject": "archive" if gid in ARCHIVE_GATES else "content"}
+             for gid, label, passed, note in results]
+    document = {
+        "acceptance_version": REPORT_VERSION,
+        "verdict": "ACCEPTED" if ok else "REJECTED",
+        "judged_packet_sha256": digest,
+        "judged_packet_name": os.path.basename(packet),
+        "gates": gates,
+        "self_reference": (
+            "The content gates (%s) are functions of the extracted tree and "
+            "carry unchanged into a rebuild that adds only this file. The "
+            "archive gates (%s) are functions of the delivered bytes, so this "
+            "record names the packet it judged and cannot describe the packet "
+            "that contains it. Recompute them with "
+            "`python3 tools/accept_packet.py <packet>`."
+            % (", ".join(CONTENT_GATES), ", ".join(ARCHIVE_GATES))),
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(document, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("packet")
@@ -382,6 +432,9 @@ def main(argv=None):
                     help="keep the scratch extractions")
     ap.add_argument("--gate", action="append",
                     help="run only these gates (e.g. --gate G1 --gate G7)")
+    ap.add_argument("--report",
+                    help="write the verdict as JSON, for embedding in the "
+                         "next build of the same content tree")
     args = ap.parse_args(argv)
 
     packet = os.path.abspath(args.packet)
@@ -471,6 +524,10 @@ def main(argv=None):
                 print("        " + line)
 
     print("\n%s" % ("ACCEPTED" if ok else "REJECTED"))
+
+    if args.report:
+        _write_report(args.report, packet, results, ok)
+        print("report   %s" % args.report)
     return 0 if ok else 1
 
 

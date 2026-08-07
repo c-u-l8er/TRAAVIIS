@@ -216,11 +216,20 @@ def test_a_pathologically_nested_result_is_none_not_a_crash():
     the decoder's bound is the real C stack measured at call time, not
     `sys.getrecursionlimit()`, so a host with more stack could decode the
     fixture's depth and quietly turn this into a test of nothing. The check runs
-    against the bytes the agent actually wrote (out of `workspace_after`), not a
+    against the bytes the agent actually wrote (out of `result_bytes`), not a
     constant copied from the fixture, so the two cannot drift.
+
+    It used to read those bytes out of `workspace_after`, a second in-memory
+    copy of the whole post-run workspace that `run_agent` built for no consumer
+    but this line. 9D removed it: an unbounded decode of every
+    candidate-controlled file, retained after it had already been hashed, is the
+    same unbounded read this law's own subject is about. `result_bytes` is the
+    one entry that was ever wanted, and it is the bounded copy the trace's
+    `result_file_digest` is taken over — so the law now checks the bytes that
+    were *sealed*, which is strictly the better subject.
     """
     r = _run("deepresult")
-    raw = r["workspace_after"]["result.json"]
+    raw = r["result_bytes"]
     try:
         json.loads(raw)
     except RecursionError:

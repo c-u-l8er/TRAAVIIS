@@ -7,6 +7,12 @@ __pycache__/
 dist/
 *.zip
 
+# A git bundle of this branch cannot live on this branch: every commit after it
+# lands makes it incomplete, so a committed copy is wrong by construction. It is
+# a packet member, rebuilt by `tools/build_provenance.py` at packet time.
+# COMMIT_PROVENANCE.json -- the half a reader can check offline -- IS committed.
+provenance/
+
 # editors / os
 .DS_Store
 *.swp

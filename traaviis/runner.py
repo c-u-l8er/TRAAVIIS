@@ -34,6 +34,15 @@ GPT-5.6 closure rulings implemented here:
       ``writable_paths`` is recorded in ``policy_violations`` (and its digest in
       the trace); the orchestrator decides the episode verdict. True filesystem
       escapes (writes outside the workspace tree) are **not** detected in v1.
+  9D  Every filesystem read and every process capture on this path is bounded by
+      the shared ``execlimits`` profile — regular files only, streamed hashes,
+      declared byte bounds on the workspace / result / patch, streaming output
+      caps, and a process-*group* kill on timeout or overflow. A refusal is
+      recorded as a policy violation and the episode still completes; it is
+      never a host OOM and never a hang. Before this, ``mkfifo output.pipe``
+      followed by a clean exit made the post-run scan block forever with nothing
+      persisted — a seventh way for a candidate to erase its own failing score.
+
   R4  Trace digests are sha256 over canonical JSON of ``{relpath: content_hash}``
       for created/modified/deleted maps, ``{relpath: mode}`` for mode changes, and
       the sorted ``policy_violations`` list; ``result_file_digest`` is sha256 of
@@ -47,16 +56,15 @@ GPT-5.6 closure rulings implemented here:
 import hashlib
 import os
 import shutil
-import stat
-import subprocess
 import tempfile
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from . import boundedjson as _bjson, identity
+from . import boundedjson as _bjson, execlimits, identity
 from .paths import safe_join
 
-__all__ = ["run_agent", "RunResult", "TRACE_VERSION", "RUNNER_PROFILE"]
+__all__ = ["run_agent", "RunResult", "TRACE_VERSION", "RUNNER_PROFILE",
+           "RESOURCE_VIOLATION_PREFIX"]
 
 TRACE_VERSION = "residency.trace.v1"
 
@@ -192,28 +200,67 @@ def _evidence_name(rel: str) -> str:
 
 
 def _scan(root: str) -> Dict[str, dict]:
-    """``{canonical evidence name: {hash, mode, os_path}}`` for every file under ``root``.
+    """``{canonical evidence name: {hash, mode, size, os_path}}`` for every regular file.
 
     ``os_path`` is the concrete host path the entry was read from. It is carried
     because the canonical name is not always openable (see ``_evidence_name``),
     and it is never hashed: callers project ``hash`` / ``mode`` out and the
     digests are taken over those projections alone.
+
+    The walk, the type check and every resource bound live in
+    ``execlimits.scan_tree``; this function is now the ``_evidence_name``
+    binding and nothing else. That is the point of the move — the *tests*
+    verifier and any future collector get the identical bounds from the identical
+    code, rather than each growing its own opinion about what a workspace may
+    contain.
+
+    Raises ``execlimits.ResourceLimitError`` for a FIFO, socket or device, for
+    too many files, for one oversized file, or for an oversized total. This
+    function used to do ``open(abspath, "rb").read()`` on every non-symlink
+    filename, with no check that the entry was a regular file and no bound on
+    what it read: ``mkfifo output.pipe`` followed by a normal exit made that
+    ``open`` block forever, after the agent was already gone — no exception, no
+    receipt, no episode. ``run_agent`` catches the refusal and records it; see
+    ``RESOURCE_VIOLATION_PREFIX``.
     """
-    out: Dict[str, dict] = {}
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [d for d in dirnames
-                       if not os.path.islink(os.path.join(dirpath, d))]
-        for name in filenames:
-            abspath = os.path.join(dirpath, name)
-            if os.path.islink(abspath):
-                continue
-            rel = os.path.relpath(abspath, root).replace(os.sep, "/")
-            with open(abspath, "rb") as fh:
-                digest = _sha256_bytes(fh.read())
-            mode = stat.S_IMODE(os.lstat(abspath).st_mode)
-            out[_evidence_name(rel)] = {
-                "hash": digest, "mode": f"{mode:04o}", "os_path": abspath}
-    return out
+    return execlimits.scan_tree(root, name_of=_evidence_name)
+
+
+#: The prefix under which a resource-policy refusal is recorded in
+#: ``policy_violations``.
+#:
+#: A resource violation **is** a run-policy violation — the policy declares a
+#: resource profile and the run left it — so it is recorded in the list the
+#: evidence pipeline already seals, re-attests and scores, rather than in a
+#: second list that would need its own bundle member, its own manifest key, its
+#: own trace digest and its own replay branch. The consequence is the one that
+#: matters: ``evalone`` reads a non-empty ``policy_violations`` as *tampered*
+#: (reward 0, ``validity: invalid``), live and on replay, so a candidate that
+#: leaves a FIFO or writes a 20 GiB ``result.json`` earns a zero instead of
+#: erasing its episode. That is strictly worse for the candidate than the
+#: failing score it was trying to escape, which is the only property that makes
+#: closing an erasure route worth anything.
+#:
+#: The leading ``/`` is load-bearing exactly as it is in
+#: ``_UNDECODABLE_NAME_PREFIX``: every other entry in this list is
+#: ``os.path.relpath``-derived and can never begin with ``/``, so a candidate
+#: cannot forge one of these by naming a file after it.
+RESOURCE_VIOLATION_PREFIX = "/resource-limit.v1:"
+
+
+def _resource_violation(exc: "execlimits.ResourceLimitError") -> str:
+    """One refusal as the stable string sealed into ``policy_violations``.
+
+    ``reason`` and ``subject`` only. The message carries sizes, and a size is a
+    fact about *this* run's bytes rather than about the rule — but the *subject*
+    is what a reader needs to act on, and it is already a canonical evidence
+    name (``scan_tree`` applies ``_evidence_name`` before it refuses), so it is
+    encodable by construction.
+    """
+    subject = exc.detail.get("subject")
+    if subject is None:
+        return RESOURCE_VIOLATION_PREFIX + exc.reason
+    return "%s%s:%s" % (RESOURCE_VIOLATION_PREFIX, exc.reason, subject)
 
 
 def _writable_ok(rel: str, writable: Sequence[str]) -> bool:
@@ -238,10 +285,25 @@ def run_agent(
 
     Returns a ``RunResult`` with: ``exit_code``, ``timed_out``,
     ``output_truncated``, ``stdout``/``stderr`` (bytes, capped), ``result`` (parsed
-    JSON or ``None``), ``patch_text`` (or ``None``), ``files_created`` /
-    ``files_modified`` (``{relpath: content_hash}``), ``policy_violations``,
-    ``workspace_after`` (``{relpath: text}``), and a canonical ``trace``
-    (``TraceV1`` with its ``trace_id`` set).
+    JSON or ``None``), ``patch_text`` (or ``None``), ``result_bytes`` (the raw
+    declared result file, bounded), ``files_created`` / ``files_modified``
+    (``{relpath: content_hash}``), ``policy_violations``, ``resource_violations``,
+    and a canonical ``trace`` (``TraceV1`` with its ``trace_id`` set).
+
+    **Every read and every capture on this path is bounded** by
+    ``execlimits.LIMITS`` (§9D). Output is capped *while it is being read*, by
+    threads that keep draining the pipe, rather than buffered whole and sliced
+    afterwards; the child is a session leader and the whole *group* is killed on
+    a deadline or an overflow, so a grandchild holding stdout cannot keep the
+    collection waiting after the timeout has fired. The workspace scan opens
+    regular files only and streams their hashes; the declared result and patch
+    are read with a bound rather than read and then judged.
+
+    ``resource_violations`` is the sorted list of refusals this run collected,
+    and every entry also appears in ``policy_violations`` — see
+    ``RESOURCE_VIOLATION_PREFIX`` for why the two are one list downstream. The
+    field is separate here only so a caller can ask "did a *bound* refuse
+    anything?" without string-matching a prefix.
     """
     timeout = policy.get("timeout_seconds")
     max_out = int(policy.get("max_output_bytes", 4 * 1024 * 1024))
@@ -251,53 +313,139 @@ def run_agent(
     writable = list(policy.get("writable_paths", ["."]))
 
     root = tempfile.mkdtemp(prefix="traaviis-run-")
+    resource_violations: List[str] = []
     try:
         _materialize(content, root)
+        # The baseline is over bytes *this function just wrote* from the sealed
+        # snapshot, so a refusal here is an inadmissible fixture rather than
+        # anything the candidate did. It is deliberately not caught: an operator
+        # who seals a snapshot over the profile should see the refusal, not a
+        # receipt scoring a candidate for it.
         before = _scan(root)
 
-        timed_out = False
-        try:
-            proc = subprocess.run(
-                list(agent_command),
-                cwd=root,
-                env=sealed_env,  # sealed map only; host env not inherited (§10a)
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-            )
-            exit_code: Optional[int] = proc.returncode
-            stdout, stderr = proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            exit_code = None
-            stdout = exc.stdout or b""
-            stderr = exc.stderr or b""
-
-        stdout_truncated = len(stdout) > max_out
-        stderr_truncated = len(stderr) > max_out
+        run = execlimits.run_bounded(
+            list(agent_command),
+            cwd=root,
+            env=sealed_env,  # sealed map only; host env not inherited (§10a)
+            timeout=timeout,
+            max_stdout_bytes=max_out,
+            max_stderr_bytes=max_out,
+        )
+        if run["spawn_exception"] is not None:
+            # **Re-raised, not recorded**, and this is the one outcome of
+            # `run_bounded` that `run_agent` refuses to turn into evidence.
+            # `subprocess.run` used to raise `FileNotFoundError` straight out of
+            # this function when the agent's ``argv[0]`` did not exist, and
+            # `evalsplit._run_episode` catches `OSError` for exactly that
+            # reason, in its own words: "an agent that cannot be launched is a
+            # result for this task, exactly like one that ran and failed" — so
+            # one caller's typo costs one task instead of abandoning the split
+            # and, once several candidates share a split, every remaining
+            # candidate too.
+            #
+            # Absorbing it here would have been silent and wrong in a specific
+            # way: the candidate would get a *complete* `RunResult` describing a
+            # process that never existed, and `batch` would compare it against
+            # candidates that really ran. `test_batch::B14` measures precisely
+            # that — a candidate that cannot be launched must retain no episode
+            # and must turn every pair it is in into a typed refusal — and it is
+            # what caught this on the way in.
+            raise run["spawn_exception"]
+        exit_code: Optional[int] = run["exit_code"]
+        timed_out = run["timed_out"]
+        stdout, stderr = run["stdout"], run["stderr"]
+        stdout_truncated = run["stdout_truncated"]
+        stderr_truncated = run["stderr_truncated"]
         output_truncated = stdout_truncated or stderr_truncated
-        stdout, stderr = stdout[:max_out], stderr[:max_out]
 
-        after = _scan(root)
+        # --- 9E: attribution --------------------------------------------------
+        # An output cap is a **deterministic byte limit on the candidate's own
+        # bytes**, so crossing it is evidence against the candidate: invalid
+        # episode, reward 0. It used to reach §10a's substrate-failure rule and
+        # come out as `error` with `reward = null` — which is the erasure shape,
+        # since a talkative agent could unscore itself by printing. The ruling's
+        # dividing line is attribution, not severity:
+        #
+        #   deterministic candidate-byte limit  -> evidence against the candidate
+        #   host/wall-clock availability limit  -> no trustworthy verdict
+        #
+        # A timeout stays on the second line and is untouched here.
+        if stdout_truncated:
+            resource_violations.append(
+                RESOURCE_VIOLATION_PREFIX + "stdout_too_large")
+        if stderr_truncated:
+            resource_violations.append(
+                RESOURCE_VIOLATION_PREFIX + "stderr_too_large")
+
+        # Containment, reported rather than assumed. `enforced` is true only for
+        # a real cgroup v2 boundary; a session plus `killpg` is a mitigation that
+        # `setsid` defeats, and the ruling is explicit that a host which cannot
+        # provide the mechanism must not claim it.
+        containment_facts = run["process_containment"] or {}
+        if run["surviving_processes"]:
+            # Candidate-attributable: a process that stayed inside a boundary
+            # the evaluator did establish, and outlived the kill. Evidence.
+            resource_violations.append(
+                RESOURCE_VIOLATION_PREFIX + "processes_escaped")
+        # **A missing boundary is deliberately NOT a violation** (9F ruling).
+        # 9E recorded `containment_unavailable` here, which ran the candidate
+        # and then marked its episode invalid — punishing a submission for the
+        # evaluator host's topology. A boundary that cannot be *established* is
+        # an unavailable evaluation, and the refusal belongs before the
+        # candidate starts: see `containment.preflight` and
+        # `CERTIFIED_RUNNER_PROFILE`. The capability vector still travels on the
+        # result, so nothing is hidden — it is simply not charged to the
+        # candidate.
+
+        # The post-run scan is the one that walks bytes the *candidate* wrote,
+        # and it is the FIFO route. A refusal is recorded and the episode
+        # continues: the alternative — letting `ResourceLimitError` escape — is
+        # the crash-erases-the-grade shape this file has closed twice already,
+        # once for an undecodable filename and once for an undecodable result.
+        try:
+            after = _scan(root)
+        except execlimits.ResourceLimitError as exc:
+            resource_violations.append(_resource_violation(exc))
+            after = {}
         created = {p: e["hash"] for p, e in after.items() if p not in before}
         modified = {p: e["hash"] for p, e in after.items()
                     if p in before and before[p]["hash"] != e["hash"]}
         deleted = {p: before[p]["hash"] for p in before if p not in after}
         modes_changed = {p: after[p]["mode"] for p in after
                          if p in before and before[p]["mode"] != after[p]["mode"]}
-        violations = sorted(
-            p for p in list(created) + list(modified) + list(deleted)
-            if not _writable_ok(p, writable)
-        )
+        violations = sorted(set(
+            [p for p in list(created) + list(modified) + list(deleted)
+             if not _writable_ok(p, writable)]
+            + resource_violations
+        ))
 
         result_obj: Optional[Any] = None
+        # `safe_join` is still called, and its *only* job now is to refuse a
+        # traversing `result_path` before anything is opened. The read itself
+        # goes through `openat` from a descriptor for `root` (9E), so the joined
+        # string is never the thing that is opened -- a name that was verified
+        # and then used is the race the ruling asked to close.
         rp = safe_join(root, result_path)
         result_bytes = b""
-        if os.path.isfile(rp):
-            with open(rp, "rb") as fh:
-                result_bytes = fh.read()
+        if os.path.lexists(rp):
+            try:
+                result_bytes = execlimits.read_file_bounded(
+                    root, result_path, execlimits.MAX_RESULT_BYTES,
+                    "result_too_large", subject=result_path)
+            except execlimits.ResourceLimitError as exc:
+                # A `result.json` that is a FIFO, or one over the declared
+                # bound. Both used to arrive here through an unbounded
+                # `fh.read()`: the first blocked forever and the second had to
+                # be fully allocated before the 8 MiB JSON boundary could refuse
+                # it, which is why that boundary's own docstring said the real
+                # closure was "a declared byte bound on the result file". This
+                # is that bound. No result is a `fail` under §10a; the violation
+                # is additionally sealed, so the episode is invalid rather than
+                # merely unanswered.
+                resource_violations.append(_resource_violation(exc))
+                violations = sorted(set(violations) | {_resource_violation(exc)})
+                result_bytes = b""
+        if result_bytes:
             try:
                 result_obj = _bjson.load_json_bounded(result_bytes)
             except _bjson.BoundedJsonError:
@@ -367,28 +515,42 @@ def run_agent(
 
         patch_text: Optional[str] = None
         pp = safe_join(root, patch_path)
-        if os.path.isfile(pp):
-            with open(pp, "rb") as fh:
-                patch_bytes = fh.read()
+        if os.path.lexists(pp):
+            try:
+                patch_bytes = execlimits.read_file_bounded(
+                    root, patch_path, execlimits.MAX_PATCH_BYTES,
+                    "patch_too_large", subject=patch_path)
+            except execlimits.ResourceLimitError as exc:
+                resource_violations.append(_resource_violation(exc))
+                violations = sorted(set(violations) | {_resource_violation(exc)})
+                patch_bytes = b""
             # A candidate patch is a unified diff over UTF-8 text; decode strictly.
             # Invalid UTF-8 is not a valid diff — reject it (no patch) rather than
             # lossily replacing bytes, which would seal a patch that never existed
             # and could not be re-attested on replay (GPT-5.6 strict-decode ruling).
-            try:
-                patch_text = patch_bytes.decode("utf-8")
-            except UnicodeDecodeError:
-                patch_text = None
+            if patch_bytes:
+                try:
+                    patch_text = patch_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    patch_text = None
 
-        # Keyed by the canonical evidence name, opened by the concrete host path
-        # ``_scan`` already read it from. Re-deriving the path from the key (the
-        # old ``safe_join(root, rel)``) cannot work for an escaped name and was
-        # never necessary: every key here came from this function's own walk
-        # under ``root``, so there is nothing to re-validate, and reading the
-        # recorded path guarantees the bytes reported are the bytes hashed.
-        workspace_after = {}
-        for rel, entry in after.items():
-            with open(entry["os_path"], "rb") as fh:
-                workspace_after[rel] = fh.read().decode("utf-8", errors="replace")
+        # `workspace_after` is **gone**, and its absence is the point.
+        #
+        # It re-read every file the scan had just hashed and decoded the lot into
+        # a second in-memory map — so the post-run workspace was held whole,
+        # twice, and the only bound on either copy was the host's memory.
+        # `evalone` never read it. Nothing in the receipt, the trace, the bundle
+        # or the replay was derived from it. It was an unbounded copy of
+        # candidate-controlled bytes retained for one battery's convenience.
+        #
+        # That battery (`test_runner`, the pathological-`result.json` law) needed
+        # exactly one entry from it: the bytes of the declared result file, to
+        # assert its own precondition against what the agent really wrote rather
+        # than against a constant. Those bytes are `result_bytes`, which this
+        # function already has, already bounds, and already hashes into
+        # `result_file_digest`. So the field below replaces the map: one
+        # already-read, already-bounded value instead of a whole second
+        # workspace.
 
         event = {
             "command": _normalize_command(agent_command),
@@ -404,6 +566,17 @@ def run_agent(
             "result_file_digest": _sha256_bytes(result_bytes),
             "policy_violations_digest": _sha256_json(violations),
         }
+        if resource_violations:
+            # **Conditional, and that is deliberate.** Adding this key
+            # unconditionally would change the canonical bytes of every event
+            # this runner has ever produced and move every sealed ``trace-…``
+            # and ``episode-…`` in the world, in exchange for recording a
+            # profile name on runs that never touched it. A run that *did* hit a
+            # bound has no id to move: before this change it hung on a FIFO or
+            # died allocating a 20 GiB file, and produced no episode at all. So
+            # the key appears exactly where a replayer needs to know which
+            # profile refused, and nowhere else.
+            event["execution_limits_version"] = execlimits.EXECUTION_LIMITS_VERSION
         trace = {"trace_version": TRACE_VERSION, "events": [event]}
         trace["trace_id"] = identity.trace_id(trace)
 
@@ -422,7 +595,10 @@ def run_agent(
             files_deleted=deleted,
             file_modes_changed=modes_changed,
             policy_violations=violations,
-            workspace_after=workspace_after,
+            resource_violations=sorted(resource_violations),
+            process_containment=containment_facts,
+            surviving_processes=run["surviving_processes"],
+            result_bytes=result_bytes,
             trace=trace,
         )
     finally:

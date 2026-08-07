@@ -79,6 +79,7 @@ import hashlib
 import os
 import threading
 
+from . import containment as _containment
 from . import execfacts, identity, runner
 from . import substrates as _substrates
 
@@ -254,7 +255,8 @@ def trusted_run_result(submission):
     `timed_out`                 `False` — nothing ran, so nothing timed out
     `output_truncated`          `False` — nothing was captured to truncate
     `policy_violations`         `[]` — no filesystem to escape from
-    `files_*` / `workspace_after`  empty — the submission wrote nothing here
+    `resource_violations`       `[]` — nothing was read, so nothing was bounded
+    `files_*`                   empty — the submission wrote nothing here
     ==========================  ==========================================
 
     `timed_out=False` with `exit_code=None` would be contradictory under the
@@ -279,7 +281,29 @@ def trusted_run_result(submission):
         files_deleted={},
         file_modes_changed={},
         policy_violations=[],
-        workspace_after={},
+        resource_violations=[],
+        # No process was launched, so there is nothing to contain and nothing
+        # that could have escaped. `enforced: false` here is not a weaker
+        # guarantee -- it is the honest label for an inapplicable question, the
+        # same reading `execfacts` takes for this profile's sandbox fields.
+        # The full capability vector, with every axis false rather than a
+        # shorthand. No process was launched, so there is nothing to contain and
+        # nothing that could have escaped -- but "inapplicable" must not read as
+        # "satisfied", which is the shape of the inference 9E made.
+        process_containment={
+            "profile": _containment.UNCONTAINED_PROFILE,
+            "kill_boundary_enforced": False,
+            "control_plane_isolated": False,
+            "resource_controllers_enforced": False,
+            "cleanup_closed": True,
+            "certifiable": False,
+            "uncertifiable_reasons": ["no_process_was_launched"],
+            "remaining_processes_in_boundary": 0,
+            "controllers": [],
+            "nested_cgroups_removed": 0,
+        },
+        surviving_processes=0,
+        result_bytes=b"",
         trace=submission_trace(submission),
     )
 

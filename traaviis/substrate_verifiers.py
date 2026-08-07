@@ -67,15 +67,14 @@ substrate unavailability, sealed under a stable code.
 """
 
 import hashlib
-import subprocess
 import tempfile
 from typing import Any, List, Mapping, Optional, Tuple
 
-from . import identity, reward, toolchain
+from . import execlimits, identity, reward, toolchain
 from .execfacts import UnsupportedPolicyError, validate_run_policy
 from .forge_adapter import (
-    ERROR_CODE_FORGE_TIMEOUT, ForgeIdentityAdapterV1, ForgeTimeout,
-    ForgeUnavailable,
+    ERROR_CODE_FORGE_SOURCE_TOO_LARGE, ERROR_CODE_FORGE_TIMEOUT,
+    ForgeIdentityAdapterV1, ForgeSourceTooLarge, ForgeTimeout, ForgeUnavailable,
 )
 from .paths import PathError, safe_join, safe_relposix
 from .runner import RUNNER_PROFILE, _materialize, _normalize_command, _seal_env
@@ -116,15 +115,27 @@ __all__ = [
 #                  they walk already-bounded structures, and they call nothing.
 #                  Their inputs are candidate-controlled, which is why the
 #                  *exception* seam covers them; their control flow is not.
-#   tests          Subprocess, timeout-controlled. Has always been: every command
-#                  runs through `subprocess.run(..., timeout=cmd.timeout_seconds)`
-#                  in `run_command_set`, and a `TimeoutExpired` is `_INFRA_ERROR`
-#                  → `error`. This row is a statement of existing fact.
-#   identity       Worker process, timeout-controlled — new. It used to call
+#   tests          Bounded process group. This row used to read
+#                  `subprocess_timeout`, and the ruling that opened 9D was right
+#                  that it did not say enough: `subprocess.run(timeout=…)` is a
+#                  *clock* deadline and nothing else. It kills the direct child,
+#                  so a grandchild that inherited stdout survives it and keeps
+#                  the collection waiting; and it buffers all output and applies
+#                  `max_output_bytes` afterwards, so a command emitting
+#                  indefinitely exhausts the host before any bound is reached.
+#                  A deadline that can be outlived by a grandchild and a cap
+#                  that arrives after the memory is gone are not containment.
+#                  Every command now runs through `execlimits.run_bounded`:
+#                  session leader, streaming caps, group kill on deadline or
+#                  overflow, bounded reap.
+#   identity       Bounded worker group. It used to call
 #                  `adapter.lower_source(patched[rel])` in this process, on a WRL
 #                  source the candidate wrote, with no timeout anywhere on the
 #                  path. That asymmetry against `tests` was the hole; see
-#                  `forge_adapter._lower_in_worker`.
+#                  `forge_adapter._lower_in_worker`. The worker's request and
+#                  response are now bounded too — an internally generated
+#                  envelope around a candidate-authored payload is not a trusted
+#                  internal parse.
 #   external       **Required.** A verifier this repository did not write, reaching
 #                  `evalone` through `extra_verifiers` or a future plugin seam, is
 #                  NOT trusted in-process and must provide its own killable
@@ -140,8 +151,8 @@ __all__ = [
 # is the same reason `StubForgeAdapter` may lower in-process.
 VERIFIER_ISOLATION_POLICY = {
     "builtin_pure": "in_process_trusted",
-    "tests": "subprocess_timeout",
-    "identity": "worker_process_timeout",
+    "tests": "bounded_process_group",
+    "identity": "bounded_worker_group",
     "external": "worker_process_required",
 }
 
@@ -348,31 +359,78 @@ def run_command_set(
                                 "error": "unsafe_cwd"})
                 return _INFRA_ERROR, records
             timeout = cmd.get("timeout_seconds")
-            try:
-                proc = subprocess.run(
-                    _command_argv(cmd, executables),
-                    cwd=cwd,
-                    env=sealed_env,
-                    shell=False,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=timeout,
-                )
-            except (subprocess.TimeoutExpired, OSError) as exc:
+            # `execlimits.run_bounded`, not `subprocess.run`. The row above
+            # claiming this verifier is `subprocess_timeout`-contained was true
+            # about the *clock* and false about the *process tree* and the
+            # *memory*: `subprocess.run` buffers all output and applies a cap
+            # afterwards, so a command emitting indefinitely exhausts the host
+            # before any bound is reached, and its `timeout=` kills the direct
+            # child only, so a grandchild holding stdout keeps the collection
+            # waiting after the deadline that was supposed to end it. A
+            # deadline is not a bounded process-tree-and-evidence boundary, and
+            # the row now describes one.
+            proc = execlimits.run_bounded(
+                _command_argv(cmd, executables),
+                cwd=cwd,
+                env=sealed_env,
+                timeout=timeout,
+                max_stdout_bytes=execlimits.MAX_STDOUT_BYTES,
+                max_stderr_bytes=execlimits.MAX_STDERR_BYTES,
+            )
+            if proc["spawn_error"] is not None:
                 records.append({"command_id": cid, "exit_code": None,
                                 "expected_exit_codes": list(expected),
                                 "stdout_digest": None, "stderr_digest": None,
-                                "error": type(exc).__name__})
+                                "error": proc["spawn_error"]})
                 return _INFRA_ERROR, records
-            records.append({
+            if proc["timed_out"]:
+                records.append({"command_id": cid, "exit_code": None,
+                                "expected_exit_codes": list(expected),
+                                "stdout_digest": None, "stderr_digest": None,
+                                "error": "TimeoutExpired"})
+                return _INFRA_ERROR, records
+            record = {
                 "command_id": cid,
-                "exit_code": proc.returncode,
+                "exit_code": proc["exit_code"],
                 "expected_exit_codes": list(expected),
-                "stdout_digest": _sha256_bytes(proc.stdout),
-                "stderr_digest": _sha256_bytes(proc.stderr),
-            })
-            if proc.returncode not in expected:
+                "stdout_digest": _sha256_bytes(proc["stdout"]),
+                "stderr_digest": _sha256_bytes(proc["stderr"]),
+            }
+            if (proc["stdout_truncated"] or proc["stderr_truncated"]) \
+                    and phase == BASELINE:
+                # **Baseline overflow is an inadmissible fixture, not a verdict**
+                # (9E attribution). The baseline judges the *fixture*: a command
+                # that floods its output before the candidate has touched
+                # anything says the sealed subject is not the world the task
+                # describes. Marking the candidate down for it would score
+                # somebody for a task nobody could have passed.
+                records.append({"command_id": cid, "exit_code": None,
+                                "expected_exit_codes": list(expected),
+                                "stdout_digest": None, "stderr_digest": None,
+                                "error": "OutputOverflow",
+                                "execution_limits_version":
+                                    execlimits.EXECUTION_LIMITS_VERSION})
+                return _INFRA_ERROR, records
+            if proc["stdout_truncated"] or proc["stderr_truncated"]:
+                # Conditional, for the same reason `runner` makes the trace's
+                # `execution_limits_version` conditional: a command that stayed
+                # inside the profile records byte-identical evidence and its
+                # `episode-…` does not move. A command that went past it is
+                # recording a digest over *truncated* bytes, and evidence that
+                # does not say so is a false record — the digest would look like
+                # a complete capture forever after.
+                record["stdout_truncated"] = bool(proc["stdout_truncated"])
+                record["stderr_truncated"] = bool(proc["stderr_truncated"])
+                record["execution_limits_version"] = \
+                    execlimits.EXECUTION_LIMITS_VERSION
+            records.append(record)
+            if proc["exit_code"] not in expected:
+                # Includes the patched-phase overflow: `run_bounded` reports no
+                # exit code for a run that emitted more than the profile keeps,
+                # and `None` is not in any `allowed_exit_codes`, so the command
+                # did not behave as the plan declares. That is a `tests` **fail**
+                # (9E attribution) -- the candidate's own command, its own bytes,
+                # a declared bound -- and not a substrate error.
                 all_pass = False
         return (_ALL_PASS if all_pass else _SOME_FAIL), records
     finally:
@@ -498,6 +556,22 @@ def make_identity_verifier(adapter: ForgeIdentityAdapterV1):
                     reward.ERROR,
                     {"reason": "forge lowering timed out",
                      "error_code": ERROR_CODE_FORGE_TIMEOUT,
+                     "path": path})
+            except ForgeSourceTooLarge:
+                # **fail, not error** (9E attribution). The bound is a declared
+                # number of bytes: the same source is over it on every host, so
+                # this is a fact about what the candidate wrote and not about
+                # this machine. Under 9D it was a `ForgeUnavailable` and came out
+                # as `error` -- which nulls the reward, so a candidate could
+                # unscore its identity signal by writing a large enough file.
+                # The message is *not* sealed, only the stable code: a size in
+                # the detail would be a number about these bytes rather than
+                # about the rule, and `path` is already inside `task-`.
+                return VerifierResult(
+                    reward.FAIL,
+                    {"reason": "patched source exceeds the identity source-size "
+                               "profile",
+                     "error_code": ERROR_CODE_FORGE_SOURCE_TOO_LARGE,
                      "path": path})
             except ForgeUnavailable as exc:
                 return VerifierResult(reward.ERROR, {"reason": f"forge down: {exc}"})

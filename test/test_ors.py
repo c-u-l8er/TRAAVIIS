@@ -50,7 +50,6 @@ import hashlib
 import inspect
 import json
 import os
-import re
 import shutil
 import stat
 import sys
@@ -239,6 +238,48 @@ def _refuses(fn, code, what):
             what, code, getattr(ex, "code", None), ex)
         return ex
     raise AssertionError("%s: expected %s, got no refusal" % (what, code))
+
+
+def _code_identifiers(source):
+    """Every *code* identifier in `source`: names, attributes, imports, args.
+
+    String constants, docstrings and comments are excluded by construction.
+    Four laws in this battery (O13, O27, O28, O30) made claims about structure
+    by searching source **text**, and Law B (`test_boundedjson::J17`) registered
+    all four as violations owned here. The rule this file already learned the
+    hard way at O30 -- where a raw scan reported `ors` from inside `separators`
+    -- is that a claim about code has to be read off the parse tree. `_ors_codes`
+    below has done it correctly since it was written; these three helpers extend
+    the same instrument to the rest of the file.
+    """
+    names = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(source))):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.keyword) and node.arg:
+            names.add(node.arg)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names.update(node.module.split("."))
+            for alias in node.names:
+                names.update(alias.name.split("."))
+                if alias.asname:
+                    names.add(alias.asname)
+    return names
+
+
+def _called_names(source):
+    """The dotted name of every call in `source`, unparsed."""
+    return {ast.unparse(node.func)
+            for node in ast.walk(ast.parse(textwrap.dedent(source)))
+            if isinstance(node, ast.Call)}
 
 
 def _ors_codes(source):
@@ -523,8 +564,14 @@ def test_o10_the_server_builds_the_run_result_and_it_says_nothing_executed():
     assert run["stdout"] == b"" and run["stderr"] == b""
     assert run["policy_violations"] == []
     for empty in ("files_created", "files_modified", "files_deleted",
-                  "file_modes_changed", "workspace_after"):
+                  "file_modes_changed"):
         assert run[empty] == {}, empty
+    # `workspace_after` was in this list until 9D removed the field; a
+    # submission that executed nothing had nothing to put in it either way.
+    # `resource_violations` takes its place as the empty-by-construction member:
+    # no file was read, so no bound was applied.
+    assert run["resource_violations"] == []
+    assert run["result_bytes"] == b""
     assert run["result"] == {"finding": FINDING}
     assert run["patch_text"] == PATCH
 
@@ -560,8 +607,22 @@ def test_o11_the_adapter_profile_is_a_new_key_and_moved_no_existing_episode():
     assert EF.RUNNER_PROFILES[O.ORS_RUNNER_PROFILE] == {
         "filesystem": "not_applicable", "network": "not_applicable",
     }
-    assert sorted(EF.RUNNER_PROFILES) == ["residency.trusted-local.v1",
-                                          "traaviis.ors-submission.v1"]
+    # 9F-A added two more **keys** -- a certified profile and an explicit
+    # best-effort one -- under the same rule this law exists to enforce. The
+    # two frozen dicts above are what protect the corpus; the key list is
+    # allowed to grow and is pinned so that growth is deliberate.
+    assert sorted(EF.RUNNER_PROFILES) == [
+        "residency.certified-local.v1",
+        "residency.trusted-local-best-effort.v1",
+        "residency.trusted-local.v1",
+        "traaviis.ors-submission.v1"]
+    # ...and neither newcomer is the default anything. The default runner
+    # profile is still `residency.trusted-local.v1`, because changing it would
+    # move every episode ever minted just as surely as editing its dict.
+    assert RUN.RUNNER_PROFILE == "residency.trusted-local.v1"
+    assert EF.CERTIFIED_RUNNER_PROFILE not in EF.BEST_EFFORT_PROFILES
+    assert "residency.trusted-local.v1" in EF.BEST_EFFORT_PROFILES, \
+        "the historical local profile always was best-effort; say so"
     assert EF.NON_EXECUTING_PROFILES == frozenset({"traaviis.ors-submission.v1"})
     assert "residency.trusted-local.v1" not in EF.NON_EXECUTING_PROFILES, \
         "the local runner really does execute; it must never be listed here"
@@ -629,10 +690,17 @@ def test_o13_a_null_exit_code_is_not_read_as_a_substrate_failure():
 
     # Stated structurally as well as behaviourally: the guard is a real branch
     # in both the live path and the replay path, and they must agree.
-    live_src = inspect.getsource(E._finish_episode)
-    replay_src = inspect.getsource(EB.verify_episode_bundle)
-    for name, src in (("evalone", live_src), ("episode_bundle", replay_src)):
-        assert "NON_EXECUTING_PROFILES" in src, \
+    #
+    # Read as an identifier, not as a substring. Both functions carry long
+    # comments explaining exactly what this gate is for -- `evalone`'s runs to
+    # six lines -- so a text scan was satisfied by the explanation and would
+    # have stayed green if the branch itself were deleted and the comment left
+    # behind. That is the failure mode Law B names, and this law was on its
+    # register for it.
+    for name, function in (("evalone", E._finish_episode),
+                           ("episode_bundle", EB.verify_episode_bundle)):
+        names = _code_identifiers(inspect.getsource(function))
+        assert "NON_EXECUTING_PROFILES" in names, \
             "%s must gate the run-failure override on the profile" % name
 
 
@@ -1085,10 +1153,13 @@ def test_o27_the_served_catalog_is_exactly_the_split():
              "KERNEL_TASK_UNKNOWN", "describing a task not served")
 
     # And the restriction is applied in `open_adapter`, against the split, by
-    # the same `resolve_split` the sequential evaluator uses.
-    src = inspect.getsource(O.open_adapter)
-    assert "resolve_split" in src
-    assert "_entries" in src, "the catalog restriction must be structural"
+    # the same `resolve_split` the sequential evaluator uses. `resolve_split`
+    # must be *called* -- a mention of it is not a restriction -- and the
+    # catalog it restricts must be the one the kernel reads.
+    called = _called_names(inspect.getsource(O.open_adapter))
+    assert any(name.endswith("resolve_split") for name in called), called
+    assert "_entries" in _code_identifiers(inspect.getsource(O.open_adapter)), \
+        "the catalog restriction must be structural"
 
     with _Live(adapter) as live:
         status, body = live.request("POST", "/sessions",
@@ -1130,9 +1201,14 @@ def test_o28_the_prompt_is_static_and_the_ordering_is_canonical():
 
     # Ordering is canonical by task_id, not manifest order: a remote client that
     # pages this list must be able to page it again and get the same page.
+    #
+    # The prompt half of this law is genuinely about *prose* -- a prompt is text
+    # a model reads -- and stays a substring test, correctly. This last line was
+    # not: `"sorted(" in inspect.getsource(list_tasks)` is a claim about a call,
+    # satisfiable by a comment, and it is the reason Law B registered O28. It is
+    # a call node now.
     assert adapter.list_tasks() == sorted(adapter.list_tasks())
-    src = inspect.getsource(O.OrsAdapterV1.list_tasks)
-    assert "sorted(" in src
+    assert "sorted" in _called_names(inspect.getsource(O.OrsAdapterV1.list_tasks))
 
 
 def test_o29_an_ors_episode_and_a_local_episode_honestly_differ():
@@ -1240,14 +1316,17 @@ def test_o30_the_slice_added_no_rung_no_receipt_field_and_one_new_verb():
     """
     # No rung. `identity` knows nothing about submissions, sessions or servers.
     #
-    # Read as *words*, not as substrings. The first form of this check searched
-    # raw text and reported `ors` inside `separators` -- the fifth time in this
-    # codebase (after K10, K12, K18 and K28) that a text scan made a claim about
-    # structure it could not see. A word this module is forbidden to know is a
-    # word, and the check has to be able to tell one from a syllable.
+    # Read as *words of code*, not as substrings of the file. The first form of
+    # this check searched raw text and reported `ors` inside `separators` -- the
+    # fifth time in this codebase (after K10, K12, K18 and K28) that a text scan
+    # made a claim about structure it could not see. Splitting the file's tokens
+    # on `_` fixed the syllable half and left the other half open: it still read
+    # comments and docstrings, so a sentence in `identity.py` saying "this is
+    # not an ORS concern" failed the law that says identity does not know about
+    # ORS. Identifiers are the right domain for both halves at once.
     ident_words = set()
-    for token in re.findall(r"[A-Za-z_]+", inspect.getsource(I)):
-        ident_words.update(p for p in token.lower().split("_") if p)
+    for name in _code_identifiers(inspect.getsource(I)):
+        ident_words.update(p for p in name.lower().split("_") if p)
     for word in ("submission", "session", "ors", "http"):
         assert word not in ident_words and word + "s" not in ident_words, \
             "identity.py mentions %r" % word
@@ -1280,11 +1359,20 @@ def test_o30_the_slice_added_no_rung_no_receipt_field_and_one_new_verb():
 
     # The kernel's own vocabulary is untouched by this slice: the transport
     # relays kernel refusals, it does not mint new names for them.
-    kernel_src = inspect.getsource(K)
+    # The codes the kernel really raises, read out of its own `KernelError(...)`
+    # constructions rather than found as substrings -- the same instrument
+    # `_ors_codes` uses three lines above, applied to the module that owns the
+    # other vocabulary.
+    kernel_codes = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(K)))):
+        if (isinstance(node, ast.Call) and node.args
+                and getattr(node.func, "id", None) == "KernelError"
+                and isinstance(node.args[0], ast.Constant)):
+            kernel_codes.add(node.args[0].value)
     for code in ("KERNEL_SESSION_STATE", "KERNEL_SESSION_BUSY",
                  "KERNEL_OPERATION_UNSUPPORTED"):
-        assert code in kernel_src
-    assert "KernelError(" not in inspect.getsource(O), \
+        assert code in kernel_codes, code
+    assert "KernelError" not in _called_names(inspect.getsource(O)), \
         "the adapter must relay kernel refusals, never manufacture them"
 
     # The battery is complete and numbered without gaps.

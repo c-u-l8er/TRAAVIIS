@@ -438,8 +438,17 @@ def test_c15d_a_runtime_context_cannot_be_supplied_at_all():
 
     params = inspect.signature(C.compare_episodes).parameters
     assert "runtime_context" not in params, sorted(params)
+    # Pinned exactly, so a re-added attestation parameter cannot arrive
+    # unnoticed. `strict` was added by 9F-A and is a *refusal* switch, not an
+    # input to the report: it decides whether an episode minted under a
+    # non-containing runner profile may enter a comparison at all, and it reads
+    # that profile out of the receipt rather than accepting it from the caller.
+    # The rule this law protects -- attestation is derived, never supplied --
+    # is untouched.
     assert set(params) == {"left_dir", "right_dir", "registry",
-                           "extra_verifiers"}, sorted(params)
+                           "extra_verifiers", "strict"}, sorted(params)
+    assert params["strict"].default is False, \
+        "strict must default off while every episode in the tree is best-effort"
 
     try:
         C.compare_episodes(f["ok"], f["nofix"],

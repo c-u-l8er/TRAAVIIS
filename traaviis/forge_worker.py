@@ -16,6 +16,16 @@ it has always run its commands as subprocesses under a timeout. The ``identity``
 verifier did: it called ``adapter.lower_source(patched[rel])`` in-process on a
 WRL source the *candidate* wrote. That asymmetry is what this module removes.
 
+**The wire is bounded in both directions** (§9D). One request object of at most
+``execlimits.MAX_IPC_REQUEST_BYTES``, carrying at most
+``MAX_IPC_SOURCE_BYTES`` of WRL; one response object of at most
+``MAX_IPC_RESPONSE_BYTES``, carrying at most ``MAX_IPC_DIAGNOSTIC_BYTES`` of
+engine diagnostic. Both ends parse through ``boundedjson``. The earlier reading
+— that these are internal envelopes and therefore trusted parses — was wrong in
+the half that matters: the envelope is written by ``forge_adapter``, but its
+payload is *candidate-modified WRL* on the way in and *engine-emitted
+diagnostic* on the way back. Neither is this repository's own bytes.
+
 **The request/response contract** (``PROTOCOL_VERSION``), one JSON object each
 way, stdin to stdout::
 
@@ -47,11 +57,13 @@ document and turn a good answer into an unparseable one. The engine keeps its
 voice; it just does not share the wire.
 """
 
-import json
 import os
 import sys
 
-__all__ = ["PROTOCOL_VERSION", "STATUS_OK", "STATUS_UNAVAILABLE", "lower", "main"]
+from . import boundedjson as _bjson, execlimits
+
+__all__ = ["PROTOCOL_VERSION", "STATUS_OK", "STATUS_UNAVAILABLE", "lower", "main",
+           "read_request", "encode_response"]
 
 #: The request/response contract above. Bumping it is a coordinated change of
 #: both sides; it is deliberately **not** part of any identity, because the wire
@@ -105,27 +117,111 @@ def lower(source):
                          % (type(exc).__name__, exc)}
 
 
+def read_request(stream):
+    """The WRL source of one request, read under the IPC bounds.
+
+    **The envelope is internally generated; the payload is not.** This module's
+    exemption from the bounded-JSON boundary used to be argued on the first half
+    of that sentence — an internal IPC message written by ``forge_adapter``, not
+    by a candidate — and the ruling that opened 9D was right that it encodes the
+    wrong trust judgment. ``source`` is *candidate-modified WRL*, read out of the
+    patched tree. An internally generated envelope around candidate-authored
+    bytes is a candidate-influenced parse site, and it is now registered as one.
+
+    Three bounds, and each closes a different unbounded step:
+
+    * ``sys.stdin.read()`` read until EOF, so a parent (or anything else
+      holding this pipe) could hand the worker an arbitrarily large message.
+      The read is now ``MAX_IPC_REQUEST_BYTES + 1`` — one byte past the bound is
+      exactly enough to prove it was exceeded, and no more is ever allocated.
+    * the parse is `boundedjson.load_json_bounded` under the IPC profile, so
+      depth, node count and string volume are bounded too, and every refusal is
+      one type.
+    * ``source`` is bounded independently of the envelope, because a request can
+      be small and still carry more WRL than any lowering has business seeing.
+
+    Returns the source string. Raises `execlimits.ResourceLimitError` or
+    `boundedjson.BoundedJsonError` — both `ValueError` — for a request outside
+    the profile, and `TypeError`/`KeyError` for one that is inside it and still
+    not a request.
+    """
+    raw = stream.read(execlimits.MAX_IPC_REQUEST_BYTES + 1)
+    if len(raw) > execlimits.MAX_IPC_REQUEST_BYTES:
+        raise execlimits.ResourceLimitError(
+            "ipc_request_too_large",
+            "refusing the lowering request: it is over the bound of %d bytes"
+            % execlimits.MAX_IPC_REQUEST_BYTES,
+            {"max_bytes": execlimits.MAX_IPC_REQUEST_BYTES})
+    request = _bjson.load_json_bounded(
+        raw, max_input_bytes=execlimits.MAX_IPC_REQUEST_BYTES)
+    source = request["source"]
+    if not isinstance(source, str):
+        raise TypeError("source must be a string")
+    encoded = len(source.encode("utf-8", "surrogatepass"))
+    if encoded > execlimits.MAX_IPC_SOURCE_BYTES:
+        raise execlimits.ResourceLimitError(
+            "ipc_source_too_large",
+            "refusing to lower a source of %d bytes; the bound is %d"
+            % (encoded, execlimits.MAX_IPC_SOURCE_BYTES),
+            {"size": encoded, "max_bytes": execlimits.MAX_IPC_SOURCE_BYTES})
+    return source
+
+
+def encode_response(response):
+    """One response as bounded bytes — never more than `MAX_IPC_RESPONSE_BYTES`.
+
+    The engine's ``error`` is *engine-influenced*: a compile diagnostic can be
+    any length a third-party lowering pass feels like emitting, and it used to be
+    serialized straight onto the wire with no cap at either end. It is truncated
+    to the declared diagnostic bound first, with the truncation marked, so a
+    reader never mistakes a cut-off diagnostic for a complete one.
+
+    If the bounded response *still* will not encode — a semantic id of absurd
+    length, or a value the engine returned that is not JSON — the fallback is a
+    minimal ``unavailable``, because a worker that cannot say what happened has
+    still said the engine did not answer, and that is the whole contract. The
+    one thing it must never do is write a partial document: the parent would
+    read a truncated object, fail to parse it, and report a lowering that never
+    took place.
+    """
+    bounded = dict(response)
+    if isinstance(bounded.get("error"), str):
+        bounded["error"] = _bjson.bound_diagnostic(
+            bounded["error"], execlimits.MAX_IPC_DIAGNOSTIC_BYTES)
+    try:
+        return _bjson.dump_json_bounded(
+            bounded, sort_keys=True,
+            max_output_bytes=execlimits.MAX_IPC_RESPONSE_BYTES)
+    except _bjson.BoundedJsonError as exc:
+        return _bjson.dump_json_bounded(
+            {"status": STATUS_UNAVAILABLE,
+             "error": "worker response exceeded the IPC bound (%s)" % exc.reason},
+            sort_keys=True,
+            max_output_bytes=execlimits.MAX_IPC_RESPONSE_BYTES)
+
+
 def main(argv=None):
     """Read one request, write one response. Always exits 0 when it responded."""
     # Claim the response channel before anything can import the engine and print
     # on it. See the module docstring.
-    channel = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")
+    channel = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
     sys.stdout = sys.stderr
 
-    raw = sys.stdin.read()
     try:
-        request = json.loads(raw)
-        source = request["source"]
-        if not isinstance(source, str):
-            raise TypeError("source must be a string")
-    except Exception as exc:  # noqa: BLE001 -- a malformed request is our fault
+        source = read_request(sys.stdin.buffer)
+    except Exception as exc:  # noqa: BLE001 -- a refused request is still a response
+        # Covers the bounded refusals (`ResourceLimitError`,
+        # `BoundedJsonError`) and the shapes that are in bounds and still not a
+        # request. All three mean the same thing to the parent: no lowering
+        # happened. A traceback and a non-zero exit would mean the same thing
+        # too, and say less.
         response = {"status": STATUS_UNAVAILABLE,
                     "error": "malformed worker request: %s: %s"
                              % (type(exc).__name__, exc)}
     else:
         response = lower(source)
 
-    channel.write(json.dumps(response, sort_keys=True))
+    channel.write(encode_response(response))
     channel.flush()
     return 0
 

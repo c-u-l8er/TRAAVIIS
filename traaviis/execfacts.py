@@ -39,6 +39,11 @@ __all__ = [
     "EXECUTION_FACTS_VERSION",
     "RUNNER_PROFILES",
     "NON_EXECUTING_PROFILES",
+    "CERTIFIED_RUNNER_PROFILE",
+    "BEST_EFFORT_RUNNER_PROFILE",
+    "STRICT_COMPARISON_PROFILES",
+    "BEST_EFFORT_PROFILES",
+    "strict_comparison_eligible",
     "ORS_RUNNER_PROFILE",
     "UnsupportedPolicyError",
     "validate_run_policy",
@@ -62,10 +67,39 @@ ORS_RUNNER_PROFILE = "traaviis.ors-submission.v1"
 # Adding a *key* here is additive and moves nothing. Adding a *field to an
 # existing profile's dict* would move every episode identity ever minted under
 # that profile. The ORS profile is therefore a new key, never a new field.
+#: The **certified** profile. Requires a containment preflight to pass before a
+#: candidate is started; on a host that cannot provide one, the command refuses
+#: rather than running and then invalidating. Nothing mints an episode under it
+#: until a certified backend exists — it is declared so the refusal has a name
+#: to refuse *against*, not so it can be claimed.
+CERTIFIED_RUNNER_PROFILE = "residency.certified-local.v1"
+
+#: The **best-effort** profile, named explicitly. Bounded I/O, bounded process
+#: capture and an observed cgroup kill; no claim of adversarial containment.
+#: Episodes minted under it may be inspected, replayed and used while developing
+#: coverage semantics, and may not enter a strict comparison or certify a
+#: release packet's hostile-execution guarantee.
+BEST_EFFORT_RUNNER_PROFILE = "residency.trusted-local-best-effort.v1"
+
 RUNNER_PROFILES = {
     "residency.trusted-local.v1": {
         "filesystem": "observed",
         "network": "unrestricted",
+    },
+    # New **keys**, never new fields on an existing profile. `build_execution_facts`
+    # seals `sandbox = dict(RUNNER_PROFILES[profile])` straight into `episode-…`,
+    # so adding a key is additive and adding a field to a live profile would move
+    # every identity ever minted under it. The note above this dict already says
+    # so; these two obey it.
+    CERTIFIED_RUNNER_PROFILE: {
+        "filesystem": "observed",
+        "network": "unrestricted",
+        "processes": "contained",
+    },
+    BEST_EFFORT_RUNNER_PROFILE: {
+        "filesystem": "observed",
+        "network": "unrestricted",
+        "processes": "best_effort",
     },
     ORS_RUNNER_PROFILE: {
         "filesystem": "not_applicable",
@@ -81,6 +115,31 @@ RUNNER_PROFILES = {
 #: against ``allowed_exit_codes``, and the sandbox posture is not a weaker
 #: guarantee but an inapplicable question.
 NON_EXECUTING_PROFILES = frozenset({ORS_RUNNER_PROFILE})
+
+#: Profiles whose episodes may enter a **strict** comparison.
+#:
+#: Only the certified one. `residency.trusted-local.v1` is the historical name
+#: of what is now called best-effort — it always was that, and renaming it would
+#: move every episode ever minted under it — so both it and the explicit
+#: best-effort profile are excluded. An honest label on an old profile is worth
+#: more than a tidy name that costs the corpus its identities.
+STRICT_COMPARISON_PROFILES = frozenset({CERTIFIED_RUNNER_PROFILE})
+
+#: Profiles that deliver a kill boundary and make no containment claim.
+BEST_EFFORT_PROFILES = frozenset({
+    "residency.trusted-local.v1", BEST_EFFORT_RUNNER_PROFILE})
+
+
+def strict_comparison_eligible(runner_profile):
+    """May an episode minted under `runner_profile` enter a strict comparison?
+
+    A single place, so the answer cannot differ between the comparator, the
+    batch matrix and whatever asks next. Unknown profiles are **not** eligible:
+    a profile nobody has classified has not been shown to contain anything, and
+    defaulting an unknown to eligible is the same inference-from-absence that
+    9E's `enforced` made.
+    """
+    return runner_profile in STRICT_COMPARISON_PROFILES
 
 class UnsupportedPolicyError(Exception):
     """A run policy asks for a guarantee the runner profile does not deliver.

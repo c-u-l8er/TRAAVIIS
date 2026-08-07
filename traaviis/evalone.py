@@ -1313,8 +1313,26 @@ def _finish_episode(
         run_error = False
     else:
         allowed_exit_codes = list(policy.get("allowed_exit_codes", [0]))
-        bad_exit = (not run["timed_out"]) and run["exit_code"] not in allowed_exit_codes
-        run_error = run["timed_out"] or run["output_truncated"] or bad_exit
+        # **An output overflow is no longer a substrate error** (9E attribution).
+        # §10a used to rule that exceeding `max_output_bytes` made the affected
+        # verifier `error`, i.e. `reward = None`. That is the erasure shape: the
+        # cap is a *declared byte bound on the candidate's own bytes*, identical
+        # on every host, so a talkative agent could unscore itself by printing.
+        # It is now a resource-policy violation recorded by `runner.run_agent`,
+        # which makes the episode tampered -- reward 0, `validity: invalid` --
+        # and that is strictly worse for the candidate than the score it was
+        # avoiding.
+        #
+        # It is subtracted from `bad_exit` as well, and it has to be: an
+        # overflowed run reports no exit code (deterministically, so the verdict
+        # cannot depend on who won a race), and `None` is in no
+        # `allowed_exit_codes`, so leaving it would route the same run to `error`
+        # through the other clause. A wall-clock timeout is untouched and stays
+        # `error`: it is a fact about the host, not about the submission.
+        overflowed = bool(run["stdout_truncated"]) or bool(run["stderr_truncated"])
+        bad_exit = ((not run["timed_out"]) and (not overflowed)
+                    and run["exit_code"] not in allowed_exit_codes)
+        run_error = run["timed_out"] or bad_exit
     if run_error:
         # Every signal here consumes the run's outputs; a substrate-level run
         # failure is unavailability (error), not evidence of a wrong answer.

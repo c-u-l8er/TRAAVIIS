@@ -37,7 +37,7 @@ import os
 import tempfile
 from typing import Any, Dict, Mapping, Optional
 
-from . import boundedjson as _bjson
+from . import boundedjson as _bjson, execfacts
 from .substrates import AdmissionError
 
 __all__ = [
@@ -228,9 +228,47 @@ def _wire(registry, extra_verifiers):
     return implementations, _runtime_context(registry)
 
 
+def _refuse_uncertified(episode, side):
+    """Refuse an episode whose runner profile makes no containment claim.
+
+    A comparison is a *ranking*, and ranking two candidates presumes both were
+    measured under a boundary that holds. An episode minted under a best-effort
+    profile was measured with an observed kill boundary and a control plane the
+    candidate could reach — useful for development, not a score to rank anyone
+    by. Letting one in would launder a best-effort result into a comparative
+    claim, which is the failure mode the 9F ruling names: best-effort episodes
+    may be inspected, replayed and developed against, and may not be published
+    as evidence-grade or entered into strict comparisons.
+
+    The profile is read from the receipt's own `execution_facts`, so it is the
+    profile the episode was *sealed* under rather than one supplied alongside.
+    An episode with no profile at all is refused too, for the same reason
+    `strict_comparison_eligible` refuses an unknown one.
+    """
+    receipt = episode.get("receipt") or {}
+    profile = ((receipt.get("execution_facts") or {}).get("runner")
+               or {}).get("profile")
+    if not execfacts.strict_comparison_eligible(profile):
+        raise ComparisonError(
+            "UNCERTIFIED_EPISODE",
+            "the %s episode was minted under runner profile %r, which makes no "
+            "adversarial-containment claim; it may be inspected and replayed "
+            "but not entered into a strict comparison. Pass strict=False to "
+            "compare it as development evidence." % (side, profile),
+            {"side": side, "runner_profile": profile,
+             "strict_comparison_eligible": False})
+
+
 def compare_episodes(left_dir, right_dir, *, registry=None,
-                     extra_verifiers=None):
+                     extra_verifiers=None, strict=False):
     """Compare two closed episode bundles over one task. Returns `ComparisonV1`.
+
+    `strict` refuses an episode whose runner profile makes no containment claim.
+    It defaults to **False**, deliberately: every episode in this tree today is
+    best-effort, so a default of True would make `compare` refuse the entire
+    existing corpus and the flag would be turned off rather than understood. The
+    default flips at the certified-backend cutover, and until then `strict=True`
+    is what a caller uses to say "this ranking is a published claim".
 
     Wire the replay with `registry=` *or* `extra_verifiers=`, never both. There
     is deliberately no `runtime_context=` parameter: the attestation is derived
@@ -245,6 +283,10 @@ def compare_episodes(left_dir, right_dir, *, registry=None,
 
     left = _replay(left_dir, verifiers, "left")
     right = _replay(right_dir, verifiers, "right")
+
+    if strict:
+        _refuse_uncertified(left, "left")
+        _refuse_uncertified(right, "right")
 
     if left.get("task_id") != right.get("task_id"):
         raise ComparisonError(

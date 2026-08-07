@@ -207,6 +207,8 @@ from typing import Any, Dict, List, Mapping, Optional
 from . import execfacts as _execfacts
 from . import reward as _reward
 
+from . import execfacts as _execfacts
+
 __all__ = [
     "COVERAGE_VERSION",
     "ANSWERED", "ABSTAINED", "UNWIRED", "STRUCTURAL", "ERRORED",
@@ -218,9 +220,17 @@ __all__ = [
     "response_coverage",
     "coverage_line",
     "coverage_lines",
+    "SPLIT_COVERAGE_VERSION",
+    "split_coverage",
+    "split_coverage_lines",
 ]
 
 COVERAGE_VERSION = "traaviis.response-coverage.v2"
+
+#: The split-level aggregation of the above. A separate version because it is a
+#: separate reading with a separate denominator, and sharing one version string
+#: would make a change to either look like a change to both.
+SPLIT_COVERAGE_VERSION = "traaviis.split-coverage.v1"
 
 # --- Response classes --------------------------------------------------------
 ANSWERED = "answered"
@@ -692,4 +702,161 @@ def coverage_lines(reading: Mapping[str, Any], indent: str = "  ") -> List[str]:
         weight = "no weight" if rec["weight"] is None else "weight %.4g" % rec["weight"]
         lines.append("%s%s (%s, %s, %s)" % (indent, sig, mark, weight, rec["response"]))
         lines.append("%s%smissing: %s" % (indent, indent, rec["missing"]))
+    return lines
+
+
+# ---------------------------------------------------------------- split level
+
+def split_coverage(episodes):
+    """Aggregate per-episode readings over one split. A pure function.
+
+    ``episodes`` is a list of ``{task_id, status, reading, runner_profile}``,
+    where ``reading`` is a `response_coverage` output or ``None`` for a task that
+    produced no receipt to read. Nothing is opened, nothing is run, no clock is
+    consulted, and — like `response_coverage` and `ComparisonV1` — the result
+    mints no id and is never stored: every input is already hash-bound inside the
+    episodes it came from, so storing the aggregate would move ids to record
+    something those bytes already determine.
+
+    **Two ratios, never one.** Aggregating coverage has two defensible answers
+    and they disagree, so both are reported and neither is called *the* coverage:
+
+    ``pooled_*``   every unit of rubric weight counts once. Sum the numerators,
+                   sum the denominators, divide. A split of one heavy task and
+                   nine trivial ones is dominated by the heavy one — which is
+                   right if you are asking *how much of the rubric got
+                   adjudicated*.
+    ``mean_*``     every episode counts once: the mean of the per-episode
+                   ratios. Right if you are asking *how well covered is a
+                   typical task*.
+
+    Collapsing them into a single number would be the same lossy merge this
+    module already refuses between weight and signal count. A split where one
+    task answers everything and nine answer nothing reads ``pooled 0.5`` and
+    ``mean 0.1`` on a plausible weighting, and a reader shown one of those and
+    told it was "the coverage" has been misled about the other.
+
+    **Unreadable tasks are counted and excluded, and both halves matter.** A task
+    that never produced a receipt — the agent could not launch, admission
+    refused it — has no reading. It stays in ``tasks`` because it was asked, and
+    it is absent from every ratio because there is nothing to divide. Silently
+    dropping it would inflate coverage by discarding the tasks that went worst;
+    scoring it as zero would invent an adjudication that never happened.
+    ``unreadable`` is reported so the gap between ``tasks`` and ``read`` is never
+    something a reader has to notice for themselves.
+
+    **``error`` episodes stay in.** An episode whose verifiers errored has a
+    receipt, a reading, and a real denominator — its signals are ``errored``
+    rather than answered. Excluding it would let a split raise its coverage by
+    breaking verifiers, which is the shape of every erasure route in this
+    repository. ``reward: null`` must never read as a good result, and keeping
+    the episode in the denominator is what stops it.
+
+    ``None`` means *no denominator*, never *zero coverage*. Same rule as the
+    per-episode reading.
+    """
+    episodes = list(episodes)
+    read = [e for e in episodes if e.get("reading")]
+    unreadable = [e for e in episodes if not e.get("reading")]
+
+    by_status = {}
+    for episode in episodes:
+        key = episode.get("status") or "unknown"
+        by_status[key] = by_status.get(key, 0) + 1
+
+    pooled_scored = sum(r["reading"]["scored_weight"] for r in read)
+    pooled_declared = sum(r["reading"]["declared_weight"] for r in read)
+    pooled_answered = sum(len(r["reading"]["answered"]) for r in read)
+    pooled_obligated = sum(len(r["reading"]["obligated"]) for r in read)
+
+    def _mean(key):
+        values = [r["reading"][key] for r in read if r["reading"][key] is not None]
+        return (sum(values) / len(values)) if values else None
+
+    # What was *not* answered, unioned across the split with counts, so the
+    # aggregate says which signals are missing rather than only how much.
+    required_unanswered = {}
+    unwired = {}
+    errored_by_origin = {}
+    for entry in read:
+        reading = entry["reading"]
+        for sig in reading["required_unanswered"]:
+            required_unanswered[sig] = required_unanswered.get(sig, 0) + 1
+        for sig in reading["unwired"]:
+            unwired[sig] = unwired.get(sig, 0) + 1
+        for origin, signals in (reading["errored_by_origin"] or {}).items():
+            errored_by_origin[origin] = errored_by_origin.get(origin, 0) + len(signals)
+
+    # Certification posture. An aggregate is only as strong as its weakest
+    # member, and mixing profiles is how a certified number would come to
+    # include best-effort evidence.
+    profiles = sorted({e.get("runner_profile") for e in episodes
+                       if e.get("runner_profile")})
+    reasons = []
+    if len(profiles) > 1:
+        reasons.append("mixed_runner_profiles")
+    for profile in profiles:
+        if not _execfacts.strict_comparison_eligible(profile):
+            reasons.append("uncertified_runner_profile:%s" % profile)
+    if not profiles:
+        reasons.append("runner_profile_unknown")
+    if unreadable:
+        reasons.append("unreadable_episodes:%d" % len(unreadable))
+
+    return {
+        "split_coverage_version": SPLIT_COVERAGE_VERSION,
+        "coverage_version": COVERAGE_VERSION,
+
+        "tasks": len(episodes),
+        "read": len(read),
+        "unreadable": len(unreadable),
+        "unreadable_task_ids": sorted(e.get("task_id") for e in unreadable
+                                      if e.get("task_id")),
+        "by_status": dict(sorted(by_status.items())),
+
+        "pooled_scored_weight": pooled_scored,
+        "pooled_declared_weight": pooled_declared,
+        "pooled_weight_coverage": (pooled_scored / pooled_declared
+                                   if pooled_declared else None),
+        "pooled_answered": pooled_answered,
+        "pooled_obligated": pooled_obligated,
+        "pooled_signal_coverage": (pooled_answered / pooled_obligated
+                                   if pooled_obligated else None),
+
+        "mean_weight_coverage": _mean("weight_coverage"),
+        "mean_signal_coverage": _mean("signal_coverage"),
+
+        "required_unanswered": dict(sorted(required_unanswered.items())),
+        "unwired": dict(sorted(unwired.items())),
+        "errored_by_origin": dict(sorted(errored_by_origin.items())),
+
+        "runner_profiles": profiles,
+        "strict_comparison_eligible": not reasons,
+        "uncertifiable_reasons": reasons,
+    }
+
+
+def split_coverage_lines(aggregate, indent="  "):
+    """The human-facing summary. Both ratios, side by side, never merged."""
+    def pct(value):
+        return "--" if value is None else "%.0f%%" % (value * 100.0)
+
+    lines = [
+        "%stasks %d  read %d  unreadable %d"
+        % (indent, aggregate["tasks"], aggregate["read"],
+           aggregate["unreadable"]),
+        "%sweight coverage  pooled %s   per-task mean %s"
+        % (indent, pct(aggregate["pooled_weight_coverage"]),
+           pct(aggregate["mean_weight_coverage"])),
+        "%ssignal coverage  pooled %s   per-task mean %s"
+        % (indent, pct(aggregate["pooled_signal_coverage"]),
+           pct(aggregate["mean_signal_coverage"])),
+    ]
+    if aggregate["required_unanswered"]:
+        lines.append("%srequired unanswered: %s" % (indent, ", ".join(
+            "%s x%d" % (s, n)
+            for s, n in sorted(aggregate["required_unanswered"].items()))))
+    if not aggregate["strict_comparison_eligible"]:
+        lines.append("%sNOT strict-comparison eligible: %s"
+                     % (indent, ", ".join(aggregate["uncertifiable_reasons"])))
     return lines

@@ -566,33 +566,32 @@ PARSE_SITES = {
     # persisted-internal: bytes this tool wrote earlier and is reading back.
     "comparison:_read_receipt":            ("boundary", "persisted-internal"),
     "mcp:McpAdapterV1._read_episode":      ("boundary", "persisted-internal"),
+
+    # worker IPC: an envelope this package writes, around a payload it does not.
+    # These two were *exemptions* until 9D, excused on the grounds that they
+    # parse an internal message written by `forge_adapter`. The envelope is
+    # internal. Its payload is candidate-modified WRL on the way in and an
+    # engine-emitted compile diagnostic on the way back, so the exemption
+    # encoded the wrong trust judgment -- an internally generated envelope
+    # around somebody else's bytes is not a trusted internal parse. Both ends
+    # now go through the boundary under the narrower IPC bounds in
+    # `execlimits`, and the trust class says whose bytes they are.
+    "forge_worker:read_request":           ("boundary", "candidate-influenced IPC"),
+    "forge_adapter:_lower_in_worker":      ("boundary", "engine-influenced IPC"),
 }
 
-#: Sites that deliberately do **not** route through the boundary. An exemption
-#: without a named rationale is a failure of Law A, so each one carries its
-#: reason and the reason has to survive being read aloud.
-PARSE_EXEMPTIONS = {
-    "forge_worker:main": (
-        "catchall",
-        "Reads its own parent's request off a pipe -- an internal IPC envelope "
-        "written by forge_adapter, not by a candidate. Its handler is a bare "
-        "`except Exception`, which does catch RecursionError (a RuntimeError, "
-        "hence an Exception), so the failure mode this battery exists for is "
-        "already closed there. Left unrouted because forge_worker.py and "
-        "forge_adapter.py are owned by a concurrent change to the Forge-timeout "
-        "route; two agents editing one seam is how a merge loses a guard."),
-    "forge_adapter:_lower_in_worker": (
-        "catchall",
-        "The other end of the same pipe: the parent parsing its own worker's "
-        "response. Also under a bare `except Exception`, and by design -- the "
-        "surrounding contract is that anything other than one parseable "
-        "response object means the engine did not answer, which is "
-        "`ForgeUnavailable`, never a pass and never a fail. Same concurrent "
-        "ownership as forge_worker:main. Worth recording how this entry got "
-        "here: it did not exist when this registry was written, and Law A went "
-        "red the first time it ran. That is the law doing its job rather than a "
-        "gap in it."),
-}
+#: Sites that deliberately do **not** route through the boundary.
+#:
+#: **Empty, and that is the state to defend.** It held two entries -- the two
+#: ends of the Forge worker pipe -- each with a rationale that read well and was
+#: wrong in the same way: it argued from who wrote the *envelope* rather than
+#: from who wrote the *payload*. They are registered as boundary sites above.
+#:
+#: The machinery is kept rather than deleted, because the next exemption will be
+#: argued as well as those two were, and it should have to pass J13's rationale
+#: length and J15's "the premise is actually true" check before it is believed.
+#: An empty register is not the absence of a rule.
+PARSE_EXEMPTIONS = {}
 
 #: Outside the shipped package, and outside Law A's scope, with the reason.
 PARSE_OUT_OF_SCOPE = {
@@ -733,10 +732,48 @@ def test_j14_the_boundary_holds_the_only_raw_parse_in_the_package():
         "raw json.loads call sites are %s; expected only %s" % (raw, expected))
 
 
+def _catchall_guarded(source, qualname):
+    """Is the raw `json.loads` in `qualname` under a bare `except Exception`?
+
+    The judgement every `catchall` exemption rests on, factored out so that the
+    *same* code decides a registered exemption and the planted ones below. A
+    checker used only on real entries is untested exactly when there are none —
+    which is now — and would be believed the first time it was needed.
+
+    Located on the parse tree: a comment saying "catches everything" is not a
+    handler, and `except (ValueError, UnicodeDecodeError)` is not `Exception`.
+    Returns `None` if the function is not defined at all, which the caller
+    distinguishes from "defined and unguarded".
+    """
+    tree = ast.parse(source)
+    target = None
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == qualname.split(".")[-1]):
+            target = node
+    if target is None:
+        return None
+
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Try):
+            continue
+        calls_json = any(
+            isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+            and isinstance(c.func.value, ast.Name)
+            and c.func.value.id == "json" and c.func.attr in ("loads", "load")
+            for c in ast.walk(node))
+        if not calls_json:
+            continue
+        for handler in node.handlers:
+            if isinstance(handler.type, ast.Name) and handler.type.id == "Exception":
+                return True
+    return False
+
+
 def test_j15_every_exempt_site_really_does_catch_the_runtime_error():
     """An exemption is only honest if the thing it claims is true.
 
-    Both exempt sites are excused on the grounds that their bare
+    A `catchall` exemption is excused on the grounds that its bare
     `except Exception` catches `RecursionError`. That is checked here rather
     than taken on trust -- located on the parse tree, so a comment saying
     "catches everything" cannot satisfy it, and the class hierarchy is checked
@@ -744,49 +781,66 @@ def test_j15_every_exempt_site_really_does_catch_the_runtime_error():
 
     An exemption whose premise has stopped being true is worse than no
     exemption, because it reads as a decision somebody made on purpose.
+
+    **The register is currently empty, and this law does not skip.** It used to,
+    and that was wrong twice over. A skip means "this tree cannot test this",
+    and the truth here is "there is nothing registered to test" -- a different
+    fact, reported as the same word. And a law that goes quiet exactly when its
+    subject disappears is a law nobody notices has stopped working: the *next*
+    exemption would be judged by a checker that had not run in months.
+
+    So the subject when the register is empty is the **checker itself**. Two
+    synthetic modules are planted, one guarded and one not, and `_catchall_guarded`
+    -- the identical function that judges a real entry -- must tell them apart.
+    Whenever an exemption does exist it is checked as well, by the same code.
     """
     assert issubclass(RecursionError, Exception), \
         "the exemption's premise is false in this Python"
 
-    checked = 0
     for key, (guard, _rationale) in sorted(PARSE_EXEMPTIONS.items()):
         module, qualname = key.split(":", 1)
         path = os.path.join(PKG, module + ".py")
         if not os.path.isfile(path):
-            # These files belong to a concurrent change. If one is gone, so is
-            # its exemption, and J13 says so. Skipping here keeps this law from
-            # asserting the shape of one checkout.
+            # A packet may ship a subset of the package. If a module is gone so
+            # is its exemption, and J13 says so; asserting the shape of one
+            # checkout here would go red on a perfectly good packet.
             continue
         with open(path, encoding="utf-8") as fh:
-            tree = ast.parse(fh.read())
-
-        target = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == qualname.split(".")[-1]:
-                target = node
-        assert target is not None, "%s no longer defines %s" % (module, qualname)
-
-        guarded = False
-        for node in ast.walk(target):
-            if not isinstance(node, ast.Try):
-                continue
-            calls_json = any(
-                isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
-                and isinstance(c.func.value, ast.Name)
-                and c.func.value.id == "json" and c.func.attr in ("loads", "load")
-                for c in ast.walk(node))
-            if not calls_json:
-                continue
-            for handler in node.handlers:
-                if isinstance(handler.type, ast.Name) and handler.type.id == "Exception":
-                    guarded = True
+            guarded = _catchall_guarded(fh.read(), qualname)
+        assert guarded is not None, "%s no longer defines %s" % (module, qualname)
         assert guarded, (
             "%s's raw json.loads is not under `except Exception`; its "
             "registered exemption no longer describes the code" % key)
-        checked += 1
 
-    if not checked:
-        raise Skip("no exempt module is present in this tree")
+    # The checker, checked. `except Exception` catches `RecursionError`; the
+    # narrow clause this whole battery exists because of does not, and must be
+    # reported as unguarded.
+    guarded_source = (
+        "import json\n"
+        "def read(raw):\n"
+        "    try:\n"
+        "        return json.loads(raw)\n"
+        "    except Exception:\n"
+        "        return None\n")
+    narrow_source = (
+        "import json\n"
+        "def read(raw):\n"
+        "    try:\n"
+        "        return json.loads(raw)\n"
+        "    except (ValueError, UnicodeDecodeError):\n"
+        "        return None\n")
+    prose_source = (
+        "import json\n"
+        "def read(raw):\n"
+        "    # this is under `except Exception`, honestly it is\n"
+        "    return json.loads(raw)\n")
+
+    assert _catchall_guarded(guarded_source, "read") is True
+    assert _catchall_guarded(narrow_source, "read") is False, \
+        "the checker accepts the exact narrow clause this battery exists for"
+    assert _catchall_guarded(prose_source, "read") is False, \
+        "a comment claiming a handler satisfies the checker"
+    assert _catchall_guarded(guarded_source, "absent") is None
 
 
 def test_j16_out_of_scope_sites_are_named_rather_than_forgotten():
@@ -914,12 +968,25 @@ def _structural_claims(path):
                 and c.func.value.id == "inspect"
                 and c.func.attr in ("getsource", "getsourcelines")
                 for c in ast.walk(fn)):
-            # It does not fetch source itself; it may still forward one that does.
+            # It does not fetch source itself; it may still forward one that
+            # does. **And the same discriminator applies to the forward as to
+            # the direct case**: a helper that calls a source-fetching helper
+            # and hands back a *container* is extracting structure from source,
+            # which is the whole shape of `_function_body`, `_code_identifiers`
+            # and every other legitimate instrument in these batteries.
+            #
+            # This branch used to return `True` on the forward alone, without
+            # ever looking at what the forwarding helper returned — so
+            # `def helper(f): return list(_tree(f).body)` was classified as
+            # text, and every claim built on it was flagged as a raw-text claim.
+            # That is the inversion described at `ast.parse` above, reached by a
+            # second route: a law rewritten onto the AST through a two-step
+            # helper could not clear the register either.
             for c in ast.walk(fn):
                 if (isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
                         and c.func.id in functions and c.func.id not in seen):
                     if returns_source(functions[c.func.id], seen | {c.func.id}):
-                        return True
+                        return not returns_structure(fn)
             return False
 
         for c in ast.walk(fn):
@@ -951,6 +1018,31 @@ def _structural_claims(path):
                     and f.value.id == "inspect"
                     and f.attr in ("getsource", "getsourcelines")):
                 return True
+            # **`ast.parse` is where the taint ends.** This docstring has said
+            # so since the checker was written -- "handing a tainted value to
+            # `ast.parse` produces a tree, and claims about that tree are
+            # structural and are not flagged" -- and the code did not implement
+            # it: the generic string-operation rule below saw
+            # `ast.parse(inspect.getsource(M))` as an attribute call over a
+            # tainted argument and passed the taint straight through the parse.
+            #
+            # The consequence was the exact inversion of Law B. A law rewritten
+            # *onto* the AST -- the remedy this law demands -- stayed flagged,
+            # because everything derived from its tree was still "source text";
+            # so a genuine fix could not clear the register, and the register
+            # would have accumulated entries describing laws that had already
+            # been fixed. Three phantom entries from the checker's first version
+            # are recorded below for the same class of reason.
+            #
+            # `ast.unparse` is deliberately **not** in this list. It goes the
+            # other way: a tree back to text. That text has no comments in it,
+            # so a substring claim over it is much weaker than one over a file,
+            # but it is still text and the checker should keep saying so.
+            if (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                    and f.value.id == "ast"
+                    and f.attr in ("parse", "walk", "iter_child_nodes",
+                                   "iter_fields", "literal_eval")):
+                return False
             if isinstance(f, ast.Name) and f.id in functions:
                 if returns_source(functions[f.id]):
                     return True
@@ -1011,8 +1103,23 @@ def _structural_claims(path):
                     # carried the text would need real dataflow, and over-
                     # flagging here costs a registry line while under-flagging
                     # costs the law.
-                    if any(taints(part, tainted)
-                           for part in ast.walk(child.iter)):
+                    #
+                    # **The sub-walk is confined to literal containers**, and
+                    # that is the third place the `ast.parse` de-taint had to be
+                    # honoured. Walking *every* subexpression of the iterable
+                    # meant `for node in ast.walk(ast.parse(getsource(M)))` --
+                    # the canonical structural idiom, and the one Law B tells
+                    # people to write -- tainted its loop variable off the
+                    # `getsource` buried three calls down, no matter what was
+                    # wrapped around it. A parse is where source stops being
+                    # source; a literal tuple of source strings is where it
+                    # keeps being source. Those are different, and the rule now
+                    # says which is which.
+                    if taints(child.iter, tainted):
+                        bind(child.target)
+                    elif isinstance(child.iter, (ast.Tuple, ast.List, ast.Set)) \
+                            and any(taints(part, tainted)
+                                    for part in ast.walk(child.iter)):
                         bind(child.target)
                 elif isinstance(child, ast.withitem) and child.optional_vars is not None:
                     if taints(child.context_expr, tainted):
@@ -1045,76 +1152,44 @@ def _structural_claims(path):
 #:   ``violation``  a structural claim made on raw text. A comment can satisfy
 #:                  or break it. Each carries who owns the fix, because this
 #:                  battery owns only the files it was given.
+#:
+#: **There are no violations left.** Twelve were registered when this law was
+#: written, spread across four batteries that this change was not allowed to
+#: touch; the ruling that opened 9D required them closed in one focused
+#: test-hygiene pass, before item 11, and for the reason it gave rather than for
+#: tidiness::
+#:
+#:     registered exception -> normalized exception -> new violation added
+#:     casually -> law stops protecting the suite
+#:
+#: All twelve are now AST-based and none of them is flagged. What is left is
+#: four `prose` entries, and they are not a residue: each reads *another
+#: battery's stdout*, which really is prose, and raw text really is the right
+#: instrument for it.
+#:
+#: Closing them also exposed three defects in the checker itself, each of which
+#: made the register impossible to empty. `taints` passed the taint straight
+#: through `ast.parse` despite the docstring promising that a parse ends it;
+#: `returns_source` classified any helper that *forwarded* a source-fetching
+#: helper as returning text, whatever it actually returned; and the `for`-loop
+#: rule walked every subexpression of the iterable, so `for n in
+#: ast.walk(ast.parse(getsource(M)))` tainted its loop variable off the
+#: `getsource` three calls down. Together they meant a law rewritten onto the
+#: AST -- the remedy this law demands -- stayed flagged. A checker that cannot
+#: recognise its own remedy makes the register permanent, which is exactly the
+#: normalization the ruling warned about, reached from the other side.
 SOURCE_TEXT_SITES = {
     "test_batch.py": {
         "test_b29_the_comparison_api_ambiguity_closure_remains_green": (
             "prose", "reads another battery's stdout, which is prose"),
     },
     "test_bundle.py": {
-        "test_d29_the_serial_batch_and_comparison_batteries_remain_green": (
-            "prose", "reads another battery's stdout, which is prose"),
         "test_d40_the_earlier_laws_and_the_packet_gates_are_untouched": (
             "prose", "reads another battery's stdout, which is prose"),
     },
-    "test_canonical.py": {
-        "test_c18_three_domain_checks_are_enforced_and_nothing_else_is": (
-            "violation",
-            "asserts statement ORDER inside canonical_bytes by comparing "
-            "str.index positions in whitespace-stripped source. A comment "
-            "mentioning json.dumps moves the index. Owned by the canonical "
-            "battery, not by this change."),
-        "test_c42_the_two_implementations_are_independent_and_agree": (
-            "violation",
-            "asserts one implementation does not reference the other by "
-            "substring. Owned by the canonical battery."),
-        "test_c50_the_profile_is_closed_under_its_own_output": (
-            "violation", "substring claim about source. Owned by the "
-            "canonical battery."),
-        "test_c52_the_declared_scheme_names_the_profile_and_not_the_bare_rfc": (
-            "violation", "substring claim about source. Owned by the "
-            "canonical battery."),
-    },
     "test_kernel.py": {
-        "test_k4_a_session_id_is_an_ephemeral_handle_not_an_artifact_id": (
-            "violation", "substring claim about identifiers. Owned by the "
-            "kernel battery."),
-        "test_k16_no_process_wide_lock_is_held_over_a_session_lifetime": (
-            "violation", "substring claim about statements. Owned by the "
-            "kernel battery."),
         "test_k18_the_ladder_the_cli_and_the_earlier_laws_are_untouched": (
             "prose", "reads another battery's stdout, which is prose"),
-        "test_k28_the_linearization_added_no_identity_and_no_surface": (
-            "violation", "substring claim about identifiers. Owned by the "
-            "kernel battery."),
-    },
-    "test_evalone.py": {
-        "test_w6_every_verifier_has_a_stated_isolation_and_the_source_matches": (
-            "violation",
-            "Landed while this battery was being written, and Law B went red on "
-            "it the first time it ran afterwards -- which is the law working, "
-            "not a gap in it. It claims a verifier's stated isolation matches "
-            "its implementation by searching the implementation's source text, "
-            "so a comment naming the isolation satisfies it and a comment "
-            "naming the wrong one breaks it. Owned by the concurrent "
-            "verifier-diagnostic change; not fixed here because test_evalone.py "
-            "is explicitly off-limits to this one."),
-    },
-    "test_ors.py": {
-        "test_o13_a_null_exit_code_is_not_read_as_a_substrate_failure": (
-            "violation", "substring claim about source. Owned by the ORS "
-            "battery."),
-        "test_o27_the_served_catalog_is_exactly_the_split": (
-            "violation", "substring claim about source. Owned by the ORS "
-            "battery."),
-        "test_o28_the_prompt_is_static_and_the_ordering_is_canonical": (
-            "violation",
-            "the prompt half is genuinely about prose and is fine; the last "
-            "line asserts `\"sorted(\" in inspect.getsource(list_tasks)`, "
-            "which is a structural claim a comment can satisfy. Owned by the "
-            "ORS battery."),
-        "test_o30_the_slice_added_no_rung_no_receipt_field_and_one_new_verb": (
-            "violation", "substring claim about identifiers. Owned by the ORS "
-            "battery."),
     },
 }
 
@@ -1408,6 +1483,97 @@ def test_bad_through_a_helper():
         assert "test_good_reads_structure" not in flagged, (
             "the checker flags an AST-based claim; it would be noise and would "
             "be switched off")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_j25_the_twelve_closed_violations_are_still_the_kind_the_checker_sees():
+    """The register was emptied by fixing the laws, **not** by blinding the checker.
+
+    That distinction is the whole risk of this change and it deserves its own
+    law. Closing the twelve required three amendments to `_structural_claims`
+    itself -- the `ast.parse` de-taint, the `returns_source` forwarding rule,
+    and the confinement of the `for`-loop sub-walk to literal containers -- and
+    every one of them makes the checker flag *less*. A reader is entitled to ask
+    whether they narrowed it correctly or simply switched it off over the twelve
+    cases that were inconvenient.
+
+    So the original shape of each closed violation is planted here, verbatim in
+    form, and must still be flagged. Four shapes, one per amendment plus the
+    ones the amendments left untouched:
+
+      * `str.index` ordering over `getsource`             (the old c18)
+      * a substring claim over a `getsource` substring    (the old c42/c50/c52)
+      * `.lower()` over a whole module's source           (the old k28/o30)
+      * `source.count("with self._lock:")`                (the old k16)
+
+    And the *fixed* shapes must stay clean, or the amendments would have been
+    pointless: an AST-derived statement list, a two-step structural helper, and
+    a walk over a parsed tree.
+    """
+    planted = '''
+import ast
+import inspect
+
+
+def _tree(function):
+    return ast.parse(inspect.getsource(function))
+
+
+def _statements(function):
+    return list(_tree(function).body)
+
+
+def _strip(source):
+    return "".join(source.split())
+
+
+def test_bad_index_ordering():
+    body = _strip(inspect.getsource(ast))
+    assert body.index("a") < body.index("b")
+
+
+def test_bad_substring_of_a_substring():
+    assert "Decimal" not in _strip(inspect.getsource(ast))
+
+
+def test_bad_lowered_whole_module():
+    assert "socket" not in inspect.getsource(ast).lower()
+
+
+def test_bad_counts_a_statement():
+    assert inspect.getsource(ast).count("with self._lock:") == 6
+
+
+def test_good_statement_list():
+    body = _statements(ast.walk)
+    assert isinstance(body[0], ast.stmt)
+
+
+def test_good_walks_a_parsed_tree():
+    names = set()
+    for node in ast.walk(ast.parse(inspect.getsource(ast))):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+    assert "socket" not in names
+'''
+    tmp = tempfile.mkdtemp(prefix="trvs-lawb-closed-")
+    try:
+        path = os.path.join(tmp, "test_planted_closed.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(planted)
+        flagged = set(_structural_claims(path))
+        for name in ("test_bad_index_ordering", "test_bad_substring_of_a_substring",
+                     "test_bad_lowered_whole_module", "test_bad_counts_a_statement"):
+            assert name in flagged, (
+                "%s is the shape of a violation this change claims to have "
+                "closed, and the checker no longer sees it: the register was "
+                "emptied by narrowing the checker, not by fixing the laws"
+                % name)
+        for name in ("test_good_statement_list", "test_good_walks_a_parsed_tree"):
+            assert name not in flagged, (
+                "%s is the remedy Law B demands and the checker still flags it; "
+                "the register can never be emptied by complying" % name)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
