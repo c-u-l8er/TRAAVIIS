@@ -1,0 +1,60 @@
+{
+  "forge": {
+    "bench_version": "v0.7.0-alpha.5",
+    "engine_api_version": "1",
+    "epochs": 7,
+    "films": [
+      "246698b46997935745ae027fbd2473d6fa9512354a4db7eedd4eba3b5779e398",
+      "7891856a34377ae8fbf0371ff2501663b614eaa5523b0ddcf8a7d28c50733243",
+      "3b879f7b8317198ce5e2b1ed891455dfbee1d35161c8b7a0047034b1bc3f62e2",
+      "52e64ca2721489160d32e4fecf610dd82502fed6391652151128b41a439801e2",
+      "ccc1e5f82a8a84a6a231828445056cc8cd14dcf438e8284969b5eea1b032360c",
+      "6e500d2590eb791109bff16bd579e6ec2c2c5d73aa19090a24a45105db28695f",
+      "39eaa6414cf57603d986eedb38ae3b6e127832b9995ed46972492fbdcb436cba"
+    ],
+    "reducer": "ic_ref",
+    "scenario_digest": "scen-2be578f63401d0a424be78f069cc81278efcb3469ae405ec66a2a340c26b8842",
+    "semantic_id": "sem-75c7e5413358ee6188c97505991d2ea5ecc98aad86cf363cf164d5145c2fc3e0"
+  },
+  "pins_version": "traaviis.end-to-end-pins.v1",
+  "semantic_id_agreed": "sem-75c7e5413358ee6188c97505991d2ea5ecc98aad86cf363cf164d5145c2fc3e0",
+  "traaviis": {
+    "bundle_id": "bundle-223691f87373c1ef8d1c58c5c2fa797f5837acecbc5ddd330935d637038f7f59",
+    "env_id": "env-3956ef977956f9e8d186da1b168beaff7063f8f4ad56d7bb804d7ffa97912293",
+    "eval_exit": 2,
+    "eval_refusal": "SUBSTRATE_NOT_EVALUABLE",
+    "members": [
+      "README.md",
+      "TRAAVIIS_BUNDLE.json",
+      "environment.json",
+      "world.wrl"
+    ],
+    "packed_semantic_id": "sem-75c7e5413358ee6188c97505991d2ea5ecc98aad86cf363cf164d5145c2fc3e0",
+    "substrate_profile": "trvm.world.v1",
+    "verify_bundle_exit": 0
+  },
+  "wrlm": {
+    "case_id": "case-5168765b781af152fd35b2900bd0004a99040ceeaa13565e27eb9ee7cbb37256",
+    "cell": {
+      "base_size_bucket": "small",
+      "family": "goal_satisfaction",
+      "objective_shape": "negated_constraint",
+      "presentation_form": "formatted",
+      "tier": 1,
+      "witness_edit_budget": "1"
+    },
+    "corpus_seed": "traaviis-end-to-end-v1",
+    "coverage_spec_version": "wrlm.coverage.v1.2",
+    "declared_semantic_id": "sem-75c7e5413358ee6188c97505991d2ea5ecc98aad86cf363cf164d5145c2fc3e0",
+    "generator_id": "wrlm.generator.v1",
+    "generator_version": "2",
+    "goal_id": "goal-154143f167318354e93424bb6809d63ae6b21065cc3c25536db3677f17f185d8",
+    "pool_admitted": 58,
+    "pool_excluded": 0,
+    "pool_records": 58,
+    "pool_sha256": "1909d6aab2108cce7c74ed0fc6b73fcd74555f3b690af8c6603eb94f3cdac589",
+    "source_bytes": 323,
+    "source_sha256": "e01d03a3a6332112d4d981e6f494d6a76b0352aedde180196adff1c4a6b8f14d",
+    "task_id": "task-7e4d9c43fdf79c860745b46c0e015662e0bc427aa1bdb2118be398ed92310fe1"
+  }
+}

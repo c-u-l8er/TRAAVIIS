@@ -279,6 +279,31 @@ repositories, not code.
 **Unblocks.** Every claim in §1 that begins "TRAAVIIS can…". Also the honest
 prerequisite for D (the export adapter) and for any outside consumer at all.
 
+**SHIPPED** (2026-08-07) — `tools/end_to_end.py`, pins in `examples/end-to-end/`.
+Cost estimate held: no new module in `traaviis/`, one script, one example
+directory, no id moved. Three findings, in descending order of how much they
+change what this file can claim:
+
+1. **The joins hold.** The world's identity is derived three separate times by
+   three separate pieces of software — the `sem-` WRLM carries from capture,
+   Forge's independent lowering of the source text, `trvs pack` re-lowering from
+   the bytes that landed on disk — and all three agree. That is the WRL half of
+   the stack's central claim, executed rather than asserted.
+2. **The chain does not reach an `episode-`.** A `trvm.world.v1` package packs
+   and verifies, then `trvs eval` refuses it with `SUBSTRATE_NOT_EVALUABLE`: no
+   `EpisodeKernelV1` implements TRVM episode semantics, because D5 is ruled and
+   unbuilt. The honest end of the pass is `bundle-`. The refusal is **pinned as
+   an outcome**, so building the TRVM kernel fails this script rather than
+   silently extending it — a demonstration that stopped early without asserting
+   why could not distinguish *not built yet* from *broken*.
+3. **A defect in the script, found by testing its own failure modes.**
+   `engine.try_load()` falls *through* an invalid `$TRVS_FORGE_DIR` and keeps
+   searching — correct for its caller, wrong here, and it meant the pass exited
+   0 having used an engine the operator did not name. The override is now
+   honoured strictly before the soft path runs. Worth recording because the
+   §2.A text above predicted the risk as "the seams do not fit"; the seam that
+   did not fit was one of TRAAVIIS's own locators, not a cross-repo join.
+
 ---
 
 ### B. Audit `canonical_bytes` against RFC 8785, and forbid floats
@@ -789,9 +814,9 @@ and is the point — the repository already has more capability than evidence.
 
 | # | item | why here |
 | --- | --- | --- |
-| 1 | **B — audit `canonical_bytes` against RFC 8785** | Strictly cheapest now; every id is a frozen key and the corpus is at its smallest today. May be a no-op, and finding that out is worth a day. Everything below quotes ids. |
-| 2 | **A — one end-to-end pass a stranger can verify** | The foundational unchecked claim. Also the artifact the §1(5) audience can be handed. Include C's coverage line in its output. |
-| 3 | **C — coverage as a first-class reading** | The only genuinely novel claim available in 2026, cheap, moves no ids, and the vocabulary already exists in `reward.py`. Third only because A gives it something to be reported *in*. |
+| 1 | **B — audit `canonical_bytes` against RFC 8785** — **DONE, not a no-op** | Strictly cheapest now; every id is a frozen key and the corpus is at its smallest today. May be a no-op, and finding that out is worth a day. Everything below quotes ids. *It was not a no-op: the canonicalization does not conform, and the divergence is already realized in a live shipped `episode-`. The cutover is item 13 and is Travis's call (§6.1, `IDENTITY_MIGRATION_OPTIONS.md` §7).* |
+| 2 | **A — one end-to-end pass a stranger can verify** — **SHIPPED 2026-08-07** | The foundational unchecked claim. Also the artifact the §1(5) audience can be handed. ~~Include C's coverage line in its output.~~ *Retracted, and the reason is a finding: coverage is a reading over an **episode**, and this pass produces none — a `trvm.world.v1` package refuses evaluation by name. The instruction assumed A would reach `episode-`. It cannot, for a TRVM world, until D5 is built. See §2.A.* |
+| 3 | **C — coverage as a first-class reading** — **DONE** (episode + split level) | The only genuinely novel claim available in 2026, cheap, moves no ids, and the vocabulary already exists in `reward.py`. Third only because A gives it something to be reported *in*. *That last sentence is now known to be wrong in one direction: A gives it nothing to be reported in, because A ends at `bundle-`.* |
 | 4 | **D — publish** | The README's first line does not work. Fixing a false claim outranks adding a true one. |
 | 5 | **G — the drift audit** | Could falsify the identity half of the pitch. Do it before building more on that half, not after. |
 | 6 | **E — in-toto attestation** | Closes the one gap replay cannot (time), free, ~100 lines, no id movement. Ranked below D because it needs a consumer. |
