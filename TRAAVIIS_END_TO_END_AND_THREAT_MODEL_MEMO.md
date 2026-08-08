@@ -222,10 +222,21 @@ packet  traaviis-session.zip
 
 That packet is the **code** gate: it was built and accepted before this memo
 existed, so it does not contain this memo. That is the same `-pre` convention the
-9F-A and 11/12 memos used, and it is not avoidable in general — a memo cannot
-carry the hash of an archive that carries the memo. The delivered packet is a
-rebuild of the same tree plus this file, and its own gate result is quoted at the
-bottom of §6.
+9F-A and 11/12 memos used, and the recursion is not avoidable — a memo cannot
+carry the hash of an archive that carries the memo, and a memo that tried would
+either be stale or would never terminate.
+
+So the delivered archive's hash and verdict **travel with the delivery rather
+than inside it**, and a reader does not have to take either on trust:
+
+```
+python3 tools/accept_packet.py <archive> --forge /path/to/TRVM/forge
+```
+
+reproduces the verdict from the archive alone, and G7 re-derives the archive's
+own hash from two independent extractors while doing it. That is the honest
+terminator: the last link in the chain is a command the reader runs, not a number
+this file asserts about itself.
 
 The battery total is unchanged from `b9d7871`, which is the correct result rather
 than a null one: `run_battery.py` collects only `test/test_*.py`, and all three
