@@ -4,15 +4,31 @@
 
 Seven gates, G1..G7. All must pass or the packet is not releasable.
 
-    0  every requested gate passed        ACCEPTED
+    0  every requested gate passed              ACCEPTED
     1  a gate judged the packet and it failed   REJECTED
-    2  no verdict was reached -- the harness itself was wrong
+    2  no verdict was reached                   NO VERDICT
 
 The 1/2 split is load bearing and was added after it bit. `--forge` pointing at
 a path that does not exist does not make the engine absent; it makes the engine
 *broken*, so every engine-dependent law fails and the run prints REJECTED. That
 is a report about the operator's typo wearing the packet's name. A run that
 could not judge must say so instead of returning a verdict it did not earn.
+
+That argument was written here from the start and was only **half implemented**,
+which a plain `accept_packet.py PACKET.zip` demonstrated on 2026-08-07: with no
+`--forge` at all, the pre-check's `and args.forge` let the run start, `gate_g6`
+raised the generic failure, and the packet was pronounced **REJECTED** for the
+operator's missing flag. A third case was worse still and nothing caught it -- a
+`--forge` directory that exists but holds no `forge_api.py` passed `isdir`, ran
+the whole battery against an unresolvable engine, and failed every
+engine-dependent law.
+
+All three are now one predicate (`_engine_unusable`) raised as `HarnessError`,
+which prints **NO VERDICT** and exits 2, writes no `--report` file, and appends
+no row to the results table. The distinction is worth the class: `c653e15`
+records "the release gate rejected two consecutive packets", so REJECTED is read
+here as evidence about the tree, and a REJECTED that means *you forgot a flag*
+is what teaches a reader to discount the ones that mean something.
 
 Why a script and not a checklist. The clean-extraction procedure was, until now,
 a paragraph in a memo: extract somewhere empty, run the battery, rebuild, compare
@@ -81,7 +97,28 @@ FORBIDDEN_SUFFIXES = (".zip", ".pyc", ".pyo")
 
 
 class GateFailure(Exception):
-    pass
+    """A gate judged the packet and the packet lost. Exit 1, REJECTED."""
+
+
+class HarnessError(Exception):
+    """The harness could not judge. Exit 2, NO VERDICT -- never REJECTED.
+
+    The module docstring has argued the 1/2 split since this file was written:
+    *a run that could not judge must say so instead of returning a verdict it did
+    not earn.* `main` implemented that for a **mistyped** `--forge` and not for an
+    **omitted** one, and omission is the commoner mistake -- a plain
+    `accept_packet.py PACKET.zip` printed `FAIL G6 ... no engine given` and
+    `REJECTED`, which reads as a fact about the packet and is not one.
+
+    That matters more than its size. `c653e15`'s commit message records "the
+    release gate rejected two consecutive packets", i.e. REJECTED is treated here
+    as real evidence about the tree. A REJECTED that means *you forgot a flag* is
+    the thing that teaches a reader to discount the ones that don't.
+
+    It is a distinct class rather than a flag on `GateFailure` so that the
+    property holds for any caller, not only for the one entry point that
+    remembered to pre-check.
+    """
 
 
 def sha256_bytes(data):
@@ -294,10 +331,35 @@ def gate_g5(tree):
     return "%d passed, %d skipped, 0 failed" % (passed, skipped)
 
 
-def gate_g6(tree, forge):
-    """Engine present: nothing fails and nothing skips."""
+def _engine_unusable(forge):
+    """Why G6 cannot run, or None if it can. One predicate, two callers.
+
+    Written once because the two call sites disagreed before: `main` checked
+    `isdir` and `gate_g6` checked truthiness, so a plain invocation with no
+    `--forge` walked past `main`'s guard and was rejected by the gate, while a
+    directory that exists but holds no engine walked past *both* and was
+    rejected by the battery. Three ways to be unusable, one place that says so.
+    """
     if not forge:
-        raise GateFailure("no engine given; pass --forge DIR")
+        return "G6 needs an engine; pass --forge DIR or set TRVS_FORGE_DIR"
+    if not os.path.isdir(forge):
+        return "--forge is not a directory: %s" % forge
+    if not os.path.isfile(os.path.join(forge, "forge_api.py")):
+        return "--forge has no forge_api.py (not a Forge engine): %s" % forge
+    return None
+
+
+def gate_g6(tree, forge):
+    """Engine present: nothing fails and nothing skips.
+
+    The two refusals below are deliberately different classes. No engine, or a
+    directory that is not one, means this gate never ran -- `HarnessError`, exit
+    2. A battery that ran and was red means the packet lost -- `GateFailure`,
+    exit 1.
+    """
+    why = _engine_unusable(forge)
+    if why:
+        raise HarnessError(why)
     passed, skipped, failed, crashed, out = run_battery(tree, forge=forge)
     if crashed:
         raise GateFailure("a test file crashed:\n%s" % out.strip()[-1500:])
@@ -444,18 +506,26 @@ def main(argv=None):
 
     want = set(args.gate or ["G1", "G2", "G3", "G4", "G5", "G6", "G7"])
 
-    # A misconfigured harness is not a bad packet. If --forge names something
-    # that is not a directory, G6 runs the battery against an engine that
-    # cannot resolve, every engine-dependent law fails, and the run prints
-    # REJECTED -- blaming the packet for the operator's typo. Refuse to start
-    # instead, and exit 2 ("could not judge") rather than 1 ("judged, bad").
-    if "G6" in want and args.forge and not os.path.isdir(args.forge):
-        print("--forge is not a directory: %s" % args.forge)
-        print("no gate was run; this is a harness error, not a packet verdict")
-        return 2
+    # A misconfigured harness is not a bad packet. Refuse to start rather than
+    # run a battery whose failure would wear the packet's name, and exit 2
+    # ("could not judge") rather than 1 ("judged, bad").
+    #
+    # The engine conditions now live in `gate_g6` and are raised as
+    # `HarnessError`, so the property holds for a caller that does not come
+    # through this pre-check at all. This block stays because failing *before*
+    # extracting a packet and running G5 is a better experience than failing
+    # after, and it is the same predicate either way.
+    if "G6" in want:
+        why = _engine_unusable(args.forge)
+        if why:
+            print(why)
+            print("no gate was run; this is a harness error, not a packet "
+                  "verdict")
+            return 2
     workdir = tempfile.mkdtemp(prefix="traaviis-accept-")
     results = []
     ok = True
+    no_verdict = None
 
     print("packet    %s" % os.path.basename(packet))
     print("sha256    %s" % sha256_file(packet))
@@ -509,6 +579,12 @@ def main(argv=None):
     except GateFailure as ex:
         results.append(("G1", "manifest well formed", False, str(ex)))
         ok = False
+    except HarnessError as ex:
+        # Not appended to `results`: there is no gate verdict to report, and
+        # writing one in would be the exact confusion this class exists to
+        # remove. No `--report` is written either -- a report file is a record
+        # of a judgement, and none was made.
+        no_verdict = str(ex)
     finally:
         if args.keep:
             print("kept %s\n" % workdir)
@@ -522,6 +598,11 @@ def main(argv=None):
         if not passed and note and len(note.splitlines()) > 1:
             for line in note.splitlines()[1:]:
                 print("        " + line)
+
+    if no_verdict is not None:
+        print("\n%s" % no_verdict)
+        print("NO VERDICT -- the harness could not judge this packet")
+        return 2
 
     print("\n%s" % ("ACCEPTED" if ok else "REJECTED"))
 
