@@ -724,6 +724,34 @@ configuration, and build the token when the first person asks.
 refused; the token is compared in constant time; the token never appears in a
 response or a log line; a keyless request is 401 not 404). No id moves.
 
+**DOCUMENTATION HALF SHIPPED** (2026-08-07) — README gains a `## Threat model`
+section and a *Not a sandbox* bullet. It takes the position this item and §6.3
+both said was missing: TRAAVIIS defends **the integrity of the evidence** and
+does not defend the host, `--allow-remote` without a reverse proxy is stated as
+**not a supported configuration**, and the token is recorded as deliberately
+unbuilt rather than merely absent — a token nobody uses is a token that rots.
+
+Every posture claim in that section is a table row pointing at the artifact field
+a caller reads it from, not a sentence asking to be believed. Writing it that way
+caught two errors in my own first draft, both of which would have shipped as
+confident prose:
+
+- `execution_facts.sandbox.filesystem` is literally `"observed"`, not the
+  "rescan, not enforcement" I had written as its value.
+- **`strict_comparison_eligible` is not a field on the receipt at all.** It is a
+  predicate over the sealed runner profile (`execfacts.strict_comparison_eligible`),
+  surfaced on `ComparisonV1` and on coverage aggregates. The draft claimed
+  episodes "carry" it. They do not.
+
+The remaining claims were checked by execution rather than by reading:
+`validate_run_policy({"network": "disabled"}, "residency.trusted-local.v1")`
+raises `UnsupportedPolicyError` naming the posture actually available, the honest
+declaration is accepted, and neither `ors_server.py` nor `mcp_server.py` contains
+any authentication path — so "anyone who can route to the port can submit" is
+measured, not assumed.
+
+The token half stays unbuilt, per this item's own argument.
+
 ---
 
 ### L. A stateful substrate (Courier), to exercise `step` / `observe`
@@ -821,7 +849,7 @@ and is the point — the repository already has more capability than evidence.
 | 5 | **G — the drift audit** | Could falsify the identity half of the pitch. Do it before building more on that half, not after. |
 | 6 | **E — in-toto attestation** | Closes the one gap replay cannot (time), free, ~100 lines, no id movement. Ranked below D because it needs a consumer. |
 | 7 | **H — a real network-isolation posture (Linux-only, narrow)** | Addresses the dominant measured failure mode. Ranked here and not higher because the current honesty is worth more than a half-sandbox, and because it moves ids. |
-| 8 | **K (documentation half) — write down the threat model** | Free. The token half waits for a user. |
+| 8 | **K (documentation half) — write down the threat model** — **SHIPPED 2026-08-07** | Free. The token half waits for a user. *It was free, and it was not a no-op: writing the postures as a table of artifact fields rather than as prose caught two false claims in the draft, including a `strict_comparison_eligible` that does not exist on a receipt. §6.3's "no stated position" is closed; the token half remains deliberately unbuilt.* |
 | 9 | **I — one export adapter, Harbor first** | The stated strategy, unexecuted; ranked below because all three targets are moving and Harbor is the only one with review discipline. |
 | 10 | **J (`eval-…` only) — a citeable run** | Real but narrow. `agent-…` should be **closed**, not deferred. |
 | 11 | **F — OCI/ORAS distribution** | Zero code, but solves a problem that does not exist until D lands. |
@@ -916,6 +944,16 @@ It would also violate "nothing here calls an LLM."
    question, not an engineering one. Both answers are respectable; the current
    state — honest label, no isolation, no stated position — is the one that is
    not.
+
+   **Half of this is now closed and the half that remains is genuinely yours.**
+   The README says so as of 2026-08-07: it states the threat model, says TRAAVIIS
+   defends the evidence and not the host, and tells the reader to run untrusted
+   candidates inside something that *is* a sandbox. So the "no stated position"
+   defect is gone. What the README asserts, and what you can still overturn, is
+   that the boundary is **permanent** — "unlikely to move… a half-sandbox here
+   would be strictly worse than none." That is item H's argument written as
+   product copy. If H is ever built, that paragraph is the thing that has to be
+   retracted, and it was written knowing that.
 
 4. **Which catalog, if any (I)?** Picking Harbor, ORS or OpenEnv picks an
    ecosystem, and all three are moving. Choosing none is also a choice and should

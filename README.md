@@ -845,9 +845,87 @@ The seams are frozen on purpose:
   not a rendering or physics engine.
 - **Not the language or engine** — WallRiderLang defines a world; TRVM/Forge
   lower and fold it. `trvs` holds no world semantics.
+- **Not a sandbox** — the runner applies no network isolation and, on most hosts,
+  no resource enforcement. It refuses to *seal* a posture it does not deliver,
+  which is the honest half; it is not the missing half. See the threat model
+  below, which states the position rather than leaving it to be inferred.
 - **Not trust-me** — every film is checked by every applicable verifier and
   content-addressed. Disagreement is exit 1, not a warning; a verifier that
   cannot apply is reported `not_applicable`, never as pass or fail.
+
+## Threat model
+
+Written down because the alternative was worse. TRAAVIIS had an honest label and
+no isolation and **no stated position**, and of the three available states —
+isolate, or say plainly that you do not — the one with no position is the only
+indefensible one. This section is that position. It is deliberately a claim about
+what is *not* protected.
+
+**What TRAAVIIS defends.** One thing, and it defends it well: **the integrity of
+the evidence.** A candidate cannot erase its own failing score, cannot make a
+crash indistinguishable from a refusal, cannot tamper with a persisted episode
+without the replay deriving a different `episode-`, and cannot make an unreadable
+task disappear from a coverage denominator. Several slices exist for exactly
+these routes, and each one is a law rather than a promise.
+
+**What TRAAVIIS does not defend.** The host. Concretely, and each of these is
+readable from the episode rather than taken from this paragraph:
+
+| posture | state | where a caller reads it, in the artifact |
+| --- | --- | --- |
+| network | `unrestricted` — no isolation applied | `execution_facts.sandbox.network` |
+| filesystem | `observed` — writes are rescanned, not confined | `execution_facts.sandbox.filesystem` |
+| kill boundary | enforced where cgroup v2 is usable | containment `kill_boundary_enforced` |
+| control plane | **not isolated** on a shared-uid host | containment `control_plane_isolated` |
+| memory / pid limits | **not enforced** without `subtree_control` | containment `resource_controllers_enforced` |
+| cleanup | no cgroup object survives the run | containment `cleanup_closed` |
+
+The runner **refuses to seal a stronger posture than it delivers**: a task that
+declares `network: "disabled"` is rejected by name, with a message naming the
+posture actually available, rather than accepted and quietly recorded as isolated.
+That refusal is the load-bearing behaviour. A label that can be requested and
+granted without being true is worse than no label, because the label is what a
+retry loop trusts at 3am.
+
+The posture is not a field on the receipt; it is **derived from the runner
+profile the receipt already seals**, by `execfacts.strict_comparison_eligible`.
+A `ComparisonV1` over an ineligible profile reports
+`strict_comparison_eligible: false` rather than comparing, and a coverage
+aggregate that mixes a certified with a best-effort episode refuses to certify
+rather than inheriting the stronger label — the laundering path, closed
+deliberately. **Every episode in this repository today is best-effort**, because
+this host cannot isolate the control plane.
+
+`certifiable` is the conjunction of all four capability axes, and `UNKNOWN` never
+satisfies it. *Do not infer success from an absent failure* is the rule that
+vector exists to enforce, and it was written after an earlier slice claimed
+containment on the strength of nothing having been observed to escape — while a
+descendant it had lost was still running.
+
+**Therefore: run untrusted candidates inside something that is a sandbox.** A
+container, a VM, a disposable host. TRAAVIIS seals what happened; it does not
+confine it. That boundary is deliberate and is unlikely to move — process
+isolation is the layer Docker, Harbor and Inspect's sandbox providers occupy, and
+a half-sandbox here would be strictly worse than none.
+
+### Serving remotely
+
+`serve --ors` and `serve --mcp` bind loopback. Leaving loopback requires
+`--allow-remote`, so exposure is something a human typed rather than something
+inferred from an address.
+
+**`--allow-remote` without a reverse proxy in front of it is not a supported
+configuration.** Read against the isolation posture above, a submission endpoint
+reachable from a network — one that accepts a candidate's patches and runs
+verifier commands under a runner that declares `network: unrestricted` — is a
+remote code execution service with a scoreboard. There is no authentication
+today: anyone who can route to the port can submit.
+
+The smallest honest step beyond loopback is a shared-secret bearer token, not
+TLS. It is **deliberately unbuilt**: nobody is running this remotely, and a token
+nobody uses is a token that rots. It gets built when the first person needs it,
+and that is a better trade than shipping an unexercised credential path. TLS
+belongs in a reverse proxy, which is not code in this repository.
 
 ## Develop
 
