@@ -949,6 +949,43 @@
           <span class="faint">· not on PyPI · then <span class="inline">trvs doctor</span> · needs the TRVM/forge engine on-path</span>
         </div>
 
+        <!-- THE SECOND ROUTE: already aboard a distribution -->
+        <p class="demo-note" style="margin-top:22px">
+          Or skip the install. As of <b>2026-08-09</b> the engine and the verifier ship
+          <b>inside a bootable operating system</b> —
+          <a href="https://github.com/c-u-l8er/travel-and-rrabbit">T&amp;R</a>, a FreeBSD 15
+          distribution assembled from pkgbase. Boot an image the build pipeline produced,
+          touch nothing, and <code>trvs</code> is already on the path with the engine wired
+          to it. The native reducer is C, so a binary copied from a Linux workstation would
+          not run at all: the image build compiles it on a FreeBSD builder and ships the
+          result, which is why the guest needs no compiler and no package manager of its own.
+        </p>
+
+        <div class="term">
+          <div class="term-bar">
+            <i class="r"></i><i class="y"></i><i class="g"></i>
+            <span>trvs — doctor · pristine T&amp;R guest</span>
+            <span class="hint">captured · verbatim CLI output</span>
+          </div>
+          <div class="term-body">
+            <div class="prompt-line"><span class="p">$ trvs doctor</span></div>
+            <div class="cast" data-cast="doctor"><span class="row">  TRAAVIIS      0.1.0</span><span class="row">  command       trvs</span><span class="row">  forge         /usr/local/lib/trvm/forge</span><span class="row">  engine API    1</span><span class="row">  engine        v0.7.0-alpha.5</span><span class="row">  ic_ref        <span class="ok">✓</span></span><span class="row">  ic32          <span class="ok">✓</span> executable</span><span class="row">  oracle        <span class="ok">✓</span> available</span><span class="row">  demo id       <span class="id">sem-8ae91fe9cbc5fd08</span></span><span class="row">  status        <b>ready</b></span></div>
+          </div>
+        </div>
+
+        <p class="demo-note">
+          That guest was created straight from the build pipeline's own image and never
+          touched afterwards, and it derives
+          <span class="inline">sem-8ae91fe9cbc5fd08…</span> for
+          <span class="inline">worlds/alley.wrl</span> — the same string this page's other
+          captures print on an Arch Linux workstation. <b>What that is not:</b> it is one
+          implementation running on two operating systems, not two implementations agreeing
+          on a semantics. It retires a hand-copying caveat and earns nothing beyond that.
+          Carrying the stack is a build option rather than the default, and it costs the
+          server image 364 MB → 625 MB, because pkgbase ships no interpreter and this is
+          python.
+        </p>
+
         <!-- THE PIPELINE -->
         <div class="loop">
           <div class="ph"><b>author</b><span>a WallRiderLang world file</span></div>
