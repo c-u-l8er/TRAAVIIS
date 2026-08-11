@@ -478,6 +478,10 @@ const PROPERTY_MAP = {
   webhost: { category: "compose", item: "webhost" },
   // Academy — institutional loop
   workbench: { category: "academy", item: "workbench" },
+  // The Academy prototype identifies as `academy`. It has no nav item of its own yet — the
+  // entry lands when the reading layer serves a page (ACADEMY.md §6, C1) — so it highlights
+  // the category without claiming an item inside it.
+  academy: { category: "academy" },
   // Other categories
   ampersand: { category: "protocols", item: "ampersand" },
   ampersandboxdesign: { category: "company", item: "home" },
